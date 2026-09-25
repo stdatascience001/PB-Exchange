@@ -1,0 +1,24 @@
+{
+  "name": "pb-exchange",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PB Exchange - Role-Based Transaction and Operational Management System",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev --workspace=apps/api",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "dev:worker": "npm run dev --workspace=apps/worker",
+    "dev": "npm run dev:api",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "db:generate": "npm run db:generate --workspace=packages/database",
+    "db:migrate": "npm run db:migrate --workspace=packages/database",
+    "db:seed": "npm run db:seed --workspace=packages/database"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

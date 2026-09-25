@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+build/
+.vite/
+*.tsbuildinfo
+
+# Environment variables (never commit real secrets)
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor/OS
+.DS_Store
+Thumbs.db
