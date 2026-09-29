@@ -7,6 +7,7 @@ import { authenticate } from '../../middleware/auth.middleware.js';
 const router = Router();
 
 router.get('/captcha', AuthController.getCaptcha);
+router.get('/access-check', AuthController.accessCheck);
 router.post('/login', validate(loginSchema), AuthController.login);
 router.get('/me', authenticate, AuthController.me);
 router.post('/change-password', authenticate, AuthController.changePassword);

@@ -62,4 +62,7 @@ export interface ShiftDto {
   companyAComm?: number;
   companyTax?: number;
   companyRemark?: string;
+  companyAllow?: boolean;
+  companyUpdatedBy?: string;
+  companyUpdatedAt?: string | null;
 }

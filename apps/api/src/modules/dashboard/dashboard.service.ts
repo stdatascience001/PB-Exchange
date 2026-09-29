@@ -2,6 +2,7 @@ import { db, shifts, shiftRoleConfig, shiftCycles, sql } from '@pb/database';
 import { eq, and, lt, ne } from 'drizzle-orm';
 import { redis } from '../../config/redis.js';
 import { isOwnDataOnlyRole } from '../../common/roles.js';
+import { DeclarationSnapshotService } from '../declarations/declaration-snapshot.service.js';
 
 function parseToDate(val: any): Date {
   if (!val) return new Date();
@@ -318,6 +319,38 @@ export class DashboardService {
         terminal: 'T1',
         timestamp: formatStaffDate(new Date(cyc.updatedAt || Date.now())),
       });
+    }
+
+    // 2b-ii. Declared cycles that need a ReDeclare: something changed after the declare
+    // (slip added/edited/deleted, party Comm/Hissa/TPC changed) so the declared figures no
+    // longer match. Listed after the undeclared ones, with who changed it last and when.
+    // Only for the roles that see this panel at all, and never allowed to break the poll.
+    if (userRoleName !== 'ADMIN' && !hasReducedDeclarePanels) {
+      try {
+        const pendingRedeclares = await DeclarationSnapshotService.listPendingRedeclares();
+        for (const p of pendingRedeclares) {
+          declareNeeded.push({
+            id: p.shiftId,
+            declarationId: p.declarationId,
+            name: p.shiftName,
+            openDate: p.displayDate,
+            rawOpenDate: p.cycleDate,
+            status: 'DECLARED',
+            declaredNumber: null,
+            totalAmount: 0,
+            totalCount: 0,
+            netAmount: 0,
+            cutoffPassed: true,
+            timeRemainingSeconds: 0,
+            isDeclared: true,
+            changeCount: p.changeCount,
+            terminal: p.changedBy,
+            timestamp: p.changedAtLabel,
+          });
+        }
+      } catch (err: any) {
+        console.warn('[Dashboard] ReDeclare check warning:', err?.message || err);
+      }
     }
 
     // 2c. "Last Day X%" badge (MANAGER-only in the UI) — best-effort metric: % of active

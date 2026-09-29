@@ -43,6 +43,10 @@ export const shifts = pgTable('shifts', {
   companyAComm: numeric('company_a_comm', { precision: 5, scale: 2 }).default('0.00').notNull(),
   companyTax: numeric('company_tax', { precision: 5, scale: 2 }).default('0.00').notNull(),
   companyRemark: varchar('company_remark', { length: 255 }).default('').notNull(),
+  // Company Config listing's own Allow flag and last-update stamp
+  companyAllow: boolean('company_allow').default(true).notNull(),
+  companyUpdatedBy: varchar('company_updated_by', { length: 100 }).default('').notNull(),
+  companyUpdatedAt: timestamp('company_updated_at'),
 
   // Display order set by drag & drop on the Shifts page (1..N). 0 = never ordered, which keeps
   // the original ordering (newest first on Shifts, market order on Dashboard) for that shift.

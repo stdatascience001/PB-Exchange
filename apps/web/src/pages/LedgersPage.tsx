@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiRequest } from '../api/client.js';
 import { Send, X } from 'lucide-react';
+import { PartyNameInput } from '../components/PartyNameInput.js';
 
 interface LedgerItem {
   id: number;
@@ -231,6 +232,27 @@ export const LedgersPage: React.FC = () => {
   // Account tab
   const [acctSaving, setAcctSaving] = useState<string | null>(null);
 
+  // Party names for the Re-Config tab's Hissa / 3rd Party Comm / 3rd Party Rebate pickers —
+  // always every active party, independent of the list's own status filter (which can be
+  // showing Deleted parties only).
+  const [pickerPartyNames, setPickerPartyNames] = useState<{ id: number; name: string }[]>([]);
+  const fetchPickerParties = async () => {
+    try {
+      const res = await apiRequest<LedgerItem[]>('/ledgers');
+      if (res.data) setPickerPartyNames(res.data.map(l => ({ id: l.id, name: l.partyName })));
+    } catch (err) {
+      console.warn('Failed to load party names:', err);
+    }
+  };
+  useEffect(() => {
+    fetchPickerParties();
+  }, []);
+  // Every active party — the ledger being edited included (e.g. a Hissa link back to itself).
+  const reConfigPartyNames = pickerPartyNames.map(p => p.name);
+  // Hissa Party also offers the system "HP A/C" account (Hawa Patti) — it isn't a party in
+  // the Ledger list, but a Hissa link to it is what puts a party on Auto Hawa Patti.
+  const hissaPartyNames = ['HP A/C', ...reConfigPartyNames.filter(n => n.toUpperCase() !== 'HP A/C')];
+
   const fetchLedgers = async () => {
     setLoading(true);
     try {
@@ -238,6 +260,8 @@ export const LedgersPage: React.FC = () => {
       const res = await apiRequest<LedgerItem[]>(url);
       if (res.data) {
         setLedgers(res.data);
+        // An active-list reload (party added / renamed) refreshes the pickers too.
+        if (statusFilter !== 'Deleted') setPickerPartyNames(res.data.map(l => ({ id: l.id, name: l.partyName })));
       }
     } catch (err) {
       console.warn('Failed to load ledgers:', err);
@@ -1469,7 +1493,7 @@ export const LedgersPage: React.FC = () => {
                         <div>+</div>
                       </div>
                       <div className="grid grid-cols-[1fr_70px_36px] bg-white p-1 gap-1">
-                        <input list="ledger-names" type="text" value={newHissaParty} onChange={(e) => setNewHissaParty(e.target.value)} placeholder="PARTY NAME" className="px-1.5 py-1 text-xs border border-slate-300 rounded uppercase" />
+                        <PartyNameInput value={newHissaParty} onChange={setNewHissaParty} names={hissaPartyNames} placeholder="PARTY NAME" className="px-1.5 py-1 text-xs border border-slate-300 rounded uppercase" />
                         <input type="text" value={newHissaPercent} onChange={(e) => setNewHissaPercent(e.target.value)} placeholder="%" className="px-1 py-1 text-xs border border-slate-300 rounded text-center" />
                         <button type="button" onClick={() => handleAddLink('HISSA', { partyName: newHissaParty, percent: parseFloat(newHissaPercent) || 0 })} className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded text-sm">+</button>
                       </div>
@@ -1500,7 +1524,7 @@ export const LedgersPage: React.FC = () => {
                         <div>+</div>
                       </div>
                       <div className="grid grid-cols-[1fr_55px_55px_36px] bg-white p-1 gap-1">
-                        <input list="ledger-names" type="text" value={newTpcParty} onChange={(e) => setNewTpcParty(e.target.value)} placeholder="PARTY NAME" className="px-1.5 py-1 text-xs border border-slate-300 rounded uppercase" />
+                        <PartyNameInput value={newTpcParty} onChange={setNewTpcParty} names={reConfigPartyNames} placeholder="PARTY NAME" className="px-1.5 py-1 text-xs border border-slate-300 rounded uppercase" />
                         <input type="text" value={newTpcDComm} onChange={(e) => setNewTpcDComm(e.target.value)} className="px-1 py-1 text-xs border border-slate-300 rounded text-center" />
                         <input type="text" value={newTpcAComm} onChange={(e) => setNewTpcAComm(e.target.value)} className="px-1 py-1 text-xs border border-slate-300 rounded text-center" />
                         <button type="button" onClick={() => handleAddLink('TPC', { partyName: newTpcParty, dComm: parseFloat(newTpcDComm) || 0, aComm: parseFloat(newTpcAComm) || 0 })} className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded text-sm">+</button>
@@ -1533,7 +1557,7 @@ export const LedgersPage: React.FC = () => {
                       <div>+</div>
                     </div>
                     <div className="grid grid-cols-[1fr_70px_36px] bg-white p-1 gap-1">
-                      <input list="ledger-names" type="text" value={newTpvParty} onChange={(e) => setNewTpvParty(e.target.value)} placeholder="PARTY NAME" className="px-1.5 py-1 text-xs border border-slate-300 rounded uppercase" />
+                      <PartyNameInput value={newTpvParty} onChange={setNewTpvParty} names={reConfigPartyNames} placeholder="PARTY NAME" className="px-1.5 py-1 text-xs border border-slate-300 rounded uppercase" />
                       <input type="text" value={newTpvPercent} onChange={(e) => setNewTpvPercent(e.target.value)} placeholder="%" className="px-1 py-1 text-xs border border-slate-300 rounded text-center" />
                       <button type="button" onClick={() => handleAddLink('TPV', { partyName: newTpvParty, percent: parseFloat(newTpvPercent) || 0 })} className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded text-sm">+</button>
                     </div>
@@ -1554,6 +1578,7 @@ export const LedgersPage: React.FC = () => {
                   Update TPV
                 </button>
 
+                {/* ledger-names datalist kept for any other input still pointing at it */}
                 <datalist id="ledger-names">
                   {ledgers.filter(o => o.id !== updateLedgerDetail?.id).map(o => (
                     <option key={o.id} value={o.partyName} />

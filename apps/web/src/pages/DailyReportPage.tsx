@@ -44,7 +44,15 @@ interface DailyReportData {
   };
 }
 
-const todayInputDate = () => new Date().toISOString().slice(0, 10);
+// Browser-local today (toISOString() is UTC and gave yesterday before 05:30 IST).
+const todayInputDate = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+// Shift-based date: a shift's report date is its current cycle's open date, not the
+// calendar day — e.g. a shift still on yesterday's cycle reports on yesterday.
+const shiftCycleDate = (s?: ShiftDto) => s?.openDate || todayInputDate();
 const fmt = (n: number) => (n || 0).toLocaleString('en-IN');
 
 export const DailyReportPage: React.FC<DailyReportPageProps> = ({ shifts = [], onNavigate }) => {
@@ -64,9 +72,21 @@ export const DailyReportPage: React.FC<DailyReportPageProps> = ({ shifts = [], o
     return activeOnly.length > 0 ? activeOnly : shifts;
   }, [shifts]);
 
+  // First load picks the first active shift AND its cycle date together, so the report is
+  // fetched once, for the right day.
   useEffect(() => {
-    if (!shiftId && availableShifts.length > 0) setShiftId(String(availableShifts[0].id));
+    if (!shiftId && availableShifts.length > 0) {
+      setShiftId(String(availableShifts[0].id));
+      setDate(shiftCycleDate(availableShifts[0]));
+    }
   }, [availableShifts]);
+
+  // Choosing a shift moves the date to that shift's cycle date; the date box can still be
+  // changed by hand afterwards to look at any other day.
+  const handleShiftChange = (value: string) => {
+    setShiftId(value);
+    setDate(shiftCycleDate(availableShifts.find(s => String(s.id) === value)));
+  };
 
   useEffect(() => {
     (async () => {
@@ -132,7 +152,7 @@ export const DailyReportPage: React.FC<DailyReportPageProps> = ({ shifts = [], o
 
           <select
             value={shiftId}
-            onChange={(e) => setShiftId(e.target.value)}
+            onChange={(e) => handleShiftChange(e.target.value)}
             className="px-3 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer min-w-32 shadow-xs"
           >
             {availableShifts.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}

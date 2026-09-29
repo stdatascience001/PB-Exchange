@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
-import { X, Edit2, Trash2 } from 'lucide-react';
+import { X, Edit2 } from 'lucide-react';
+import { AutoHawaPattiModal } from '../components/AutoHawaPattiModal.js';
 
 const VOUCHER_TYPE = 'HAWA_PATTI';
 const PAGE_TITLE = 'Hawa Patti Voucher';
@@ -73,6 +74,8 @@ export const HawaPattiVoucherPage: React.FC = () => {
   const [amount, setAmount] = useState('');
   const [remark, setRemark] = useState('');
   const [saving, setSaving] = useState(false);
+  // Auto Hawa Patti (F3) popup
+  const [showAutoHp, setShowAutoHp] = useState(false);
 
   const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
   const [fromMonth, setFromMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
@@ -115,6 +118,10 @@ export const HawaPattiVoucherPage: React.FC = () => {
       if (e.key === 'F2') {
         e.preventDefault();
         openAddModal();
+      }
+      if (e.key === 'F3') {
+        e.preventDefault();
+        setShowAutoHp(true);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -328,10 +335,9 @@ export const HawaPattiVoucherPage: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => handleDelete(v.id)}
-                          title="Delete"
-                          className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
+                          className="px-2.5 py-0.5 bg-[#dc2626] hover:bg-[#b91c1c] text-white text-[10px] font-bold rounded-xs"
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          Delete
                         </button>
                       </div>
                     </td>
@@ -342,6 +348,20 @@ export const HawaPattiVoucherPage: React.FC = () => {
           </table>
         </div>
       </div>
+
+      {/* Bottom bar: Auto Hawa Patti (F3) */}
+      <div className="mt-2 bg-[#1f3a63] rounded-md px-4 py-2.5 flex items-center justify-between">
+        <span className="text-amber-400 text-xs font-medium">Need Help?</span>
+        <button
+          type="button"
+          onClick={() => setShowAutoHp(true)}
+          className="px-5 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] active:bg-[#0f4691] text-white font-bold text-xs rounded shadow-xs"
+        >
+          Auto Hawa Patti <span className="text-[10px] font-semibold">(F3)</span>
+        </button>
+      </div>
+
+      <AutoHawaPattiModal open={showAutoHp} onClose={() => setShowAutoHp(false)} onProcessed={fetchList} />
 
       {showModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">

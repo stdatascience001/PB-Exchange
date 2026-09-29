@@ -79,7 +79,9 @@ export const DATA_ENTRY_OPERATOR_ALLOWED_TOP_MENUS: string[] = ['dashboard', 'tr
 // down to a single "Add Entry" item; the dropdown screenshot rules that out.)
 export const DATA_ENTRY_OPERATOR_TRANSACTIONS_PAGES: string[] = ['transaction-list', 'declare-transactions'];
 
-export const DATA_ENTRY_OPERATOR_ALLOWED_PAGES: string[] = ['dashboard', 'transaction-add', ...DATA_ENTRY_OPERATOR_TRANSACTIONS_PAGES];
+// 'transaction-edit' is the page Live Transactions' Edit button opens (/transaction_edit/:shiftId/:txId);
+// without it the role guard in App.tsx bounced that tab straight to the dashboard.
+export const DATA_ENTRY_OPERATOR_ALLOWED_PAGES: string[] = ['dashboard', 'transaction-add', 'transaction-edit', ...DATA_ENTRY_OPERATOR_TRANSACTIONS_PAGES];
 
 // Roles that only ever see their own entered data — the frontend mirror of the API's
 // common/roles.ts. Used to drop the staff/status filters a DATA ENTRY OPERATOR's Live

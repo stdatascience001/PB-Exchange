@@ -15,7 +15,7 @@ export class AccessControlController {
   static async block(req: Request, res: Response, next: NextFunction) {
     try {
       const { ipAddress, reason } = req.body;
-      const blocked = await AccessControlService.blockIp(ipAddress, reason, req.user!.userId);
+      const blocked = await AccessControlService.blockIp(ipAddress, reason, req.user!.userId, req.user!.username);
       return sendSuccess(res, blocked, 'IP address successfully blocked', 201);
     } catch (err) {
       next(err);

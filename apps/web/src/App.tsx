@@ -16,6 +16,7 @@ import { AuditPage } from './pages/AuditPage.js';
 import { ShiftManagePage } from './pages/ShiftManagePage.js';
 import { LedgersPage } from './pages/LedgersPage.js';
 import { AccessBlockPage } from './pages/AccessBlockPage.js';
+import { IpBlockedScreen } from './components/IpBlockedScreen.js';
 import { StaffPage } from './pages/StaffPage.js';
 import { AgentsPage } from './pages/AgentsPage.js';
 import { StaffAssetsPage } from './pages/StaffAssetsPage.js';
@@ -248,6 +249,19 @@ export const getRouteInfo = (): RouteInfo => {
 
   // Match /transaction_edit/:shiftId/:txId or /transaction-edit/:shiftId/:txId — the "Edit"
   // action from Transaction List opens the same slip-entry UI as Add, pre-loaded for editing.
+  // Match /declare_transaction_edit/:shiftId/:txId — Declare Transactions' "Edit": the same
+  // slip-entry UI, opened on a slip of an already declared shift ("<SHIFT> [DECLARE]").
+  const declareTxEditMatch = pathname.match(/^\/declare[-_]transaction[-_]edit\/([^\/]+)\/([^\/]+)$/);
+  if (declareTxEditMatch) {
+    return { page: 'declare-transaction-edit', param: declareTxEditMatch[1], param2: declareTxEditMatch[2] };
+  }
+
+  // Match /declare_transaction_list/:shiftId — Declare Transactions opened on that shift
+  const declareTxListMatch = pathname.match(/^\/declare[-_]transaction[-_]list\/([^\/]+)$/);
+  if (declareTxListMatch) {
+    return { page: 'declare-transactions', param: declareTxListMatch[1] };
+  }
+
   const txEditMatch = pathname.match(/^\/transaction[-_]edit\/([^\/]+)\/([^\/]+)$/);
   if (txEditMatch) {
     return { page: 'transaction-edit', param: txEditMatch[1], param2: txEditMatch[2] };
@@ -329,12 +343,16 @@ export const App: React.FC = () => {
     try {
       const res = await apiRequest<ShiftDto[]>('/shifts');
       setShifts(res.data);
-      if (!activeShift && res.data.length > 0) {
-        setActiveShift(res.data[0]);
-      } else if (activeShift) {
-        const updated = res.data.find(s => s.id === activeShift.id);
-        if (updated) setActiveShift(updated);
-      }
+      // Read the CURRENT selection via the updater. The 30s poll below runs the fetchShifts
+      // captured on the first render, where activeShift was still null — so every tick took
+      // the `!activeShift` branch and snapped the selection back to the first shift (a page
+      // like Company Calculation then reloaded onto it and lost its edits). Same rules as
+      // before: pick the first shift only when nothing is selected, otherwise refresh the
+      // selected one's data and keep it.
+      setActiveShift(prev => {
+        if (!prev) return res.data.length > 0 ? res.data[0] : prev;
+        return res.data.find(s => s.id === prev.id) || prev;
+      });
     } catch (err) {
       console.warn('Failed to load shifts:', err);
     }
@@ -387,6 +405,25 @@ export const App: React.FC = () => {
     setUser(null);
     navigateTo('dashboard');
   };
+
+  // Login security: a blocked IP (3 wrong logins in a row, or an Access Block entry) sees only
+  // the blocked screen — checked on start-up and whenever any request comes back IP_BLOCKED.
+  const [ipBlockedMessage, setIpBlockedMessage] = useState<string | null>(null);
+  const checkAccess = useCallback(() => {
+    apiRequest('/auth/access-check')
+      .then(() => setIpBlockedMessage(null))
+      .catch(() => { /* IP_BLOCKED arrives through the event below */ });
+  }, []);
+  useEffect(() => {
+    const onBlocked = (e: Event) => setIpBlockedMessage((e as CustomEvent<string>).detail || 'Your IP address is blocked.');
+    window.addEventListener('pb-ip-blocked', onBlocked);
+    checkAccess();
+    return () => window.removeEventListener('pb-ip-blocked', onBlocked);
+  }, [checkAccess]);
+
+  if (ipBlockedMessage) {
+    return <IpBlockedScreen message={ipBlockedMessage} onRetry={checkAccess} />;
+  }
 
   if (!user) {
     return (
@@ -475,6 +512,21 @@ export const App: React.FC = () => {
     );
   }
 
+  if (currentPage === 'declare-transaction-edit') {
+    return (
+      <AddTransactionPage
+        shifts={shifts}
+        activeShift={activeShift}
+        onSelectShift={(s) => setActiveShift(s)}
+        onNavigate={navigateTo}
+        editShiftId={routeInfo.param}
+        editTransactionId={routeInfo.param2}
+        declareEdit
+        user={user}
+      />
+    );
+  }
+
   if (currentPage === 'transaction-edit') {
     return (
       <AddTransactionPage
@@ -543,6 +595,7 @@ export const App: React.FC = () => {
               shifts={shifts}
               user={user}
               onNavigate={navigateTo}
+              initialShiftId={routeInfo.page === 'declare-transactions' ? routeInfo.param : undefined}
             />
           )}
 
@@ -633,7 +686,7 @@ export const App: React.FC = () => {
           {currentPage === 'tpc-report' && <TpcReportPage shifts={shifts} />}
           {currentPage === 'profit-loss-report' && <ProfitLossReportPage />}
           {currentPage === 'limit-balance-report' && <LimitBalanceReportPage />}
-          {currentPage === 'admin-cash' && <AdminCashPage />}
+          {currentPage === 'admin-cash' && <AdminCashPage onNavigate={navigateTo} />}
           {currentPage === 'trial-balance-report' && <TrialBalanceReportPage />}
           {currentPage === 'outstanding-report' && <OutstandingReportPage />}
           {currentPage === 'hawapatti-rpt' && <HawaPattiRptPage />}

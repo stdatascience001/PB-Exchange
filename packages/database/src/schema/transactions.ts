@@ -1,4 +1,4 @@
-import { pgTable, serial, varchar, timestamp, boolean, integer, numeric, index } from 'drizzle-orm/pg-core';
+import { pgTable, serial, varchar, timestamp, boolean, integer, numeric, index, text } from 'drizzle-orm/pg-core';
 import { users } from './auth.js';
 import { shifts } from './shifts.js';
 import { ledgers } from './ledgers.js';
@@ -18,6 +18,9 @@ export const transactions = pgTable('transactions', {
   updatedBy: varchar('updated_by', { length: 50 }).default('SYSTEM'),
   isD: boolean('is_d').default(true),
   auditStatus: varchar('audit_status', { length: 20 }).default('NOT-AUDIT'),
+  mistakeRemark: text('mistake_remark'), // Trans-Audit Mistake popup text; set only while MISTAKE
+  // True once a MISTAKE slip has been edited — the Updated column then shows in red
+  mistakeEdited: boolean('mistake_edited').default(false).notNull(),
   createdBy: integer('created_by').references(() => users.id).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiRequest } from '../api/client.js';
+import { toast } from 'react-toastify';
 
 interface DuplicateVoucherGroup {
   partyLedgerId: number;
@@ -22,8 +23,20 @@ const VOUCHER_TYPES = [
 
 const todayInputDate = () => new Date().toISOString().slice(0, 10);
 
+const messageToast = (kind: 'success' | 'error', text: string, toastId?: string) =>
+  toast[kind](
+    <div>
+      <div className="font-bold text-base">Message</div>
+      <div className="text-sm mt-0.5">{text}</div>
+    </div>,
+    toastId ? { toastId } : undefined
+  );
+
 const formatDateOnly = (dateVal?: string) => {
   if (!dateVal) return '-';
+  // voucherDate comes as YYYY-MM-DD — format the string itself so no timezone can shift it.
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateVal);
+  if (ymd) return `${ymd[3]}-${ymd[2]}-${ymd[1]}`;
   const d = new Date(dateVal);
   if (isNaN(d.getTime())) return dateVal;
   const day = String(d.getDate()).padStart(2, '0');
@@ -37,17 +50,52 @@ export const DuplicateVoucherPage: React.FC = () => {
   const [voucherType, setVoucherType] = useState('JOURNAL');
   const [fromDate, setFromDate] = useState(todayInputDate());
   const [toDate, setToDate] = useState(todayInputDate());
+  // Delete confirmation popup: the duplicate group whose latest repeat is about to go.
+  const [deleteTarget, setDeleteTarget] = useState<DuplicateVoucherGroup | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
-  const fetchDuplicates = async () => {
+  // announce: the Search button (and Delete's refresh) say "Record not found!" when nothing
+  // comes back, as the live page does; the automatic load on open / type change stays quiet.
+  const fetchDuplicates = async (announce = false) => {
+    const problem = !fromDate || !toDate
+      ? 'Please select both Dates!'
+      : fromDate > toDate
+        ? 'From Date cannot be after To Date!'
+        : '';
+    if (problem) {
+      messageToast('error', problem, 'dup-voucher-date');
+      return;
+    }
     setLoading(true);
     try {
       const params = new URLSearchParams({ voucherType, fromDate, toDate });
       const res = await apiRequest<DuplicateVoucherGroup[]>(`/vouchers/duplicates?${params.toString()}`);
-      if (res.data) setList(res.data);
-    } catch (err) {
+      const rows = res.data || [];
+      setList(rows);
+      if (announce && rows.length === 0) messageToast('error', 'Record not found!', 'dup-voucher-none');
+    } catch (err: any) {
       console.warn('Failed to load duplicate vouchers:', err);
+      if (announce) messageToast('error', err.message || 'Failed to load duplicate vouchers');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Delete removes the most recent repeat of the group and keeps the original (oldest)
+  // voucher, so D-Count drops by one; the row goes once only the original is left.
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    const repeatId = deleteTarget.voucherIds[deleteTarget.voucherIds.length - 1];
+    setDeleting(true);
+    try {
+      await apiRequest(`/vouchers/${repeatId}`, { method: 'DELETE' });
+      messageToast('success', 'Duplicate voucher has been deleted successfully!', `dup-voucher-deleted-${repeatId}`);
+      setDeleteTarget(null);
+      fetchDuplicates();
+    } catch (err: any) {
+      messageToast('error', err.message || 'Failed to delete voucher');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -58,7 +106,7 @@ export const DuplicateVoucherPage: React.FC = () => {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    fetchDuplicates();
+    fetchDuplicates(true);
   };
 
   const handleExportExcel = () => {
@@ -151,26 +199,22 @@ export const DuplicateVoucherPage: React.FC = () => {
                     <td className="py-2 px-4 text-center font-mono text-slate-600 border-r border-slate-200">{formatDateOnly(r.voucherDate)}</td>
                     <td className="py-2 px-4 font-bold text-slate-900 uppercase border-r border-slate-200">{r.partyName}</td>
                     <td className="py-2 px-4 text-right font-mono font-bold text-slate-900 border-r border-slate-200">
-                      ₹{r.amount.toLocaleString('en-IN')}
+                      {r.amount}
                     </td>
-                    <td className="py-2 px-4 text-center border-r border-slate-200">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${r.entrySide === 'CR' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
-                        {r.entrySide}
-                      </span>
+                    <td className="py-2 px-4 text-center font-semibold text-slate-800 border-r border-slate-200">
+                      {r.entrySide === 'CR' ? 'Cr' : 'Dr'}
                     </td>
                     <td className="py-2 px-4 font-semibold uppercase text-slate-800 border-r border-slate-200">{r.oppositePartyName}</td>
-                    <td className="py-2 px-4 text-center border-r border-slate-200">
-                      <span className="px-2 py-0.5 bg-amber-100 text-amber-800 font-bold rounded-full text-[10px]">
-                        {r.count}
-                      </span>
+                    <td className="py-2 px-4 text-center font-semibold text-slate-900 border-r border-slate-200" title={`Voucher IDs: ${r.voucherIds.join(', ')}`}>
+                      {r.count}
                     </td>
                     <td className="py-2 px-4 text-center">
                       <button
                         type="button"
-                        onClick={() => alert(`Voucher IDs: ${r.voucherIds.join(', ')}`)}
-                        className="px-3 py-1 bg-[#1662c6] hover:bg-[#1354ab] text-white font-bold text-[10px] rounded shadow-xs"
+                        onClick={() => setDeleteTarget(r)}
+                        className="px-3 py-1 bg-[#dc2626] hover:bg-[#b91c1c] text-white font-bold text-[10px] rounded shadow-xs"
                       >
-                        Review
+                        Delete
                       </button>
                     </td>
                   </tr>
@@ -180,6 +224,43 @@ export const DuplicateVoucherPage: React.FC = () => {
           </table>
         </div>
       </div>
+
+      {/* Delete confirmation (in-page popup, not the browser's confirm) */}
+      {deleteTarget && (
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-start justify-center p-3 pt-16 z-50 animate-in fade-in duration-150"
+          onKeyDown={(e) => { if (e.key === 'Escape') setDeleteTarget(null); }}
+        >
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-300">
+            <div className="px-5 pt-5 pb-4">
+              <h2 className="text-base font-bold text-slate-900 mb-2">Delete Duplicate Voucher</h2>
+              <p className="text-sm text-slate-700">
+                Delete one duplicate of <span className="font-bold uppercase">{deleteTarget.partyName}</span>{' '}
+                {deleteTarget.amount} {deleteTarget.entrySide === 'CR' ? 'Cr' : 'Dr'} ({formatDateOnly(deleteTarget.voucherDate)})?
+                The original voucher is kept.
+              </p>
+            </div>
+            <div className="px-5 pb-5 flex justify-end gap-2">
+              <button
+                type="button"
+                autoFocus
+                disabled={deleting}
+                onClick={handleConfirmDelete}
+                className="px-6 py-1.5 bg-[#dc2626] hover:bg-[#b91c1c] text-white font-bold text-sm rounded-full shadow-xs disabled:opacity-60"
+              >
+                {deleting ? 'Deleting...' : 'OK'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                className="px-5 py-1.5 bg-[#dbe6fb] hover:bg-[#c9d8f7] text-[#1f3f7a] font-bold text-sm rounded-full"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

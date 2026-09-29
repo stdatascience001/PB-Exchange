@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { VoucherService } from './voucher.service.js';
 import { sendSuccess } from '../../common/response.js';
+import { KistService } from './kist.service.js';
 
 export class VoucherController {
   static async list(req: Request, res: Response, next: NextFunction) {
@@ -22,7 +23,8 @@ export class VoucherController {
       const fromDate = req.query.fromDate as string | undefined;
       const toDate = req.query.toDate as string | undefined;
       const search = req.query.search as string | undefined;
-      const list = await VoucherService.listManualVouchers({ voucherType, auditStatus, fromDate, toDate, search });
+      const manualOnly = req.query.manualOnly === '1' || req.query.manualOnly === 'true';
+      const list = await VoucherService.listManualVouchers({ voucherType, manualOnly, auditStatus, fromDate, toDate, search });
       return sendSuccess(res, list, 'Vouchers retrieved');
     } catch (err) {
       next(err);
@@ -43,6 +45,47 @@ export class VoucherController {
     try {
       const created = await VoucherService.createManualVoucher(req.body, req.user!);
       return sendSuccess(res, created, 'Voucher created successfully', 201);
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  // Kist Voucher page: "Create Kist Voucher" popup → plan + PENDING installment schedule
+  static async createKistPlan(req: Request, res: Response, next: NextFunction) {
+    try {
+      const created = await KistService.createPlan(req.body, req.user!);
+      return sendSuccess(res, created, 'Kist Voucher has been created successfully!', 201);
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  // Kist Voucher page's right-hand Party panel
+  static async kistSchedule(req: Request, res: Response, next: NextFunction) {
+    try {
+      const partyLedgerId = parseInt(req.query.partyLedgerId as string, 10);
+      const list = Number.isFinite(partyLedgerId) ? await KistService.listSchedule(partyLedgerId) : [];
+      return sendSuccess(res, list, 'Kist schedule retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  // Auto Kist Voucher popup's Search: PENDING kists due on ?date=YYYY-MM-DD
+  static async kistDue(req: Request, res: Response, next: NextFunction) {
+    try {
+      const list = await KistService.listDue(String(req.query.date || ''));
+      return sendSuccess(res, list, 'Due kists retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  // Process Voucher: post the ticked kists (body.scheduleIds), or every due one if none sent
+  static async autoKist(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await KistService.runAutoKist(req.user!, req.body?.scheduleIds);
+      return sendSuccess(res, result, 'Auto Kist completed');
     } catch (err) {
       next(err);
     }
@@ -95,6 +138,15 @@ export class VoucherController {
       const toDate = req.query.toDate as string | undefined;
       const list = await VoucherService.getVoucherDuplicateCounts({ voucherType, fromDate, toDate });
       return sendSuccess(res, list, 'Duplicate vouchers retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async limitBalanceReport(req: Request, res: Response, next: NextFunction) {
+    try {
+      const rows = await VoucherService.getLimitBalanceReport();
+      return sendSuccess(res, rows, 'Limit & balance report retrieved');
     } catch (err) {
       next(err);
     }

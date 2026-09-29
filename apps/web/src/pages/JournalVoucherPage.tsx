@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { X, Edit2, Trash2 } from 'lucide-react';
+import { toast } from 'react-toastify';
 
 const VOUCHER_TYPE = 'JOURNAL';
 const PAGE_TITLE = 'Journal Voucher';
@@ -149,7 +150,20 @@ export const JournalVoucherPage: React.FC = () => {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!partyId || !oppositeId || !amount) return;
+    if (!partyId || !oppositeId || !amount) {
+      // Typing a name without picking it from the list leaves the id unset — say so rather
+      // than letting Save do nothing.
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Message</div>
+          <div className="text-sm mt-0.5">
+            {!partyId ? 'Please select Party from the list!' : !oppositeId ? 'Please select Opposite Party from the list!' : 'Please enter Amount!'}
+          </div>
+        </div>,
+        { toastId: 'journal-voucher-invalid' }
+      );
+      return;
+    }
     setSaving(true);
     try {
       const payload = {
@@ -166,6 +180,15 @@ export const JournalVoucherPage: React.FC = () => {
       } else {
         await apiRequest('/vouchers', { method: 'POST', body: JSON.stringify(payload) });
       }
+      toast.success(
+        <div>
+          <div className="font-bold text-base">Message</div>
+          <div className="text-sm mt-0.5">
+            {PAGE_TITLE} has been {editingId ? 'updated' : 'saved'} successfully!
+          </div>
+        </div>,
+        { toastId: `journal-voucher-saved-${Date.now()}` }
+      );
       setShowModal(false);
       fetchList();
     } catch (err: any) {
@@ -185,15 +208,21 @@ export const JournalVoucherPage: React.FC = () => {
     }
   };
 
+  // Both pickers list every party A-Z (as on the live popup); /ledgers returns them in id order.
+  const sortedParties = useMemo(
+    () => [...parties].sort((a, b) => a.partyName.localeCompare(b.partyName)),
+    [parties]
+  );
+
   const filteredPartyOptions = useMemo(() => {
-    if (!partySearch.trim()) return parties;
-    return parties.filter(p => p.partyName.toLowerCase().includes(partySearch.trim().toLowerCase()));
-  }, [parties, partySearch]);
+    if (!partySearch.trim()) return sortedParties;
+    return sortedParties.filter(p => p.partyName.toLowerCase().includes(partySearch.trim().toLowerCase()));
+  }, [sortedParties, partySearch]);
 
   const filteredOppositeOptions = useMemo(() => {
-    if (!oppositeSearch.trim()) return parties;
-    return parties.filter(p => p.partyName.toLowerCase().includes(oppositeSearch.trim().toLowerCase()));
-  }, [parties, oppositeSearch]);
+    if (!oppositeSearch.trim()) return sortedParties;
+    return sortedParties.filter(p => p.partyName.toLowerCase().includes(oppositeSearch.trim().toLowerCase()));
+  }, [sortedParties, oppositeSearch]);
 
   // Live ledger running-balance isn't tracked anywhere in this system yet, so it always
   // shows 0 here, same as the reference screenshot; Limit is real data from the ledger.
@@ -320,8 +349,10 @@ export const JournalVoucherPage: React.FC = () => {
 
       {showModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
-          <div className="bg-white rounded-lg shadow-2xl max-w-2xl w-full overflow-hidden border border-slate-300">
-            <div className="bg-[#1f4277] text-white px-4 py-2.5 flex items-center justify-between">
+          {/* overflow-visible (not hidden) so the Party / Opposite Party lists can drop past the
+              modal's bottom edge instead of being cut off inside it */}
+          <div className="bg-white rounded-lg shadow-2xl max-w-2xl w-full overflow-visible border border-slate-300">
+            <div className="bg-[#1f4277] text-white px-4 py-2.5 flex items-center justify-between rounded-t-lg">
               <h2 className="text-sm font-bold tracking-tight">{editingId ? `Edit ${PAGE_TITLE}` : `Add ${PAGE_TITLE}`}</h2>
               <button type="button" onClick={() => setShowModal(false)} className="text-white hover:text-slate-300 p-0.5">
                 <X className="h-4 w-4" />

@@ -1,15 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import { apiRequest } from '../api/client.js';
-import { X, ShieldAlert } from 'lucide-react';
+import { X } from 'lucide-react';
 
 interface BlockedIpItem {
   id: number;
   ipAddress: string;
   reason?: string;
-  blockedBy: number;
+  blockedBy: number | null;
   isActive: boolean;
   createdAt: string;
+  // Party = username tried on the auto-block ("-" when unknown); Added / Updated stamps.
+  partyName?: string;
+  addedBy?: string;
+  updatedBy?: string;
+  updatedAt?: string;
 }
+
+// Live prints 2025-07-20 03:09:35 (stored wall-clock value).
+const stamp = (iso?: string) => (iso ? iso.slice(0, 19).replace('T', ' ') : '-');
 
 export const AccessBlockPage: React.FC = () => {
   const [blockedList, setBlockedList] = useState<BlockedIpItem[]>([]);
@@ -69,7 +77,7 @@ export const AccessBlockPage: React.FC = () => {
   };
 
   const handleUnblock = async (id: number) => {
-    if (!window.confirm('Unblock this IP address?')) return;
+    if (!window.confirm('Delete this blocked IP? It will be able to open the site again.')) return;
     try {
       await apiRequest(`/access/${id}`, { method: 'DELETE' });
       fetchBlocked();
@@ -80,6 +88,7 @@ export const AccessBlockPage: React.FC = () => {
 
   const filteredIps = blockedList.filter(b =>
     b.ipAddress.includes(searchTerm) ||
+    (b.partyName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
     (b.reason && b.reason.toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
@@ -89,7 +98,15 @@ export const AccessBlockPage: React.FC = () => {
         {/* Subheader Filter Bar */}
         <div className="p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200">
           <div className="flex items-center gap-4">
-            <span className="font-bold text-sm text-slate-800">Access Block</span>
+            <span className="font-bold text-sm text-slate-700 mx-3">Access Block</span>
+            <button
+              type="button"
+              onClick={fetchBlocked}
+              disabled={loading}
+              className="px-24 py-2 bg-[#1662c6] hover:bg-[#1354ab] text-white font-bold text-xs rounded-xs shadow-xs disabled:opacity-60"
+            >
+              {loading ? 'Loading...' : 'Get Blocked IP'}
+            </button>
             <div className="flex items-center gap-2">
               <span className="text-xs text-slate-600 font-medium">Search</span>
               <input
@@ -114,52 +131,42 @@ export const AccessBlockPage: React.FC = () => {
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
-              <tr className="bg-[#152847] text-white font-bold text-xs">
-                <th className="py-2.5 px-3 border-r border-[#223b63] w-14 text-center">Sr. No</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Blocked IP Address</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Reason / Violation</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63] text-center">Blocked By</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63] text-center">Blocked Date</th>
-                <th className="py-2.5 px-3 border-r border-[#223b63] text-center">Status</th>
-                <th className="py-2.5 px-3 text-center w-24">Action</th>
+              <tr className="bg-[#152847] text-white font-bold text-xs whitespace-nowrap">
+                <th className="py-2.5 px-3 border-r border-[#223b63] w-14">Sr</th>
+                <th className="py-2.5 px-3 border-r border-[#223b63] w-52">Party</th>
+                <th className="py-2.5 px-3 border-r border-[#223b63] w-80">IP</th>
+                <th className="py-2.5 px-3 border-r border-[#223b63] w-44 text-center">Added</th>
+                <th className="py-2.5 px-3 border-r border-[#223b63] w-44 text-center">Updated</th>
+                <th className="py-2.5 px-3">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 font-sans text-xs">
               {filteredIps.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-8 text-center text-slate-400">
+                  <td colSpan={6} className="py-8 text-center text-slate-400">
                     No blocked IP addresses currently active.
                   </td>
                 </tr>
               ) : (
                 filteredIps.map((b, idx) => (
-                  <tr key={b.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="py-2.5 px-3 text-center font-mono text-slate-600 border-r border-slate-100">
-                      {idx + 1}
+                  <tr key={b.id} className="even:bg-slate-50/60 hover:bg-slate-50 transition-colors" title={b.reason || undefined}>
+                    <td className="py-2 px-3 font-semibold text-slate-700 border-r border-slate-100">{idx + 1}</td>
+                    <td className="py-2 px-3 font-bold text-slate-700 uppercase border-r border-slate-100">{b.partyName || '-'}</td>
+                    <td className="py-2 px-3 font-bold text-slate-700 border-r border-slate-100">{b.ipAddress}</td>
+                    <td className="py-1.5 px-3 text-center border-r border-slate-100 leading-tight">
+                      <div className="font-bold text-slate-700 uppercase">{b.addedBy || 'SYSTEM'}</div>
+                      <div className="text-[10px] text-slate-500">{stamp(b.createdAt)}</div>
                     </td>
-                    <td className="py-2.5 px-4 font-bold font-mono text-rose-600 border-r border-slate-100">
-                      {b.ipAddress}
+                    <td className="py-1.5 px-3 text-center border-r border-slate-100 leading-tight">
+                      <div className="font-bold text-slate-700 uppercase">{b.updatedBy || b.addedBy || 'SYSTEM'}</div>
+                      <div className="text-[10px] text-slate-500">{stamp(b.updatedAt || b.createdAt)}</div>
                     </td>
-                    <td className="py-2.5 px-4 border-r border-slate-100 text-slate-700 font-medium">
-                      {b.reason || 'Unauthorized Access Attempt'}
-                    </td>
-                    <td className="py-2.5 px-4 text-center font-semibold text-slate-600 border-r border-slate-100">
-                      Admin #{b.blockedBy}
-                    </td>
-                    <td className="py-2.5 px-4 text-center text-slate-500 font-mono text-[11px] border-r border-slate-100">
-                      {new Date(b.createdAt).toLocaleString('en-GB')}
-                    </td>
-                    <td className="py-2.5 px-3 text-center border-r border-slate-100">
-                      <span className="px-2.5 py-0.5 bg-rose-600 text-white rounded-full text-[10px] font-bold uppercase shadow-sm">
-                        BLOCKED
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-3 text-center">
+                    <td className="py-2 px-3">
                       <button
                         onClick={() => handleUnblock(b.id)}
-                        className="px-3 py-1 bg-slate-700 hover:bg-slate-800 text-white rounded text-[11px] font-bold shadow-sm"
+                        className="px-3 py-1 bg-[#00897b] hover:bg-[#00796b] text-white rounded-xs text-[10px] font-bold shadow-sm"
                       >
-                        Unblock
+                        Delete
                       </button>
                     </td>
                   </tr>
@@ -168,13 +175,12 @@ export const AccessBlockPage: React.FC = () => {
             </tbody>
             <tfoot>
               <tr className="bg-[#152847] text-white font-bold text-xs">
-                <th className="py-2 px-3 border-r border-[#223b63] text-center">Sr. No</th>
-                <th className="py-2 px-4 border-r border-[#223b63]">Blocked IP Address</th>
-                <th className="py-2 px-4 border-r border-[#223b63]">Reason / Violation</th>
-                <th className="py-2 px-4 border-r border-[#223b63] text-center">Blocked By</th>
-                <th className="py-2 px-4 border-r border-[#223b63] text-center">Blocked Date</th>
-                <th className="py-2 px-3 border-r border-[#223b63] text-center">Status</th>
-                <th className="py-2 px-3 text-center">Action</th>
+                <th className="py-2.5 px-3 border-r border-[#223b63]">Sr</th>
+                <th className="py-2.5 px-3 border-r border-[#223b63]">Party</th>
+                <th className="py-2.5 px-3 border-r border-[#223b63]">IP</th>
+                <th className="py-2.5 px-3 border-r border-[#223b63] text-center">Added</th>
+                <th className="py-2.5 px-3 border-r border-[#223b63] text-center">Updated</th>
+                <th className="py-2.5 px-3">Action</th>
               </tr>
             </tfoot>
           </table>

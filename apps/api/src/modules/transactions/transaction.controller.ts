@@ -45,6 +45,21 @@ export class TransactionController {
       const groupName = req.query.groupName as string | undefined;
       const partyId = req.query.partyId ? parseInt(req.query.partyId as string, 10) : undefined;
       const search = req.query.search as string | undefined;
+      // view=full: the All Shift Report page's complete live column set over every ledger.
+      if (req.query.view === 'full') {
+        const mode = req.query.searchMode as string | undefined;
+        const status = req.query.partyStatus as string | undefined;
+        const full = await TransactionService.getAllShiftReport({
+          fromDate,
+          toDate,
+          agentId,
+          dealing: (req.query.dealing as string | undefined) || undefined,
+          partyStatus: status === 'ACTIVE' || status === 'INACTIVE' ? status : undefined,
+          search,
+          searchMode: mode === 'CONTAINS' || mode === 'END_WITH' ? mode : 'START_WITH',
+        });
+        return sendSuccess(res, full, 'All shift report retrieved');
+      }
       const searchMode = (req.query.searchMode as 'START_WITH' | 'CONTAINS' | undefined) || 'START_WITH';
       const result = await TransactionService.getAllShiftPartyReport({ fromDate, toDate, agentId, groupName, partyId, search, searchMode });
       return sendSuccess(res, result, 'All shift report retrieved');
@@ -210,7 +225,8 @@ export class TransactionController {
       // role gets undefined here and the unrestricted list, exactly as before.
       const ownerUserId = ownDataUserId(req.user);
 
-      const list = await TransactionService.listTransactions({ shiftId, partyId, status, auditStatus, search, date, page, limit, ownerUserId });
+      const listMode = req.query.listMode === 'DELETED' ? 'DELETED' : req.query.listMode === 'ACTIVE' ? 'ACTIVE' : undefined;
+      const list = await TransactionService.listTransactions({ shiftId, partyId, status, auditStatus, search, date, page, limit, ownerUserId, listMode });
       return sendSuccess(res, list, 'Transactions retrieved');
     } catch (err) {
       next(err);
@@ -262,11 +278,28 @@ export class TransactionController {
     }
   }
 
+  // Declare Transactions → Edit: replace a declared shift's slip entries
+  static async updateDeclaredEntries(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = parseInt(req.params.id as string, 10);
+      const { entries } = req.body;
+      const updated = await TransactionService.updateTransactionEntries(id, entries || [], req.user!, { declaredEdit: true });
+      return sendSuccess(res, updated, 'Declared transaction entries updated');
+    } catch (err) {
+      next(err);
+    }
+  }
+
   static async updateAudit(req: Request, res: Response, next: NextFunction) {
     try {
       const id = parseInt(req.params.id as string, 10);
-      const { auditStatus } = req.body;
-      const updated = await TransactionService.updateAuditStatus(id, auditStatus, req.user!);
+      const { auditStatus, mistakeRemark } = req.body;
+      const updated = await TransactionService.updateAuditStatus(
+        id,
+        auditStatus,
+        req.user!,
+        typeof mistakeRemark === 'string' ? mistakeRemark : undefined
+      );
       return sendSuccess(res, updated, 'Transaction audit status updated');
     } catch (err) {
       next(err);
@@ -291,6 +324,102 @@ export class TransactionController {
       const minAmount = req.query.minAmount ? parseFloat(req.query.minAmount as string) : undefined;
       const list = await TransactionService.listEntriesAsc({ shiftId, fromDate, toDate, minAmount });
       return sendSuccess(res, list, 'Transaction entries retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async hawaPattiSummary(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await TransactionService.getHawaPattiSummary({
+        month: parseInt(req.query.month as string, 10),
+        year: parseInt(req.query.year as string, 10),
+        agentId: req.query.agentId ? parseInt(req.query.agentId as string, 10) : undefined,
+        onBase: req.query.onBase === '1' || req.query.onBase === 'true',
+      });
+      return sendSuccess(res, result, 'Hawa patti summary retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async hawaPattiProcess(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await TransactionService.processHawaPatti(req.body, req.user!);
+      return sendSuccess(res, result, 'Hawa patti voucher processed', 201);
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async vapsiSummary(req: Request, res: Response, next: NextFunction) {
+    try {
+      const flag = (v: unknown) => v === '1' || v === 'true';
+      const result = await TransactionService.getVapsiSummary({
+        month: parseInt(req.query.month as string, 10),
+        year: parseInt(req.query.year as string, 10),
+        agentId: req.query.agentId ? parseInt(req.query.agentId as string, 10) : undefined,
+        partyId: req.query.partyId ? parseInt(req.query.partyId as string, 10) : undefined,
+        withHp: flag(req.query.withHp),
+        onBase: flag(req.query.onBase),
+      });
+      return sendSuccess(res, result, 'Vapsi summary retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async vapsiProcess(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await TransactionService.processVapsi(req.body, req.user!);
+      return sendSuccess(res, result, 'Vapsi voucher processed', 201);
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async outstandingReport(req: Request, res: Response, next: NextFunction) {
+    try {
+      const asOfDate = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+      const agentIds = String(req.query.agentIds || '')
+        .split(',')
+        .map(v => parseInt(v, 10))
+        .filter(n => Number.isInteger(n) && n > 0);
+      const result = await TransactionService.getOutstandingReport({ asOfDate, agentIds });
+      return sendSuccess(res, result, 'Outstanding report retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async trialBalance(req: Request, res: Response, next: NextFunction) {
+    try {
+      const asOfDate = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+      const result = await TransactionService.getTrialBalance({ asOfDate });
+      return sendSuccess(res, result, 'Trial balance retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async adminCash(req: Request, res: Response, next: NextFunction) {
+    try {
+      const partyId = parseInt(req.query.partyId as string, 10);
+      const fromDate = req.query.fromDate as string;
+      const toDate = req.query.toDate as string;
+      const result = await TransactionService.getAdminCash({ partyId, fromDate, toDate });
+      return sendSuccess(res, result, 'Admin cash retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async tpcReport(req: Request, res: Response, next: NextFunction) {
+    try {
+      const fromDate = req.query.fromDate as string;
+      const toDate = req.query.toDate as string;
+      const result = await TransactionService.getTpcReport({ fromDate, toDate });
+      return sendSuccess(res, result, 'TPC report retrieved');
     } catch (err) {
       next(err);
     }

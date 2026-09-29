@@ -30,6 +30,14 @@ export async function runMigrations() {
       created_at TIMESTAMP NOT NULL DEFAULT NOW(),
       unblocked_at TIMESTAMP
     );
+    -- Login security: auto-blocks (3 wrong logins) have no admin behind them, and the Access
+    -- Block list shows Party / Added / Updated.
+    ALTER TABLE blocked_ips ALTER COLUMN blocked_by DROP NOT NULL;
+    ALTER TABLE blocked_ips ADD COLUMN IF NOT EXISTS party_name VARCHAR(100) NOT NULL DEFAULT '-';
+    ALTER TABLE blocked_ips ADD COLUMN IF NOT EXISTS added_by VARCHAR(100) NOT NULL DEFAULT 'SYSTEM';
+    ALTER TABLE blocked_ips ADD COLUMN IF NOT EXISTS updated_by VARCHAR(100) NOT NULL DEFAULT 'SYSTEM';
+    ALTER TABLE blocked_ips ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW();
+    ALTER TABLE blocked_ips ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;
 
     CREATE TABLE IF NOT EXISTS shifts (
       id SERIAL PRIMARY KEY,
@@ -72,6 +80,11 @@ export async function runMigrations() {
     ALTER TABLE shifts ADD COLUMN IF NOT EXISTS company_a_comm NUMERIC(5, 2) NOT NULL DEFAULT 0.00;
     ALTER TABLE shifts ADD COLUMN IF NOT EXISTS company_tax NUMERIC(5, 2) NOT NULL DEFAULT 0.00;
     ALTER TABLE shifts ADD COLUMN IF NOT EXISTS company_remark VARCHAR(255) NOT NULL DEFAULT '';
+    -- Company Config listing: its own Allow flag and its own last-update stamp (separate from
+    -- Auto Company Transaction and from the shift row's updated_by/updated_at)
+    ALTER TABLE shifts ADD COLUMN IF NOT EXISTS company_allow BOOLEAN NOT NULL DEFAULT TRUE;
+    ALTER TABLE shifts ADD COLUMN IF NOT EXISTS company_updated_by VARCHAR(100) NOT NULL DEFAULT '';
+    ALTER TABLE shifts ADD COLUMN IF NOT EXISTS company_updated_at TIMESTAMP;
 
     CREATE TABLE IF NOT EXISTS shift_role_config (
       id SERIAL PRIMARY KEY,
@@ -180,6 +193,12 @@ export async function runMigrations() {
     );
     CREATE INDEX IF NOT EXISTS ledger_tp_links_ledger_idx ON ledger_third_party_links(ledger_id, link_type);
 
+    -- System "HP A/C" account (Hawa Patti's opposite ledger): created once if missing, same
+    -- get-or-create rule the app uses — never duplicated, never changed when it exists.
+    INSERT INTO ledgers (party_name, group_name)
+      SELECT 'HP A/C', 'SYSTEM'
+      WHERE NOT EXISTS (SELECT 1 FROM ledgers WHERE UPPER(TRIM(party_name)) = 'HP A/C');
+
     CREATE TABLE IF NOT EXISTS transactions (
       id SERIAL PRIMARY KEY,
       slip_number VARCHAR(40) NOT NULL UNIQUE,
@@ -199,6 +218,10 @@ export async function runMigrations() {
     ALTER TABLE transactions ADD COLUMN IF NOT EXISTS updated_by VARCHAR(50) DEFAULT 'SYSTEM';
     ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_d BOOLEAN DEFAULT TRUE;
     ALTER TABLE transactions ADD COLUMN IF NOT EXISTS audit_status VARCHAR(20) DEFAULT 'NOT-AUDIT';
+    -- Live Trans-Audit's Mistake popup: the auditor's "What is Mistake?" text
+    ALTER TABLE transactions ADD COLUMN IF NOT EXISTS mistake_remark TEXT;
+    -- Set when a slip already marked MISTAKE is edited; drives the red Updated column
+    ALTER TABLE transactions ADD COLUMN IF NOT EXISTS mistake_edited BOOLEAN NOT NULL DEFAULT FALSE;
     CREATE INDEX IF NOT EXISTS trans_party_shift_idx ON transactions(shift_id, party_id, status);
     CREATE INDEX IF NOT EXISTS trans_created_idx ON transactions(created_at);
 
@@ -214,6 +237,20 @@ export async function runMigrations() {
     );
     CREATE INDEX IF NOT EXISTS entry_trans_num_idx ON transaction_entries(transaction_id, number_value);
     CREATE INDEX IF NOT EXISTS entry_number_val_idx ON transaction_entries(number_value);
+    -- "dddd" / "ddd" saved as DARA were Andar / Bahar haruf: retype them with the party's Akhar rate
+    UPDATE transaction_entries e
+      SET entry_type = CASE WHEN length(trim(e.number_value)) = 4 THEN 'HARUF_ANDAR' ELSE 'HARUF_BAHAR' END,
+          rate = l.akhar_rate,
+          calculated_payout = e.amount * l.akhar_rate
+      FROM transactions t JOIN ledgers l ON l.id = t.party_id
+      WHERE e.transaction_id = t.id AND e.entry_type = 'DARA'
+        AND length(trim(e.number_value)) IN (3, 4)
+        AND trim(e.number_value) = repeat(substr(trim(e.number_value), 1, 1), length(trim(e.number_value)))
+        AND substr(trim(e.number_value), 1, 1) BETWEEN '0' AND '9';
+    -- Haruf entries are one digit ("111" / "5555" / "A5" saved earlier -> "1" / "5" / "5")
+    UPDATE transaction_entries SET number_value = substring(trim(number_value) from '([0-9])$')
+      WHERE entry_type IN ('HARUF_ANDAR', 'HARUF_BAHAR') AND length(trim(number_value)) > 1
+        AND trim(number_value) ~ '[0-9]$';
 
     CREATE TABLE IF NOT EXISTS duplicate_reviews (
       id SERIAL PRIMARY KEY,
@@ -240,6 +277,31 @@ export async function runMigrations() {
       reversed_at TIMESTAMP
     );
 
+    -- Dashboard Declare Needed → ReDeclare popup: per-party Sale / P&L a declaration was made on
+    CREATE TABLE IF NOT EXISTS declaration_snapshots (
+      id SERIAL PRIMARY KEY,
+      declaration_id INTEGER NOT NULL REFERENCES declarations(id) ON DELETE CASCADE,
+      shift_id INTEGER NOT NULL REFERENCES shifts(id),
+      cycle_date VARCHAR(10) NOT NULL,
+      total_sale NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
+      total_pl NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
+      redeclare_count INTEGER NOT NULL DEFAULT 0,
+      snapshot_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS declaration_snapshots_declaration_idx ON declaration_snapshots(declaration_id);
+    CREATE INDEX IF NOT EXISTS declaration_snapshots_shift_cycle_idx ON declaration_snapshots(shift_id, cycle_date);
+
+    CREATE TABLE IF NOT EXISTS declaration_party_snapshots (
+      id SERIAL PRIMARY KEY,
+      snapshot_id INTEGER NOT NULL REFERENCES declaration_snapshots(id) ON DELETE CASCADE,
+      party_id INTEGER NOT NULL REFERENCES ledgers(id),
+      party_name VARCHAR(100) NOT NULL,
+      sale NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
+      pl NUMERIC(14, 2) NOT NULL DEFAULT 0.00
+    );
+    CREATE INDEX IF NOT EXISTS declaration_party_snapshots_snapshot_idx ON declaration_party_snapshots(snapshot_id);
+
     CREATE TABLE IF NOT EXISTS vouchers (
       id SERIAL PRIMARY KEY,
       voucher_number VARCHAR(40) NOT NULL UNIQUE,
@@ -264,6 +326,36 @@ export async function runMigrations() {
       amount NUMERIC(14, 2) NOT NULL,
       created_at TIMESTAMP NOT NULL DEFAULT NOW()
     );
+
+    -- Kist Voucher: a party's credit recovered in DAILY/WEEKLY/MONTHLY installments
+    CREATE TABLE IF NOT EXISTS kist_plans (
+      id SERIAL PRIMARY KEY,
+      party_ledger_id INTEGER NOT NULL REFERENCES ledgers(id),
+      credit_amount NUMERIC(14, 2) NOT NULL,
+      one_kist_amount NUMERIC(14, 2) NOT NULL,
+      kist_type VARCHAR(10) NOT NULL,
+      start_date VARCHAR(10) NOT NULL,
+      remark TEXT,
+      created_by INTEGER NOT NULL REFERENCES users(id),
+      updated_by VARCHAR(50) DEFAULT 'SYSTEM',
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS kist_schedule (
+      id SERIAL PRIMARY KEY,
+      plan_id INTEGER NOT NULL REFERENCES kist_plans(id) ON DELETE CASCADE,
+      party_ledger_id INTEGER NOT NULL REFERENCES ledgers(id),
+      kist_no INTEGER NOT NULL,
+      kist_date VARCHAR(10) NOT NULL,
+      amount NUMERIC(14, 2) NOT NULL,
+      status VARCHAR(10) NOT NULL DEFAULT 'PENDING',
+      voucher_id INTEGER REFERENCES vouchers(id) ON DELETE SET NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS kist_schedule_party_idx ON kist_schedule(party_ledger_id, kist_date);
+    CREATE INDEX IF NOT EXISTS kist_schedule_due_idx ON kist_schedule(status, kist_date);
 
     CREATE TABLE IF NOT EXISTS staff (
       id SERIAL PRIMARY KEY,

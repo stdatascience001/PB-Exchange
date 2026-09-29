@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { DeclarationService } from './declaration.service.js';
+import { DeclarationSnapshotService } from './declaration-snapshot.service.js';
 import { sendSuccess } from '../../common/response.js';
 
 export class DeclarationController {
@@ -43,6 +44,26 @@ export class DeclarationController {
       const includeReversed = req.query.includeReversed === 'true';
       const list = await DeclarationService.listDeclarationsSummary({ fromDate, toDate, shiftId, includeReversed });
       return sendSuccess(res, list, 'Declaration summary retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async redeclareInfo(req: Request, res: Response, next: NextFunction) {
+    try {
+      const declarationId = parseInt(req.params.declarationId as string, 10);
+      const result = await DeclarationSnapshotService.getRedeclareInfo(declarationId);
+      return sendSuccess(res, result, 'Declare info retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async redeclare(req: Request, res: Response, next: NextFunction) {
+    try {
+      const declarationId = parseInt(req.params.declarationId as string, 10);
+      const result = await DeclarationSnapshotService.redeclare(declarationId, req.user!);
+      return sendSuccess(res, result, 'Shift result re-declared successfully');
     } catch (err) {
       next(err);
     }

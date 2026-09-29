@@ -11,11 +11,16 @@ router.get('/', VoucherController.list);
 router.get('/manual', VoucherController.listManual);
 router.get('/duplicates', VoucherController.duplicates);
 router.get('/ledger-balances', VoucherController.ledgerBalances);
+router.get('/limit-balance', VoucherController.limitBalanceReport);
 router.get('/cash-agent-ledgers', VoucherController.cashAgentLedgers);
 router.get('/settlement-rows', VoucherController.settlementRows);
 router.get('/agent-group-balances', VoucherController.agentGroupBalances);
 router.post('/', VoucherController.create);
 router.post('/settlement', VoucherController.createSettlement);
+router.get('/kist-schedule', VoucherController.kistSchedule);
+router.get('/kist-due', VoucherController.kistDue);
+router.post('/kist-plans', VoucherController.createKistPlan);
+router.post('/kist-auto', VoucherController.autoKist);
 
 router.get('/:id/entries', VoucherController.getEntries);
 router.patch('/:id/audit', VoucherController.updateAudit);

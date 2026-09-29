@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { ShiftDto, UserSession } from '@pb/types';
 import { apiRequest } from '../api/client.js';
+import { displayNumber } from '../utils/entryDisplay.js';
 import { X, Search as SearchIcon, Eye, Copy, Trash2, Plus, Edit } from 'lucide-react';
 import { TransactionItem } from './TransactionListPage.js';
 
@@ -8,12 +9,15 @@ interface DeclareTransactionListPageProps {
   shifts?: ShiftDto[];
   user?: UserSession | null;
   onNavigate?: (page: string) => void;
+  // /declare_transaction_list/:shiftId opens the page on that shift
+  initialShiftId?: string;
 }
 
 export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProps> = ({
   shifts = [],
   user,
   onNavigate,
+  initialShiftId,
 }) => {
   // Only active shifts belong in this dropdown — a disabled shift (Shift Manage's
   // Enable/Disable tab) shouldn't still be selectable here. Same guard the other shift
@@ -27,7 +31,7 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
   const [loading, setLoading] = useState(false);
   // Nothing preselected — the live page opens on "-- CHOOSE --" with an empty table, and only
   // loads once a shift is actually picked.
-  const [selectedShiftId, setSelectedShiftId] = useState<string>('');
+  const [selectedShiftId, setSelectedShiftId] = useState<string>(initialShiftId || '');
   // Held as YYYY-MM-DD so it can drive a real date input AND be sent to the API. It used to be
   // a "DD / MM / YYYY" label rendered in a plain div and never passed to the query, which is
   // why the list kept showing other days' slips whatever date was on screen.
@@ -367,9 +371,9 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setEditingTx(tx);
-                                setEditAmount(tx.totalAmount);
-                                setShowEditModal(true);
+                                // Live: opens the slip's full entry grid on its own page,
+                                // /declare_transaction_edit/:shiftId/:txId ("<SHIFT> [DECLARE]").
+                                window.open(`/declare_transaction_edit/${tx.shiftId}/${tx.id}`, '_blank');
                               }}
                               title="Edit Slip"
                               className="px-2 py-0.5 bg-[#1e40af] hover:bg-[#1e3a8a] text-white text-[10px] font-bold rounded shadow-xs transition-colors cursor-pointer"
@@ -436,7 +440,7 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
               ) : (
                 selectedTx.entries.map((ent, i) => (
                   <div key={i} className="grid grid-cols-2 py-1.5 px-3 hover:bg-slate-50 font-mono text-xs text-slate-800">
-                    <span className="font-bold text-blue-700">{ent.numberValue}</span>
+                    <span className="font-bold text-blue-700">{displayNumber(ent)}</span>
                     <span className="text-right font-semibold">₹{ent.amount.toLocaleString('en-IN')}</span>
                   </div>
                 ))
@@ -537,7 +541,7 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
                       ) : (
                         viewingTx.entries.map((e, i) => (
                           <tr key={i} className="hover:bg-slate-50">
-                            <td className="py-1.5 px-3 font-bold text-blue-700">{e.numberValue}</td>
+                            <td className="py-1.5 px-3 font-bold text-blue-700">{displayNumber(e)}</td>
                             <td className="py-1.5 px-3 text-right font-semibold">₹{e.amount}</td>
                           </tr>
                         ))

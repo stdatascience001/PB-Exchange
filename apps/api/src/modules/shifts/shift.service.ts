@@ -156,6 +156,9 @@ export class ShiftService {
         companyAComm: parseFloat(s.companyAComm),
         companyTax: parseFloat(s.companyTax),
         companyRemark: s.companyRemark,
+        companyAllow: s.companyAllow !== false,
+        companyUpdatedBy: s.companyUpdatedBy || '',
+        companyUpdatedAt: s.companyUpdatedAt ? s.companyUpdatedAt.toISOString() : null,
         roleConfigs: roleConfigs.map(rc => ({
           id: rc.id,
           shiftId: rc.shiftId,
@@ -395,6 +398,7 @@ export class ShiftService {
       companyAComm?: number;
       companyTax?: number;
       companyRemark?: string;
+      companyAllow?: boolean;
     },
     updatedBy = 'A100'
   ) {
@@ -490,6 +494,13 @@ export class ShiftService {
     if (data.companyAComm !== undefined) updatePayload.companyAComm = data.companyAComm.toFixed(2);
     if (data.companyTax !== undefined) updatePayload.companyTax = data.companyTax.toFixed(2);
     if (data.companyRemark !== undefined) updatePayload.companyRemark = data.companyRemark;
+    if (data.companyAllow !== undefined) updatePayload.companyAllow = !!data.companyAllow;
+    // The Company Config listing's "Update" column: who last saved / allowed that config.
+    const companyKeys = ['companyUsername', 'companyPassword', 'companyDRate', 'companyDComm', 'companyARate', 'companyAComm', 'companyTax', 'companyRemark', 'companyAllow'] as const;
+    if (companyKeys.some(k => (data as any)[k] !== undefined)) {
+      updatePayload.companyUpdatedBy = updatedBy;
+      updatePayload.companyUpdatedAt = new Date();
+    }
 
     const [updated] = await db
       .update(shifts)

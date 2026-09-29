@@ -27,7 +27,13 @@ export async function apiRequest<T>(
 
     const json = await res.json();
     if (!res.ok) {
-      throw new Error(json.error?.message || json.message || 'API request failed');
+      const error: any = new Error(json.error?.message || json.message || 'API request failed');
+      error.code = json.error?.code;
+      // Blocked IP (3 wrong logins / admin block): tell the app to show its blocked screen.
+      if (error.code === 'IP_BLOCKED' && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('pb-ip-blocked', { detail: error.message }));
+      }
+      throw error;
     }
     return json;
   } catch (err: any) {

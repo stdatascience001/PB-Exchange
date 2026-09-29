@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken';
 import { env } from '../../config/env.js';
 import { UnauthorizedError, AppError } from '../../common/errors.js';
 import { UserSession, SystemRole, CaptchaData } from '@pb/types';
+import { registerLoginFailure, clearLoginFailures } from './login-guard.js';
 
 const captchaStore = new Map<string, { answer: string; expiresAt: number }>();
 
@@ -61,7 +62,7 @@ export class AuthService {
     return { id, question };
   }
 
-  static async login(username: string, password: string, captchaId?: string, captchaAnswer?: string) {
+  static async login(username: string, password: string, captchaId?: string, captchaAnswer?: string, clientIp?: string) {
     if (captchaId && captchaAnswer) {
       const entry = captchaStore.get(captchaId);
       if (!entry || entry.expiresAt < Date.now() || entry.answer !== captchaAnswer.trim()) {
@@ -77,14 +78,19 @@ export class AuthService {
       sql`LOWER(${users.username}) = LOWER(${cleanUsername})`
     );
 
+    // Wrong username / password counts toward the 3-in-a-row IP block (login-guard.ts).
+    const left = (n: number) => ` (${n} attempt${n === 1 ? '' : 's'} left)`;
     if (!user || !user.isActive) {
-      throw new UnauthorizedError('Invalid credentials or account is inactive');
+      const remaining = clientIp ? await registerLoginFailure(clientIp, cleanUsername) : null;
+      throw new UnauthorizedError('Invalid credentials or account is inactive' + (remaining !== null ? left(remaining) : ''));
     }
 
     const isValid = verifyPassword(password, user.passwordHash);
     if (!isValid) {
-      throw new UnauthorizedError('Invalid credentials');
+      const remaining = clientIp ? await registerLoginFailure(clientIp, cleanUsername) : null;
+      throw new UnauthorizedError('Invalid credentials' + (remaining !== null ? left(remaining) : ''));
     }
+    if (clientIp) clearLoginFailures(clientIp);
 
     await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
 

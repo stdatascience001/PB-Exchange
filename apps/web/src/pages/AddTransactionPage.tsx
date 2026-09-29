@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ShiftDto, LedgerDto, UserSession } from '@pb/types';
 import { apiRequest } from '../api/client.js';
+import { displayNumber } from '../utils/entryDisplay.js';
 import { toast } from 'react-toastify';
 import { ArrowLeft, X, Check, Search, Plus, Shuffle, Calendar, Clock } from 'lucide-react';
 
@@ -34,6 +35,11 @@ interface AddTransactionPageProps {
   // entry grid) so the ambiguous add-flow resume behavior is left untouched.
   editShiftId?: string;
   editTransactionId?: string;
+  // Declare edit — /declare_transaction_edit/:shiftId/:txId (Declare Transactions' "Edit"):
+  // the same edit grid, allowed on an already declared shift. Header reads "<SHIFT> [DECLARE]",
+  // Time Left sits at 00:00:00, no copy-to-shift panel, and Save Now goes to
+  // PATCH /transactions/:id/declare-entries. Every other mode is unchanged.
+  declareEdit?: boolean;
   user?: UserSession | null;
 }
 
@@ -45,10 +51,13 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   transactionId,
   editShiftId,
   editTransactionId,
+  declareEdit = false,
   user,
 }) => {
   // When set, Save Now updates this existing transaction's entries instead of creating a new one.
   const [editingTxNumericId, setEditingTxNumericId] = useState<number | null>(null);
+  // Declare edit: the slip's own entry date (its cycle), shown on the Date badge
+  const [editTxDate, setEditTxDate] = useState<string | null>(null);
   // Party state
   const [parties, setParties] = useState<LedgerDto[]>([]);
   const [partySearch, setPartySearch] = useState('');
@@ -158,6 +167,12 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
               const txRes = await apiRequest<any>(`/transactions/${txIdNum}`);
               if (txRes.data) {
                 setEditingTxNumericId(txRes.data.id);
+                if (typeof txRes.data.createdAt === 'string') {
+                  const d = new Date(txRes.data.createdAt);
+                  if (!isNaN(d.getTime())) {
+                    setEditTxDate(`${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`);
+                  }
+                }
 
                 if (txRes.data.partyName && pRes.data) {
                   const matchingParty = pRes.data.find((p: LedgerDto) =>
@@ -171,7 +186,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
                 if (Array.isArray(txRes.data.entries)) {
                   setEntriesList(txRes.data.entries.map((e: any) => ({
-                    numberValue: e.numberValue,
+                    numberValue: displayNumber(e),
                     amount: parseFloat(e.amount),
                     entryType: e.entryType,
                   })));
@@ -266,6 +281,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   // its date past midnight, so today's calendar date would mislabel which cycle entries go into.
   // Falls back to today only until the shift has loaded.
   const formatDate = () => {
+    if (declareEdit && editTxDate) return editTxDate;
     const openDate = resolvedShift?.openDate || activeShift?.openDate;
     if (openDate && /^\d{4}-\d{2}-\d{2}$/.test(openDate)) {
       const [year, month, day] = openDate.split('-');
@@ -390,7 +406,10 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   // check on the frontend so the page visibly blocks it instead of only failing on Save.
   // DEVELOPER/SUPER ADMIN are exempt on the backend too, so `isEntryAllowedForRole` (computed
   // per-role in ShiftService.listShifts) already comes back true for them regardless of time.
-  const isCutoffBlocked = resolvedShift?.isEntryAllowedForRole === false;
+  const isCutoffBlocked = !declareEdit && resolvedShift?.isEntryAllowedForRole === false;
+  // Declare edit exists precisely to change a declared shift's slip, so "declared" only
+  // blocks Save in the other modes.
+  const isDeclaredBlocked = isShiftDeclared && !declareEdit;
 
   // Directly opening (or refreshing) this page's URL once the role's entry window has already
   // closed shouldn't leave the user stranded on a page they can't do anything on — send them
@@ -446,7 +465,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
   // Save Now (F2)
   const handleSaveNow = async () => {
-    if (isShiftDeclared) {
+    if (isDeclaredBlocked) {
       setErrorMsg(`Shift "${currentShiftName}" result is already declared (${resolvedShift?.declaredNumber || 'DECLARED'}). Transactions are closed.`);
       return;
     }
@@ -457,7 +476,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
     // Shift's time is over (Time Left reached 00:00:00) — entries stay in the grid, the slip
     // just isn't saved. The API flag covers a page opened after the cut-off; the local
     // countdown covers the cut-off passing while the page is already open.
-    const isTimeOver = !resolvedShift?.hasTimeOverride && (
+    const isTimeOver = !declareEdit && !resolvedShift?.hasTimeOverride && (
       resolvedShift?.isTransactionTimeOver === true ||
       (resolvedShift?.isTransactionTimeOver === false && timeLeftSeconds <= 0)
     );
@@ -491,7 +510,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
     try {
       // Edit mode: replace the existing transaction's entries instead of creating a new slip.
       if (editingTxNumericId) {
-        await apiRequest(`/transactions/${editingTxNumericId}/entries`, {
+        await apiRequest(`/transactions/${editingTxNumericId}/${declareEdit ? 'declare-entries' : 'entries'}`, {
           method: 'PATCH',
           body: JSON.stringify({
             entries: entriesList.map(e => ({
@@ -905,9 +924,9 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
         if (window.opener) {
           window.close();
         } else if (onNavigate) {
-          onNavigate('transaction-list');
+          onNavigate(declareEdit ? 'declare-transactions' : 'transaction-list');
         } else {
-          window.location.href = '/transaction_list';
+          window.location.href = declareEdit ? '/declare_transaction_list' : '/transaction_list';
         }
         return;
       }
@@ -956,9 +975,9 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
               if (window.opener) {
                 window.close();
               } else if (onNavigate) {
-                onNavigate('transaction-list');
+                onNavigate(declareEdit ? 'declare-transactions' : 'transaction-list');
               } else {
-                window.location.href = '/transaction_list';
+                window.location.href = declareEdit ? '/declare_transaction_list' : '/transaction_list';
               }
             }}
             title="Exit / Back (Shift + Esc)"
@@ -1049,8 +1068,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
           <div className="bg-[#ef4444] text-white text-xs font-bold px-3 py-1 rounded-full whitespace-nowrap shadow-xs">
             Date: {formatDate()}
           </div>
-          <div className="bg-[#16a34a] text-white text-xs font-bold px-3 py-1 rounded-full whitespace-nowrap shadow-xs font-mono">
-            Time Left: {formatTimeLeft(timeLeftSeconds)}
+          <div className={`${declareEdit ? 'bg-[#ef4444]' : 'bg-[#16a34a]'} text-white text-xs font-bold px-3 py-1 rounded-full whitespace-nowrap shadow-xs font-mono`}>
+            Time Left: {formatTimeLeft(declareEdit ? 0 : timeLeftSeconds)}
           </div>
         </div>
       </div>
@@ -1169,11 +1188,18 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
         {/* COLUMN 3: Right - Shift Copy, Narration, Grand Total */}
         <div className="w-72 sm:w-80 flex flex-col bg-white flex-shrink-0">
           {/* Header matching Screenshot 2 (green for LIVE, pink for DECLARED, amber for cutoff-closed) */}
+          {declareEdit ? (
+            <div className="bg-[#dc2626] text-white font-bold text-center py-2 text-base uppercase tracking-wide flex-shrink-0 shadow-xs">
+              {currentShiftName} [DECLARE]
+            </div>
+          ) : (
           <div className={`${isShiftDeclared ? 'bg-[#ec135d]' : isCutoffBlocked ? 'bg-[#d97706]' : 'bg-[#22c55e]'} text-white font-bold text-center py-2 text-sm uppercase tracking-wide flex-shrink-0 shadow-xs`}>
             {currentShiftName} {isShiftDeclared ? `[RESULT: ${resolvedShift?.declaredNumber || 'DECLARED'}]` : isCutoffBlocked ? '[ENTRY CLOSED]' : '[LIVE]'}
           </div>
+          )}
 
-          {/* Tick Shift for Copy Transaction Header */}
+          {/* Tick Shift for Copy Transaction Header (not on declare edit — live shows none) */}
+          {!declareEdit && (<>
           <div className="bg-[#1b3258] text-white text-xs font-bold py-1.5 px-3 flex items-center gap-2 flex-shrink-0">
             <input
               type="checkbox"
@@ -1204,6 +1230,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
               </label>
             ))}
           </div>
+
+          </>)}
 
           {/* Applied Narration Header */}
           <div className="bg-[#1b3258] text-white text-xs font-bold py-1.5 px-3 flex-shrink-0">
@@ -1275,15 +1303,15 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
           </button>
           <button
             type="button"
-            disabled={submitting || isShiftDeclared || isCutoffBlocked}
+            disabled={submitting || isDeclaredBlocked || isCutoffBlocked}
             onClick={handleSaveNow}
             className={`text-white text-xs font-bold px-4 py-1.5 rounded transition-colors shadow-xs ${
-              isShiftDeclared || isCutoffBlocked
+              isDeclaredBlocked || isCutoffBlocked
                 ? 'bg-slate-500 cursor-not-allowed opacity-75'
                 : 'bg-[#00897b] hover:bg-[#00796b] cursor-pointer'
             } disabled:opacity-50`}
           >
-            {submitting ? 'Saving...' : isShiftDeclared ? 'Result Declared' : isCutoffBlocked ? 'Entry Closed' : 'Save Now (F2)'}
+            {submitting ? 'Saving...' : isDeclaredBlocked ? 'Result Declared' : isCutoffBlocked ? 'Entry Closed' : 'Save Now (F2)'}
           </button>
           <button
             type="button"

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiRequest } from '../api/client.js';
 import { ArrowLeft } from 'lucide-react';
+import { toast } from 'react-toastify';
 
 interface VoucherAuditPageProps {
   onNavigate?: (page: string) => void;
@@ -34,9 +35,26 @@ export const VoucherAuditPage: React.FC<VoucherAuditPageProps> = ({ onNavigate }
   const [auditStatus, setAuditStatus] = useState('FOR_AUDIT');
 
   const fetchList = async () => {
+    // Same checks the Search button needs before it can ask for a date range.
+    const problem = !fromDate || !toDate
+      ? 'Please select both Dates!'
+      : fromDate > toDate
+        ? 'From Date cannot be after To Date!'
+        : '';
+    if (problem) {
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Message</div>
+          <div className="text-sm mt-0.5">{problem}</div>
+        </div>,
+        { toastId: 'voucher-audit-date' }
+      );
+      return;
+    }
     setLoading(true);
     try {
-      const params = new URLSearchParams({ fromDate, toDate, auditStatus });
+      // manualOnly: Journal/Limit/Kist/Vapsi/Hawa Patti only — not the system payout vouchers.
+      const params = new URLSearchParams({ fromDate, toDate, auditStatus, manualOnly: '1' });
       const res = await apiRequest<ManualVoucherItem[]>(`/vouchers/manual?${params.toString()}`);
       if (res.data) setList(res.data);
     } catch (err) {

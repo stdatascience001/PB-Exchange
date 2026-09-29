@@ -233,14 +233,16 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
     setAutoCompanyTransactionActive(!!s.autoCompanyTransactionActive);
     setCompanyUrl(s.companyUrl || '');
     setCompanyShiftId(String(s.companyShiftId ?? 0));
-    setCompanyUsername(s.companyUsername || '');
-    setCompanyPassword(s.companyPassword || '');
-    setCompanyDRate(String(s.companyDRate ?? 0));
-    setCompanyDComm(String(s.companyDComm ?? 0));
-    setCompanyARate(String(s.companyARate ?? 0));
-    setCompanyAComm(String(s.companyAComm ?? 0));
-    setCompanyTax(String(s.companyTax ?? 0));
-    setCompanyRemark(s.companyRemark || '');
+    // Company UserName … Remark open empty, as on the live popup — the saved config shows in
+    // the listing below and its Edit button loads it into these boxes.
+    setCompanyUsername('');
+    setCompanyPassword('');
+    setCompanyDRate('');
+    setCompanyDComm('');
+    setCompanyARate('');
+    setCompanyAComm('');
+    setCompanyTax('');
+    setCompanyRemark('');
 
     setIsShiftActive(s.isActive !== false);
 
@@ -1154,7 +1156,7 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
                         </div>
                         <div>
                           <label className="block text-slate-600 font-semibold mb-1 text-[11px]">Company Password</label>
-                          <input type="password" value={companyPassword} onChange={(e) => setCompanyPassword(e.target.value)} className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs" />
+                          <input type="text" value={companyPassword} onChange={(e) => setCompanyPassword(e.target.value)} className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs" />
                         </div>
                         <div>
                           <label className="block text-slate-600 font-semibold mb-1 text-[11px]">D-Rate</label>
@@ -1258,28 +1260,31 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
                                   type="button"
                                   disabled={savingSection === 'company-allow'}
                                   onClick={async () => {
-                                    const nextActive = !editingShift.autoCompanyTransactionActive;
-                                    setAutoCompanyTransactionActive(nextActive);
-                                    await saveShiftSection('company-allow', {
-                                      autoCompanyTransactionActive: nextActive,
-                                      companyUrl: editingShift.companyUrl || '',
-                                      companyShiftId: editingShift.companyShiftId ?? 0,
-                                    });
+                                    // Allow is the config row's own ACTIVE / DEACTIVE flag — not the
+                                    // Auto Company Transaction tick above (live shows them independently).
+                                    await saveShiftSection('company-allow', { companyAllow: editingShift.companyAllow === false });
                                   }}
                                   title="Click to toggle Allow"
-                                  className={`inline-block px-2 py-0.5 rounded text-[9px] font-bold cursor-pointer transition-colors disabled:opacity-50 ${
-                                    editingShift.autoCompanyTransactionActive
-                                      ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
-                                      : 'bg-rose-100 text-rose-700 hover:bg-rose-200'
+                                  className={`inline-block px-2.5 py-0.5 rounded-xs text-[9px] font-bold text-white cursor-pointer transition-colors disabled:opacity-50 ${
+                                    editingShift.companyAllow !== false
+                                      ? 'bg-[#16a34a] hover:bg-[#15803d]'
+                                      : 'bg-[#dc2626] hover:bg-[#b91c1c]'
                                   }`}
                                 >
-                                  {editingShift.autoCompanyTransactionActive ? 'ACTIVE' : 'INACTIVE'}
+                                  {editingShift.companyAllow !== false ? 'ACTIVE' : 'DEACTIVE'}
                                 </button>
                               </td>
                               <td className="py-1.5 px-2 border-r border-slate-200 text-center text-slate-500">
-                                <div>{editingShift.updatedBy || 'A100'}</div>
+                                <div className="font-bold text-slate-700 uppercase">{editingShift.companyUpdatedBy || editingShift.updatedBy || 'A100'}</div>
                                 <div className="text-[9px] text-slate-400">
-                                  {editingShift.updatedAt ? new Date(editingShift.updatedAt).toLocaleString('en-GB') : '-'}
+                                  {(() => {
+                                    const raw = editingShift.companyUpdatedAt || editingShift.updatedAt;
+                                    if (!raw) return '-';
+                                    const d = new Date(raw);
+                                    if (isNaN(d.getTime())) return '-';
+                                    const p2 = (n: number) => String(n).padStart(2, '0');
+                                    return `${p2(d.getDate())}-${p2(d.getMonth() + 1)}-${d.getFullYear()} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+                                  })()}
                                 </div>
                               </td>
                               <td className="py-1.5 px-2 text-center">

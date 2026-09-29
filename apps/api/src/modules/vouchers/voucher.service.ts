@@ -1,5 +1,5 @@
-import { db, vouchers, voucherEntries, shifts, ledgers, users, agents } from '@pb/database';
-import { eq, desc, asc, and, inArray, sql, isNull } from 'drizzle-orm';
+import { db, vouchers, voucherEntries, shifts, ledgers, users, agents, kistSchedule, transactions } from '@pb/database';
+import { eq, desc, asc, and, inArray, sql, isNull, ne } from 'drizzle-orm';
 import { NotFoundError } from '../../common/errors.js';
 import { UserSession } from '@pb/types';
 import crypto from 'crypto';
@@ -68,8 +68,14 @@ export class VoucherService {
 
   // Manual double-entry vouchers (Journal/Limit/Kist/Vapsi/Hawa Patti): each voucher has
   // exactly 2 entries — the "Party" side and the balancing "Opposite Party" side.
+  static readonly MANUAL_VOUCHER_TYPES = ['JOURNAL', 'LIMIT', 'KIST', 'VAPSI', 'HAWA_PATTI'];
+
   static async listManualVouchers(filters: {
     voucherType?: string;
+    // Voucher Audit lists every manual type at once; without this it also picked up the
+    // system-generated WINNING_PAYOUT/BET_COLLECTION rows, which have no ledger entries and
+    // showed as blank "-" / "-" lines. Ignored when a single voucherType is given.
+    manualOnly?: boolean;
     auditStatus?: string;
     fromDate?: string;
     toDate?: string;
@@ -77,6 +83,7 @@ export class VoucherService {
   }) {
     const conditions = [];
     if (filters.voucherType) conditions.push(eq(vouchers.voucherType, filters.voucherType));
+    else if (filters.manualOnly) conditions.push(inArray(vouchers.voucherType, VoucherService.MANUAL_VOUCHER_TYPES));
     if (filters.auditStatus && filters.auditStatus !== 'ALL') conditions.push(eq(vouchers.auditStatus, filters.auditStatus));
     // Cast to ::date rather than comparing absolute instants — created_at is stored as a
     // timezone-less "wall clock" value (same convention as dashboard.service.ts's shift-cycle
@@ -276,6 +283,11 @@ export class VoucherService {
   }
 
   static async deleteVoucher(id: number) {
+    // A posted kist whose voucher is deleted goes back to PENDING, so the next Auto Kist
+    // (F3) can post it again instead of it silently vanishing from the party's schedule.
+    await db.update(kistSchedule)
+      .set({ status: 'PENDING', voucherId: null, updatedAt: new Date() })
+      .where(eq(kistSchedule.voucherId, id));
     const [deleted] = await db.delete(vouchers).where(eq(vouchers.id, id)).returning();
     if (!deleted) throw new NotFoundError('Voucher not found');
     return deleted;
@@ -302,10 +314,21 @@ export class VoucherService {
       toDate: filters.toDate,
     });
 
+    // Voucher date on the server's own calendar. created_at is a wall-clock value, so the old
+    // createdAt.slice(0, 10) (a UTC ISO string) put vouchers made before 05:30 IST on the
+    // previous day and split/merged duplicate groups wrongly.
+    const localDateKey = (iso: string) => {
+      const d = new Date(iso);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    };
+
+    // A duplicate is the same voucher entered twice: same day, party, side (Dr/Cr), amount
+    // and opposite ledger. Party+amount+day alone also paired e.g. a Dr and a Cr, or two
+    // vouchers against different opposite ledgers.
     const groups = new Map<string, typeof list>();
     for (const v of list) {
-      const dateKey = v.createdAt.slice(0, 10);
-      const key = `${v.partyLedgerId}:${v.totalAmount}:${dateKey}`;
+      const dateKey = localDateKey(v.createdAt);
+      const key = `${v.partyLedgerId}:${v.entrySide}:${v.totalAmount}:${v.oppositeLedgerId}:${dateKey}`;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(v);
     }
@@ -328,11 +351,12 @@ export class VoucherService {
           partyLedgerId: first.partyLedgerId,
           partyName: first.partyName,
           amount: first.totalAmount,
-          voucherDate: first.createdAt.slice(0, 10),
+          voucherDate: localDateKey(first.createdAt),
           entrySide: first.entrySide,
           oppositePartyName: first.oppositePartyName,
           count: group.length,
-          voucherIds: group.map(g => g.id),
+          // Oldest first: the first id is the original entry, the rest are its repeats.
+          voucherIds: group.map(g => g.id).sort((a, b) => a - b),
         });
       }
     }
@@ -398,6 +422,65 @@ export class VoucherService {
   // Ledgers grouped as "Cash Agent" — powers the "Agents" dropdown on the OutStanding
   // Report page. Selecting one resolves to its own agentId, which then scopes the report
   // the same way the "Group" (agents master) dropdown does.
+  // Limit & Balance Report (rpt_limit_balance), one row per active ledger in ledger order:
+  //   Balance     = the ledger's voucher balance, Dr − Cr (positive = party owes), LIMIT
+  //                 vouchers left out — they're the Limit column
+  //   Limit       = the ledger's LIMIT vouchers, same Dr − Cr sign
+  //   TransConsum = stake on slips in shifts still running (not yet declared, current cycle)
+  //   FinalLimit  = Balance + Limit + TransConsum — matches the live footer
+  //                 (69479738 − 120279572 + 891616 ≈ −49908253)
+  //   Status      = SUFFICIENT when FinalLimit ≤ 0 (limit still covers it), else INSUFFICIENT
+  static async getLimitBalanceReport() {
+    const ledgerRows = await db.select({ id: ledgers.id, partyName: ledgers.partyName })
+      .from(ledgers).where(isNull(ledgers.deletedAt)).orderBy(asc(ledgers.id));
+
+    const voucherRows = await db.select({
+      ledgerId: voucherEntries.ledgerId,
+      isLimit: sql<boolean>`(${vouchers.voucherType} = 'LIMIT')`,
+      net: sql<string>`COALESCE(SUM(CASE WHEN ${voucherEntries.entrySide} = 'DR' THEN ${voucherEntries.amount}::numeric ELSE -${voucherEntries.amount}::numeric END), 0)`,
+    })
+      .from(voucherEntries)
+      .innerJoin(vouchers, eq(voucherEntries.voucherId, vouchers.id))
+      .groupBy(voucherEntries.ledgerId, sql`(${vouchers.voucherType} = 'LIMIT')`);
+    const balance = new Map<number, number>();
+    const limit = new Map<number, number>();
+    for (const v of voucherRows) {
+      const target = v.isLimit ? limit : balance;
+      target.set(v.ledgerId, (target.get(v.ledgerId) || 0) + parseFloat(v.net));
+    }
+
+    const consumRows = await db.select({
+      partyId: transactions.partyId,
+      amount: sql<string>`COALESCE(SUM(${transactions.totalAmount}::numeric), 0)`,
+    })
+      .from(transactions)
+      .innerJoin(shifts, eq(transactions.shiftId, shifts.id))
+      .where(and(
+        ne(transactions.status, 'VOIDED'),
+        isNull(shifts.declaredNumber),
+        sql`${shifts.status} NOT IN ('DECLARED', 'AUDITED')`,
+        sql`${transactions.createdAt}::date = ${shifts.openDate}::date`,
+      ))
+      .groupBy(transactions.partyId);
+    const consum = new Map(consumRows.map(r => [r.partyId, parseFloat(r.amount)]));
+
+    return ledgerRows.map(l => {
+      const bal = balance.get(l.id) || 0;
+      const lim = limit.get(l.id) || 0;
+      const tc = consum.get(l.id) || 0;
+      const finalLimit = bal + lim + tc;
+      return {
+        ledgerId: l.id,
+        partyName: l.partyName,
+        balance: bal,
+        limit: lim,
+        transConsum: tc,
+        finalLimit,
+        status: finalLimit <= 0 ? 'SUFFICIENT' : 'INSUFFICIENT',
+      };
+    });
+  }
+
   static async listCashAgentLedgers() {
     return db.select({
       id: ledgers.id,

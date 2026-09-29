@@ -4,6 +4,7 @@ import { AppError, NotFoundError, ForbiddenError } from '../../common/errors.js'
 import { publishDashboardUpdate } from '../dashboard/dashboard.events.js';
 import { publishShiftsUpdate } from '../shifts/shift.events.js';
 import { ShiftService } from '../shifts/shift.service.js';
+import { DeclarationSnapshotService } from './declaration-snapshot.service.js';
 import { UserSession } from '@pb/types';
 import crypto from 'crypto';
 
@@ -179,6 +180,10 @@ export class DeclarationService {
         voucherNumber: voucher.voucherNumber,
       };
     });
+
+    // Per-party Sale / P&L this declare was made on — the Dashboard's ReDeclare popup compares
+    // against it. Never throws (see captureOnDeclare).
+    await DeclarationSnapshotService.captureOnDeclare(result.declarationId, shift.id, shift.openDate, paddedWinning);
 
     publishDashboardUpdate(shift.id);
     publishShiftsUpdate();

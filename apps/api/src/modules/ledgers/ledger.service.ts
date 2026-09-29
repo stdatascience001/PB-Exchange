@@ -94,7 +94,8 @@ export class LedgerService {
   // "Main Agent Name" picker, which offers Cash Agent ledgers) can ask for just those instead
   // of pulling every ledger down and filtering in the browser.
   static async listLedgers(status?: string, group?: string) {
-    let whereClause = isNull(ledgers.deletedAt);
+    // The system "HP A/C" account (Hawa Patti) is not listed as a party, as on the live Ledger page.
+    let whereClause = and(isNull(ledgers.deletedAt), sql`UPPER(${ledgers.partyName}) <> 'HP A/C'`) as any;
     if (status === 'Deleted') {
       whereClause = isNotNull(ledgers.deletedAt);
     } else if (status === 'ALL') {
@@ -287,6 +288,12 @@ export class LedgerService {
   }) {
     if (!data.partyName || !data.partyName.trim()) {
       throw new AppError('Party name is required', 400);
+    }
+    // Choosing the system "HP A/C" as a Hissa Party makes sure that account exists (it's the
+    // opposite ledger Auto Hawa Patti posts to) — created only if missing.
+    if (data.linkType === 'HISSA' && data.partyName.trim().toUpperCase() === 'HP A/C') {
+      const [hp] = await db.select({ id: ledgers.id }).from(ledgers).where(sql`UPPER(TRIM(${ledgers.partyName})) = 'HP A/C'`);
+      if (!hp) await db.insert(ledgers).values({ partyName: 'HP A/C', groupName: 'SYSTEM' }).onConflictDoNothing();
     }
     const [created] = await db.insert(ledgerThirdPartyLinks).values({
       ledgerId,

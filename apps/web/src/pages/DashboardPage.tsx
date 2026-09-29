@@ -3,6 +3,7 @@ import { ShiftDto, UserSession } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 import { showsReducedDashboard } from '../config/roleAccess.js';
+import { RedeclareModal } from '../components/RedeclareModal.js';
 
 interface DashboardMetricsResponse {
   shifts: Array<{
@@ -26,6 +27,10 @@ interface DashboardMetricsResponse {
     openDate: string;
     status: string;
     isDeclared?: boolean;
+    // Set only on ReDeclare rows (a declared cycle whose data changed after the declare)
+    declarationId?: number;
+    rawOpenDate?: string;
+    changeCount?: number;
     terminal?: string;
     timestamp?: string;
   }>;
@@ -79,6 +84,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   // Declare Needed and Un-Verified Shifts aren't rendered at all (not even as empty boxes,
   // unlike ADMIN which still sees the empty panel containers).
   const hideDeclarePanels = showsReducedDashboard(user?.roleName);
+  // ReDeclare popup (DECLARE INFO) for the Declare Needed row that was clicked
+  const [redeclareTarget, setRedeclareTarget] = useState<{ declarationId: number; changeCount?: number } | null>(null);
+  // Declare Needed lists only the ReDeclare rows (declared cycles changed after the declare),
+  // as on the live panel. The API still returns the not-yet-declared shifts too — they are
+  // just not rendered here; declaring them stays on Result → Declare.
+  const redeclareRows = (metrics?.declareNeeded || []).filter((d) => d.isDeclared && d.declarationId);
 
   // Fetch fully dynamic metrics from backend API
   const fetchMetrics = async () => {
@@ -191,23 +202,27 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               <h2 className="text-base font-bold text-slate-800">
                 Declare Needed
               </h2>
-              {metrics && metrics.declareNeeded.length > 0 && (
+              {redeclareRows.length > 0 && (
                 <span className="px-2 py-0.5 bg-rose-100 text-rose-700 text-xs font-bold rounded-full">
-                  {metrics.declareNeeded.length}
+                  {redeclareRows.length}
                 </span>
               )}
             </div>
 
             <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2 pr-1">
-              {!metrics || metrics.declareNeeded.length === 0 ? (
+              {redeclareRows.length === 0 ? (
                 <div className="h-full flex items-center justify-center text-xs text-slate-400">
                   No shifts pending declaration
                 </div>
               ) : (
-                metrics.declareNeeded.map((d) => (
+                redeclareRows.map((d) => (
                   <div
-                    key={d.id}
+                    key={d.declarationId ? `re-${d.declarationId}` : `${d.id}-${d.rawOpenDate || d.openDate}`}
                     onClick={() => {
+                      if (d.isDeclared && d.declarationId) {
+                        setRedeclareTarget({ declarationId: d.declarationId, changeCount: d.changeCount });
+                        return;
+                      }
                       onSelectShift(d as any);
                       onNavigate('declare');
                     }}
@@ -366,6 +381,13 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           </div>
         </div>
       </div>
+
+      <RedeclareModal
+        declarationId={redeclareTarget?.declarationId ?? null}
+        changeCount={redeclareTarget?.changeCount}
+        onClose={() => setRedeclareTarget(null)}
+        onRedeclared={fetchMetrics}
+      />
 
       {/* Bottom Footer Credit */}
       <div className="pt-2 text-slate-400 text-[11px] font-medium select-none">

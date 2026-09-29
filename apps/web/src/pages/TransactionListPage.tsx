@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ShiftDto, UserSession } from '@pb/types';
 import { apiRequest } from '../api/client.js';
+import { displayNumber, harufOf } from '../utils/entryDisplay.js';
 import { isOwnDataOnlyRole } from '../config/roleAccess.js';
 import { X, Search as SearchIcon, Eye, Copy, Trash2, Plus, Edit } from 'lucide-react';
 
@@ -19,10 +20,13 @@ export interface TransactionItem {
   updatedBy?: string;
   isD?: boolean;
   auditStatus?: string;
+  mistakeRemark?: string | null;
+  // Slip was edited after the auditor marked it MISTAKE — Updated column shows in red
+  mistakeEdited?: boolean;
   isAudited?: boolean;
   createdAt: string;
   updatedAt: string;
-  entries?: { numberValue: string; amount: number; rate?: number }[];
+  entries?: { numberValue: string; amount: number; rate?: number; entryType?: string }[];
 }
 
 interface TransactionListPageProps {
@@ -66,6 +70,9 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
   const ownDataOnly = isOwnDataOnlyRole(user?.roleName);
   const [selectedStaff, setSelectedStaff] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('ALL');
+  // Bottom-bar Active / Deleted switch (live): Active = live slips, Deleted = slips someone
+  // deleted (kept as VOIDED; Updated shows who and when).
+  const [listMode, setListMode] = useState<'ACTIVE' | 'DELETED'>('ACTIVE');
   
   // Selected transaction for right-hand panel live preview
   const [selectedTx, setSelectedTx] = useState<TransactionItem | null>(null);
@@ -304,6 +311,8 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
     const numStr = String(n);
     const numPadded = n < 100 ? String(n).padStart(2, '0') : '00';
     const matches = jantriEntries.filter(e => {
+      // Haruf (stored as one digit) never counts as a number.
+      if (harufOf(e)) return false;
       const val = (e.numberValue || '').trim();
       return val === numStr || val === numPadded || (n === 100 && (val === '100' || val === '00'));
     });
@@ -314,6 +323,8 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
   const getAmountForBahar = (digit: number) => {
     const dStr = String(digit % 10);
     const matches = jantriEntries.filter(e => {
+      const h = harufOf(e);
+      if (h) return h.side === 'B' && h.digit === dStr;
       const val = (e.numberValue || '').trim().toUpperCase();
       return (
         val === `B${dStr}` ||
@@ -330,6 +341,8 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
   const getAmountForAndar = (digit: number) => {
     const dStr = String(digit % 10);
     const matches = jantriEntries.filter(e => {
+      const h = harufOf(e);
+      if (h) return h.side === 'A' && h.digit === dStr;
       const val = (e.numberValue || '').trim().toUpperCase();
       return (
         val === `A${dStr}` ||
@@ -393,6 +406,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
       if (searchParty.trim()) params.append('search', searchParty.trim());
       if (selectedStatus && selectedStatus !== 'ALL') params.append('status', selectedStatus);
       if (dateStr) params.append('date', dateStr);
+      params.append('listMode', listMode);
 
       const res = await apiRequest<TransactionItem[]>(`/transactions?${params.toString()}`);
       if (res.data) {
@@ -426,7 +440,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
   useEffect(() => {
     fetchTransactions();
     fetchParties();
-  }, [selectedShiftId, selectedStatus, dateStr]);
+  }, [selectedShiftId, selectedStatus, dateStr, listMode]);
 
   // Keyboard Shortcuts: F2 -> Add Slip, F3 -> Jantri View, F4 -> Distributor, F5 -> Search, F7 -> Main Jantri
   useEffect(() => {
@@ -455,7 +469,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedShiftId, searchParty, selectedStatus, onNavigate]);
+  }, [selectedShiftId, searchParty, selectedStatus, listMode, onNavigate]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -676,8 +690,20 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
                           {tx.ujType || 'U'}
                         </td>
                         {/* Party */}
-                        <td className="py-1.5 px-3 font-bold text-slate-900 uppercase tracking-tight border-r border-b border-slate-200">
+                        {/* A slip marked Mistake on Trans-Audit shows its party in red with a
+                            red "Mistake" badge, as on the live list; hover shows the auditor's text. */}
+                        <td className={`py-1.5 px-3 font-bold uppercase tracking-tight border-r border-b border-slate-200 ${
+                          tx.auditStatus === 'MISTAKE' ? 'text-red-600' : 'text-slate-900'
+                        }`}>
                           {tx.partyName}
+                          {tx.auditStatus === 'MISTAKE' && (
+                            <span
+                              title={tx.mistakeRemark || 'Mistake'}
+                              className="ml-1.5 inline-block px-2 py-0.5 bg-[#dc2626] text-white text-[10px] font-bold normal-case tracking-normal rounded-xs align-middle cursor-help"
+                            >
+                              Mistake
+                            </span>
+                          )}
                         </td>
                         {/* Rate */}
                         <td className="py-1.5 px-3 font-mono font-medium text-slate-700 border-r border-b border-slate-200">
@@ -692,13 +718,16 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
                           <div className="font-bold text-slate-900 uppercase text-[11px]">{tx.addedBy || 'SYSTEM'}</div>
                           <div className="font-mono text-slate-500 text-[10px]">{formatTimestamp(tx.createdAt)}</div>
                         </td>
-                        {/* Updated */}
+                        {/* Updated — red once a Mistake slip has been edited, as on the live list */}
                         <td className="py-1 px-3 border-r border-b border-slate-200 leading-snug">
-                          <div className="font-bold text-slate-900 uppercase text-[11px]">{tx.updatedBy || 'SYSTEM'}</div>
-                          <div className="font-mono text-slate-500 text-[10px]">{formatTimestamp(tx.updatedAt)}</div>
+                          <div className={`font-bold uppercase text-[11px] ${tx.mistakeEdited || tx.status === 'VOIDED' ? 'text-red-600' : 'text-slate-900'}`}>{tx.updatedBy || 'SYSTEM'}</div>
+                          <div className={`font-mono text-[10px] ${tx.mistakeEdited || tx.status === 'VOIDED' ? 'text-red-500' : 'text-slate-500'}`}>{formatTimestamp(tx.updatedAt)}</div>
                         </td>
                         {/* 4 Action Buttons matching Screenshot 1: Copy, View, Edit, Delete */}
                         <td className="py-1.5 px-2 text-center border-b border-slate-200">
+                          {tx.status === 'VOIDED' ? (
+                            <span className="text-[10px] font-semibold text-red-600">(Deleted)</span>
+                          ) : (
                           <div className="flex items-center justify-center gap-1.5">
                             <button
                               type="button"
@@ -745,6 +774,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
                               Delete
                             </button>
                           </div>
+                          )}
                         </td>
                       </tr>
                     );
@@ -811,7 +841,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
               ) : (
                 selectedTx.entries.map((ent, i) => (
                   <div key={i} className="grid grid-cols-2 py-1.5 px-3 hover:bg-slate-50 font-mono text-xs text-slate-800">
-                    <span className="font-bold text-blue-700">{ent.numberValue}</span>
+                    <span className="font-bold text-blue-700">{displayNumber(ent)}</span>
                     <span className="text-right font-semibold">{ent.amount.toLocaleString('en-IN')}</span>
                   </div>
                 ))
@@ -878,13 +908,12 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
               Main Jantri (F7)
             </button>
             <select
-              value={selectedStatus}
-              onChange={(e) => setSelectedStatus(e.target.value)}
-              className="px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 cursor-pointer"
+              value={listMode}
+              onChange={(e) => setListMode(e.target.value as 'ACTIVE' | 'DELETED')}
+              className="w-24 px-2.5 py-1.5 bg-[#fde68a] border border-amber-300 rounded text-xs font-bold text-slate-900 cursor-pointer focus:outline-none"
             >
-              <option value="ALL">Active</option>
-              <option value="ACTIVE">Active Only</option>
-              <option value="VOIDED">Voided Only</option>
+              <option value="ACTIVE">Active</option>
+              <option value="DELETED">Deleted</option>
             </select>
           </div>
         </div>

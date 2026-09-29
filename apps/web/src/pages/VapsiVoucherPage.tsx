@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
-import { X, Edit2, Trash2 } from 'lucide-react';
+import { X, Edit2 } from 'lucide-react';
+import { toast } from 'react-toastify';
+import { AutoVapsiModal, vapsiYears, VapsiSummaryRow } from '../components/AutoVapsiModal.js';
+import { PartyPicker } from '../components/PartyPicker.js';
 
 const VOUCHER_TYPE = 'VAPSI';
 const PAGE_TITLE = 'Vapsi Voucher';
@@ -23,34 +26,26 @@ interface ManualVoucherItem {
   updatedAt: string;
 }
 
-const todayInputDate = () => new Date().toISOString().slice(0, 10);
-
-const formatTimestamp = (dateVal?: string) => {
-  if (!dateVal) return '-';
-  try {
-    const d = new Date(dateVal);
-    if (isNaN(d.getTime())) return dateVal;
-    const day = String(d.getDate()).padStart(2, '0');
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const year = d.getFullYear();
-    let hours = d.getHours();
-    const minutes = String(d.getMinutes()).padStart(2, '0');
-    const ampm = hours >= 12 ? 'PM' : 'AM';
-    hours = hours % 12 || 12;
-    return `${day}-${month}-${year} ${String(hours).padStart(2, '0')}:${minutes} ${ampm}`;
-  } catch {
-    return dateVal;
-  }
+// Browser-local today (toISOString() is UTC and gave yesterday before 05:30 IST).
+const todayInputDate = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
+// Live list prints 2026-08-31 and 2026-08-31 08:25:37 (stored wall-clock values).
+const isoDay = (iso: string) => iso.slice(0, 10);
+const isoStamp = (iso: string) => iso.slice(0, 19).replace('T', ' ');
 
-const formatDateOnly = (dateVal?: string) => {
-  if (!dateVal) return '-';
-  const d = new Date(dateVal);
-  if (isNaN(d.getTime())) return dateVal;
-  const day = String(d.getDate()).padStart(2, '0');
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  return `${day}-${month}-${d.getFullYear()}`;
-};
+const notify = (kind: 'success' | 'error', text: string, toastId?: string) =>
+  toast[kind](
+    <div>
+      <div className="font-bold text-base">Message</div>
+      <div className="text-sm mt-0.5">{text}</div>
+    </div>,
+    toastId ? { toastId } : undefined
+  );
+
+// Create Vapsi Voucher inputs: white, light border, soft yellow while focused (live).
+const VIN = 'w-full h-[30px] px-2.5 bg-white border border-[#c9d3e0] rounded-xs text-[13px] text-slate-800 focus:outline-none focus:bg-[#fde68a] focus:border-amber-300';
 
 export const VapsiVoucherPage: React.FC = () => {
   const [list, setList] = useState<ManualVoucherItem[]>([]);
@@ -84,6 +79,9 @@ export const VapsiVoucherPage: React.FC = () => {
   const [finalVapsi, setFinalVapsi] = useState('');
   const [finalVapsiTouched, setFinalVapsiTouched] = useState(false);
   const [thirdParties, setThirdParties] = useState<{ ledgerId: number; partyName: string; vapsiPercent: string }[]>([]);
+  // Auto Vapsi (F3) popup
+  const [showAutoVapsi, setShowAutoVapsi] = useState(false);
+  const [summaryLoading, setSummaryLoading] = useState(false);
 
   const fetchList = async () => {
     setLoading(true);
@@ -118,6 +116,10 @@ export const VapsiVoucherPage: React.FC = () => {
       if (e.key === 'F2') {
         e.preventDefault();
         openAddModal();
+      }
+      if (e.key === 'F3') {
+        e.preventDefault();
+        setShowAutoVapsi(true);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -181,12 +183,51 @@ export const VapsiVoucherPage: React.FC = () => {
     setShowModal(true);
   };
 
+  // Create (not Edit): picking the party / month fills P&L (= Final-PL), Payment, Vapsi % and
+  // the party's 3rd Party Rebate rows from the month's real data; everything stays editable.
+  useEffect(() => {
+    if (!showModal || editingId || !partyId) return;
+    const monthNo = MONTH_NAMES.indexOf(fromMonth) + 1;
+    if (monthNo < 1) return;
+    let cancelled = false;
+    (async () => {
+      setSummaryLoading(true);
+      try {
+        const params = new URLSearchParams({ month: String(monthNo), year: String(fromYear), partyId: String(partyId), withHp: '1' });
+        const res = await apiRequest<{ rows: VapsiSummaryRow[] }>(`/transactions/vapsi-summary?${params.toString()}`);
+        const r = res.data?.rows?.[0];
+        if (cancelled) return;
+        setPnl(r ? String(Math.round(r.finalPl * 100) / 100) : '0');
+        setPayment(r ? String(Math.round(r.payment * 100) / 100) : '0');
+        setVapsiPercent(r ? String(r.vapsiPct) : '');
+        setThirdParties((r?.thirdParties || [])
+          .filter(t => t.ledgerId)
+          .map(t => ({ ledgerId: t.ledgerId as number, partyName: t.partyName, vapsiPercent: String(t.percent) })));
+        setFinalVapsiTouched(false);
+        if (r?.done) notify('error', `Vapsi for ${fromMonth} ${fromYear} is already posted for this party!`, 'vapsi-done');
+      } catch (err: any) {
+        if (!cancelled) notify('error', err.message || 'Failed to load party month', 'vapsi-summary');
+      } finally {
+        if (!cancelled) setSummaryLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showModal, editingId, partyId, fromMonth, fromYear]);
+
+  // 3rd party share = the same base as Final Vapsi (P&L or Payment) × its Vapsi %.
+  const vapsiBase = () => {
+    const b = vapsiOn === 'PL' ? parseFloat(pnl) : parseFloat(payment);
+    return isNaN(b) ? 0 : Math.max(0, b);
+  };
+  const thirdPartyAmount = (pct: string) => Math.round(vapsiBase() * (parseFloat(pct) || 0)) / 100;
+
   useEffect(() => {
     if (finalVapsiTouched) return;
     const base = vapsiOn === 'PL' ? parseFloat(pnl) : parseFloat(payment);
     const pct = parseFloat(vapsiPercent);
     if (!isNaN(base) && !isNaN(pct)) {
-      setFinalVapsi((base * pct / 100).toFixed(2));
+      setFinalVapsi((Math.max(0, base) * pct / 100).toFixed(2));
     }
   }, [pnl, payment, vapsiPercent, vapsiOn, finalVapsiTouched]);
 
@@ -212,6 +253,37 @@ export const VapsiVoucherPage: React.FC = () => {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!editingId) {
+      const amt = parseFloat(finalVapsi);
+      if (!partyId) return notify('error', 'Please select Party Name from the list!', 'vapsi-party');
+      if (!(amt > 0) && !thirdParties.some(t => thirdPartyAmount(t.vapsiPercent) > 0)) {
+        return notify('error', 'Final Vapsi must be more than 0!', 'vapsi-amt');
+      }
+      setSaving(true);
+      try {
+        await apiRequest('/transactions/vapsi-process', {
+          method: 'POST',
+          body: JSON.stringify({
+            month: MONTH_NAMES.indexOf(fromMonth) + 1,
+            year: fromYear,
+            voucherDate,
+            items: [{
+              partyId,
+              amount: amt > 0 ? amt : 0,
+              thirdParties: thirdParties.map(t => ({ ledgerId: t.ledgerId, amount: thirdPartyAmount(t.vapsiPercent) })),
+            }],
+          }),
+        });
+        notify('success', 'Vapsi Voucher has been created successfully!', `vapsi-saved-${Date.now()}`);
+        setShowModal(false);
+        fetchList();
+      } catch (err: any) {
+        notify('error', err.message || 'Failed to save voucher');
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
     if (!partyId || thirdParties.length === 0 || !finalVapsi) {
       alert('Please select a Party and add at least one 3rd Party before saving.');
       return;
@@ -296,13 +368,16 @@ export const VapsiVoucherPage: React.FC = () => {
 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">Party</span>
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder=""
-              className="w-40 sm:w-56 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500 shadow-xs"
-            />
+            <div className="w-40 sm:w-56">
+              <PartyPicker
+                parties={parties}
+                value={search}
+                onChange={setSearch}
+                onPick={(p) => setSearch(p.partyName)}
+                onInvalid={() => {}}
+                className="w-full px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:bg-[#fde68a] shadow-xs"
+              />
+            </div>
           </div>
 
           <button
@@ -338,19 +413,17 @@ export const VapsiVoucherPage: React.FC = () => {
                 filteredList.map((v, idx) => (
                   <tr key={v.id} className="hover:bg-slate-50 transition-colors">
                     <td className="py-2 px-3 text-center font-mono text-slate-600 border-r border-slate-200">{idx + 1}</td>
-                    <td className="py-2 px-4 font-mono text-slate-600 border-r border-slate-200">{formatDateOnly(v.createdAt)}</td>
+                    <td className="py-2 px-4 font-semibold text-slate-700 border-r border-slate-200">{isoDay(v.createdAt)}</td>
                     <td className="py-2 px-4 font-bold text-slate-900 uppercase border-r border-slate-200">{v.partyName}</td>
                     <td className="py-2 px-4 text-right font-mono font-bold text-slate-900 border-r border-slate-200">
-                      {v.totalAmount.toLocaleString('en-IN')}
+                      {Math.round(v.totalAmount)}
                     </td>
-                    <td className="py-2 px-4 text-center border-r border-slate-200">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${v.entrySide === 'CR' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
-                        {v.entrySide}
-                      </span>
+                    <td className="py-2 px-4 text-center font-semibold text-slate-700 border-r border-slate-200">
+                      {v.entrySide === 'CR' ? 'Cr' : 'Dr'}
                     </td>
                     <td className="py-2 px-4 font-semibold uppercase text-slate-800 border-r border-slate-200">{v.oppositePartyName}</td>
                     <td className="py-2 px-4 font-bold text-slate-900 uppercase border-r border-slate-200">{v.updatedBy}</td>
-                    <td className="py-2 px-4 font-mono text-slate-600 border-r border-slate-200">{formatTimestamp(v.updatedAt)}</td>
+                    <td className="py-2 px-4 font-semibold text-slate-700 border-r border-slate-200">{isoStamp(v.updatedAt)}</td>
                     <td className="py-2 px-4 text-center">
                       <div className="flex items-center justify-center gap-1.5">
                         <button
@@ -364,10 +437,9 @@ export const VapsiVoucherPage: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => handleDelete(v.id)}
-                          title="Delete"
-                          className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
+                          className="px-2.5 py-0.5 bg-[#dc2626] hover:bg-[#b91c1c] text-white text-[10px] font-bold rounded-xs"
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          Delete
                         </button>
                       </div>
                     </td>
@@ -375,220 +447,196 @@ export const VapsiVoucherPage: React.FC = () => {
                 ))
               )}
             </tbody>
+            <tfoot>
+              <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
+                <td className="py-2.5 px-3 border-r border-[#223b63] text-center">{filteredList.length || 'Sr.No'}</td>
+                <td className="py-2.5 px-4 border-r border-[#223b63]">Date</td>
+                <td className="py-2.5 px-4 border-r border-[#223b63]">Party</td>
+                <td className="py-2.5 px-4 border-r border-[#223b63] text-right">
+                  {filteredList.length ? Math.round(filteredList.reduce((s, v) => s + v.totalAmount, 0)) : 'Amount'}
+                </td>
+                <td className="py-2.5 px-3 border-r border-[#223b63] text-center">C/D</td>
+                <td className="py-2.5 px-4 border-r border-[#223b63]">Opposite Party</td>
+                <td className="py-2.5 px-4 border-r border-[#223b63]">Updated By</td>
+                <td className="py-2.5 px-4 border-r border-[#223b63]">Updated Date</td>
+                <td className="py-2.5 px-4 text-center">Action</td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       </div>
 
+      {/* Bottom bar: Auto Vapsi (F3) */}
+      <div className="mt-2 bg-[#1f3a63] rounded-md px-4 py-2.5 flex items-center justify-between">
+        <span className="text-amber-400 text-xs font-medium">Need Help?</span>
+        <button
+          type="button"
+          onClick={() => setShowAutoVapsi(true)}
+          className="px-5 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] active:bg-[#0f4691] text-white font-bold text-xs rounded shadow-xs"
+        >
+          Auto Vapsi <span className="text-[10px] font-semibold">(F3)</span>
+        </button>
+      </div>
+
+      <AutoVapsiModal open={showAutoVapsi} onClose={() => setShowAutoVapsi(false)} onProcessed={fetchList} />
+
       {showModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
-          <div className="bg-white rounded-lg shadow-2xl max-w-3xl w-full overflow-hidden border border-slate-300">
-            <div className="bg-[#1f4277] text-white px-4 py-2.5 flex items-center justify-between">
-              <h2 className="text-sm font-bold tracking-tight">{editingId ? `Edit ${PAGE_TITLE}` : `Add ${PAGE_TITLE}`}</h2>
-              <button type="button" onClick={() => setShowModal(false)} className="text-white hover:text-slate-300 p-0.5">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-start justify-center p-3 pt-5 z-50 animate-in fade-in duration-150">
+          {/* Live "Create Vapsi Voucher" layout: 115 | 115 | wide Party | Voucher Date, then
+              P&L | Payment | narrow Vapsi % | Vapsi On | Final Vapsi, then the 3rd Party table. */}
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-[800px] overflow-visible border border-slate-300">
+            <div className="bg-[#1f4277] text-white px-4 py-4 flex items-center justify-between rounded-t-lg">
+              <h2 className="text-base font-bold tracking-tight">{editingId ? `Edit ${PAGE_TITLE}` : `Create ${PAGE_TITLE}`}</h2>
+              <button type="button" onClick={() => setShowModal(false)} className="text-slate-300 hover:text-white p-0.5" title="Close">
                 <X className="h-4 w-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSave} className="p-4 space-y-3 text-xs">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">From Month</label>
-                  <select
-                    value={fromMonth}
-                    onChange={(e) => setFromMonth(e.target.value)}
-                    className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800"
-                  >
-                    {MONTH_NAMES.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">From Year</label>
-                  <input
-                    type="number"
-                    required
-                    value={fromYear}
-                    onChange={(e) => setFromYear(parseInt(e.target.value, 10) || fromYear)}
-                    className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono font-semibold text-slate-800"
-                  />
-                </div>
-
-                <div className="relative col-span-2 sm:col-span-1">
-                  <label className="block text-slate-700 font-bold mb-1 whitespace-nowrap">
-                    Party Name
-                    <span className="font-normal text-blue-600"> &amp; Limit: {selectedPartyLimit}</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={partySearch}
-                    onChange={(e) => { setPartySearch(e.target.value); setPartyId(null); setShowPartyDropdown(true); }}
-                    onFocus={() => setShowPartyDropdown(true)}
-                    onBlur={() => setTimeout(() => setShowPartyDropdown(false), 150)}
-                    placeholder="Search party..."
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:border-blue-500"
-                  />
-                  {showPartyDropdown && filteredPartyOptions.length > 0 && (
-                    <div className="absolute left-0 right-0 mt-1 bg-white border border-slate-300 shadow-xl rounded z-50 max-h-40 overflow-y-auto">
-                      {filteredPartyOptions.map(p => (
-                        <div
-                          key={p.id}
-                          onMouseDown={() => { setPartyId(p.id); setPartySearch(p.partyName); setShowPartyDropdown(false); }}
-                          className="px-3 py-1.5 text-xs uppercase cursor-pointer hover:bg-amber-50 font-semibold text-slate-800"
-                        >
-                          {p.partyName}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">Voucher Date</label>
-                  <input
-                    type="date"
-                    required
-                    value={voucherDate}
-                    onChange={(e) => setVoucherDate(e.target.value)}
-                    className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">P&amp;L</label>
-                  <input
-                    type="number"
-                    value={pnl}
-                    onChange={(e) => setPnl(e.target.value)}
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-slate-900 text-xs focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">Payment</label>
-                  <input
-                    type="number"
-                    value={payment}
-                    onChange={(e) => setPayment(e.target.value)}
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-slate-900 text-xs focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">Vapsi %</label>
-                  <input
-                    type="number"
-                    value={vapsiPercent}
-                    onChange={(e) => setVapsiPercent(e.target.value)}
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-slate-900 text-xs focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">Vapsi On</label>
-                  <select
-                    value={vapsiOn}
-                    onChange={(e) => setVapsiOn(e.target.value as 'PL' | 'PAYMENT')}
-                    className="w-full px-3 py-1.5 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900"
-                  >
-                    <option value="PL">PL</option>
-                    <option value="PAYMENT">PAYMENT</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">Final Vapsi</label>
-                  <input
-                    type="number"
-                    required
-                    value={finalVapsi}
-                    onChange={(e) => { setFinalVapsi(e.target.value); setFinalVapsiTouched(true); }}
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-slate-900 text-xs focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-slate-700 font-bold mb-1">3rd Party</label>
-                <div className="border border-slate-300 rounded overflow-hidden">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead>
-                      <tr className="bg-[#152847] text-white font-bold text-[11px]">
-                        <th className="py-1.5 px-3 border-r border-[#223b63] w-12 text-center">Sr</th>
-                        <th className="py-1.5 px-3 border-r border-[#223b63]">3rd Party</th>
-                        <th className="py-1.5 px-3 border-r border-[#223b63] w-28 text-center">Vapsi %</th>
-                        <th className="py-1.5 px-3 w-10"></th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-200">
-                      {thirdParties.length === 0 ? (
-                        <tr><td colSpan={4} className="py-3 px-3 text-center text-slate-400">No 3rd party added yet.</td></tr>
-                      ) : (
-                        thirdParties.map((t, idx) => (
-                          <tr key={t.ledgerId}>
-                            <td className="py-1.5 px-3 text-center font-mono text-slate-600 border-r border-slate-200">{idx + 1}</td>
-                            <td className="py-1.5 px-3 font-bold text-slate-900 uppercase border-r border-slate-200">{t.partyName}</td>
-                            <td className="py-1 px-2 border-r border-slate-200">
-                              <input
-                                type="number"
-                                value={t.vapsiPercent}
-                                onChange={(e) => handleThirdPartyPercentChange(t.ledgerId, e.target.value)}
-                                className="w-full px-2 py-1 bg-white border border-slate-300 rounded text-xs font-mono text-center"
-                              />
-                            </td>
-                            <td className="py-1.5 px-2 text-center">
-                              <button type="button" onClick={() => handleRemoveThirdParty(t.ledgerId)} className="text-red-500 hover:text-red-700">
-                                <X className="h-3.5 w-3.5" />
-                              </button>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                  <div className="relative flex items-center gap-2 p-2 border-t border-slate-200 bg-slate-50">
-                    <input
-                      type="text"
-                      value={oppositeSearch}
-                      onChange={(e) => { setOppositeSearch(e.target.value); setOppositeId(null); setShowOppositeDropdown(true); }}
-                      onFocus={() => setShowOppositeDropdown(true)}
-                      onBlur={() => setTimeout(() => setShowOppositeDropdown(false), 150)}
-                      placeholder="Search 3rd party to add..."
-                      className="flex-1 px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:border-blue-500"
-                    />
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={handleAddThirdParty}
-                      disabled={!oppositeId}
-                      className="px-3 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] text-white font-bold text-xs rounded disabled:opacity-50"
+            <form onSubmit={handleSave} className="text-[13px] text-slate-700">
+              <div className="px-4 pt-4 pb-4 space-y-3">
+                <div className="grid grid-cols-[115px_115px_1fr_180px] gap-4">
+                  <div>
+                    <label className="block mb-1">From Month</label>
+                    <select
+                      value={fromMonth}
+                      onChange={(e) => setFromMonth(e.target.value)}
+                      className={`${VIN} font-bold cursor-pointer`}
                     >
-                      Add
-                    </button>
-                    {showOppositeDropdown && filteredOppositeOptions.length > 0 && (
-                      <div className="absolute left-2 right-20 top-full mt-1 bg-white border border-slate-300 shadow-xl rounded z-50 max-h-40 overflow-y-auto">
-                        {filteredOppositeOptions.map(p => (
-                          <div
-                            key={p.id}
-                            onMouseDown={() => { setOppositeId(p.id); setOppositeSearch(p.partyName); setShowOppositeDropdown(false); }}
-                            className="px-3 py-1.5 text-xs uppercase cursor-pointer hover:bg-amber-50 font-semibold text-slate-800"
-                          >
-                            {p.partyName}
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                      {MONTH_NAMES.map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block mb-1">From Year</label>
+                    <select
+                      value={fromYear}
+                      onChange={(e) => setFromYear(parseInt(e.target.value, 10) || fromYear)}
+                      className={`${VIN} font-bold cursor-pointer`}
+                    >
+                      {(vapsiYears().includes(fromYear) ? vapsiYears() : [...vapsiYears(), fromYear]).map(y => <option key={y} value={y}>{y}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block mb-1" title={`Limit: ${selectedPartyLimit}`}>Party Name</label>
+                    <PartyPicker
+                      parties={parties}
+                      value={partySearch}
+                      onChange={(t) => { setPartySearch(t); setPartyId(null); }}
+                      onPick={(p) => { setPartyId(p.id); setPartySearch(p.partyName); }}
+                      onInvalid={() => notify('error', 'Please select Party Name from the list!', 'vapsi-party')}
+                      className={`${VIN} font-bold uppercase`}
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1">Voucher Date</label>
+                    <input type="date" required value={voucherDate} onChange={(e) => setVoucherDate(e.target.value)} className={`${VIN} font-bold`} />
                   </div>
                 </div>
+
+                <div className="grid grid-cols-[180px_180px_50px_115px_180px] gap-4">
+                  <div>
+                    <label className="block mb-1">P&amp;L</label>
+                    <input type="number" value={pnl} onChange={(e) => setPnl(e.target.value)} className={VIN} />
+                  </div>
+                  <div>
+                    <label className="block mb-1">Payment</label>
+                    <input type="number" value={payment} onChange={(e) => setPayment(e.target.value)} className={VIN} />
+                  </div>
+                  <div>
+                    <label className="block mb-1 whitespace-nowrap">Vapsi %</label>
+                    <input type="number" value={vapsiPercent} onChange={(e) => setVapsiPercent(e.target.value)} className={`${VIN} !px-1 text-center`} />
+                  </div>
+                  <div>
+                    <label className="block mb-1">Vapsi On</label>
+                    <select value={vapsiOn} onChange={(e) => setVapsiOn(e.target.value as 'PL' | 'PAYMENT')} className={`${VIN} font-bold cursor-pointer`}>
+                      <option value="PL">PL</option>
+                      <option value="PAYMENT">PAYMENT</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block mb-1">Final Vapsi</label>
+                    <input
+                      type="number"
+                      required
+                      value={finalVapsi}
+                      onChange={(e) => { setFinalVapsi(e.target.value); setFinalVapsiTouched(true); }}
+                      className={VIN}
+                    />
+                  </div>
+                </div>
+
+                {/* 3rd Party (TPV) table — fills from the party's 3rd Party Rebate links */}
+                <div className="w-[570px] max-w-full">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-[#152847] text-white font-bold text-[12px]">
+                        <th className="py-3 px-2.5 border-r border-[#2b446f] w-9">Sr</th>
+                        <th className="py-3 px-3 border-r border-[#2b446f]">3rd Party</th>
+                        <th className="py-3 px-3 border-r border-[#2b446f] w-20">Vapsi %</th>
+                        <th className="py-3 px-3 w-24">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-[12px]">
+                      {summaryLoading && (
+                        <tr><td colSpan={4} className="py-2 px-3 text-center text-slate-400 border border-slate-200">Loading...</td></tr>
+                      )}
+                      {thirdParties.map((t, idx) => (
+                        <tr key={t.ledgerId} className="border-b border-slate-200">
+                          <td className="py-1 px-2.5 font-semibold border-x border-slate-200">{idx + 1}</td>
+                          <td className="py-1 px-3 font-bold uppercase border-r border-slate-200">
+                            <div className="flex items-center justify-between gap-2">
+                              <span>{t.partyName}</span>
+                              <button type="button" onClick={() => handleRemoveThirdParty(t.ledgerId)} className="text-red-500 hover:text-red-700" title="Remove">
+                                <X className="h-3 w-3" />
+                              </button>
+                            </div>
+                          </td>
+                          <td className="py-0.5 px-1 border-r border-slate-200">
+                            <input
+                              type="number"
+                              value={t.vapsiPercent}
+                              onChange={(e) => handleThirdPartyPercentChange(t.ledgerId, e.target.value)}
+                              className="w-full px-1.5 py-0.5 bg-white border border-slate-200 rounded-xs text-center focus:outline-none focus:bg-[#fde68a]"
+                            />
+                          </td>
+                          <td className="py-1 px-3 text-right font-bold border-r border-slate-200">{thirdPartyAmount(t.vapsiPercent)}</td>
+                        </tr>
+                      ))}
+                      {/* add a 3rd party by hand (kept from the earlier form) */}
+                      <tr className="border-b border-slate-200">
+                        <td className="border-x border-slate-200"></td>
+                        <td className="py-1 px-1 border-r border-slate-200" colSpan={2}>
+                          <PartyPicker
+                            parties={parties}
+                            value={oppositeSearch}
+                            onChange={(t) => { setOppositeSearch(t); setOppositeId(null); }}
+                            onPick={(p) => { setOppositeId(p.id); setOppositeSearch(p.partyName); }}
+                            onInvalid={() => {}}
+                            className="w-full px-2 py-0.5 bg-white border border-slate-200 rounded-xs text-[11px] uppercase placeholder:text-slate-400 focus:outline-none focus:bg-[#fde68a]"
+                          />
+                        </td>
+                        <td className="py-1 px-1 border-r border-slate-200 text-center">
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={handleAddThirdParty}
+                            disabled={!oppositeId}
+                            className="px-3 py-0.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-[11px] rounded-xs disabled:opacity-40"
+                            title="Add 3rd party"
+                          >
+                            +
+                          </button>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
 
-              <div className="flex justify-end pt-3 border-t border-slate-200">
+              <div className="flex justify-end px-4 py-3.5 border-t border-slate-200">
                 <button
                   type="submit"
                   disabled={saving}
-                  className="px-6 py-1.5 bg-[#1e3a8a] hover:bg-[#172554] active:bg-[#0f172a] text-white font-bold rounded text-xs shadow-xs disabled:opacity-50"
+                  className="px-4 py-2 bg-[#1f3f7a] hover:bg-[#172f5c] text-white font-bold rounded-xs text-[13px] shadow-xs disabled:opacity-50"
                 >
                   {saving ? 'Saving...' : 'Save'}
                 </button>

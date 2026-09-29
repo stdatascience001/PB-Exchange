@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiRequest } from '../api/client.js';
+import { toast } from 'react-toastify';
 
 const PAGE_TITLE = 'Profit & Loss Report';
 
@@ -23,7 +24,11 @@ interface ShiftPnlResponse {
   masterTotal: (Omit<ShiftPnlRow, 'shiftId' | 'shiftName' | 'shiftCode'> & { shiftCount: number }) | null;
 }
 
-const todayInputDate = () => new Date().toISOString().slice(0, 10);
+// Browser-local today (toISOString() is UTC and gave yesterday before 05:30 IST).
+const todayInputDate = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
 export const ProfitLossReportPage: React.FC = () => {
   const [data, setData] = useState<ShiftPnlResponse | null>(null);
@@ -32,6 +37,16 @@ export const ProfitLossReportPage: React.FC = () => {
   const [toDate, setToDate] = useState(todayInputDate());
 
   const fetchReport = async () => {
+    if (!fromDate || !toDate || fromDate > toDate) {
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Message</div>
+          <div className="text-sm mt-0.5">{!fromDate || !toDate ? 'Please select both Dates!' : 'From Date cannot be after To Date!'}</div>
+        </div>,
+        { toastId: 'pnl-date' }
+      );
+      return;
+    }
     setLoading(true);
     try {
       const params = new URLSearchParams();
@@ -73,7 +88,8 @@ export const ProfitLossReportPage: React.FC = () => {
     document.body.removeChild(link);
   };
 
-  const fmt = (n: number) => Math.round(n).toLocaleString('en-IN');
+  // Whole numbers without grouping, as the live report prints them (736254, -90271).
+  const fmt = (n: number) => String(Math.round(n || 0));
 
   return (
     <div className="min-h-full bg-[#eaedf2] p-2.5 sm:p-3 flex flex-col justify-between text-slate-800 select-none font-sans text-xs">
@@ -121,7 +137,7 @@ export const ProfitLossReportPage: React.FC = () => {
                   <tr key={r.shiftId} className="hover:bg-slate-50 transition-colors">
                     <td className="py-2 px-3 text-center font-mono text-slate-600 border-r border-slate-200">{idx + 1}</td>
                     <td className="py-2 px-4 font-bold text-slate-900 uppercase border-r border-slate-200">
-                      {r.shiftName} <span className="text-slate-400 font-normal normal-case">{`{ ${r.shiftCode} }`}</span>
+                      {r.shiftName} {`{ ${r.shiftCode} }`}
                     </td>
                     <td className="py-2 px-4 text-right font-mono text-slate-900 border-r border-slate-200">{fmt(r.totalSale)}</td>
                     <td className="py-2 px-4 text-right font-mono text-slate-900 border-r border-slate-200">{fmt(r.dSale)}</td>

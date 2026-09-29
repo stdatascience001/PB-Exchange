@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { extractClientIp } from '../../middleware/ip-block.middleware.js';
 import { AuthService } from './auth.service.js';
 import { sendSuccess } from '../../common/response.js';
 
@@ -15,11 +16,17 @@ export class AuthController {
   static async login(req: Request, res: Response, next: NextFunction) {
     try {
       const { username, password, captchaId, captchaAnswer } = req.body;
-      const result = await AuthService.login(username, password, captchaId, captchaAnswer);
+      const result = await AuthService.login(username, password, captchaId, captchaAnswer, extractClientIp(req));
       return sendSuccess(res, result, 'Login successful');
     } catch (err) {
       next(err);
     }
+  }
+
+  // Public: reaching this at all means the IP gate let the request through; a blocked IP gets
+  // the gate's 403 IP_BLOCKED instead. The web app calls it on start-up.
+  static async accessCheck(req: Request, res: Response) {
+    return sendSuccess(res, { ip: extractClientIp(req), blocked: false }, 'Access allowed');
   }
 
   static async me(req: Request, res: Response, next: NextFunction) {
