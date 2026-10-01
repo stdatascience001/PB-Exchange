@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { env } from '../../config/env.js';
 import { UnauthorizedError, AppError } from '../../common/errors.js';
+import { addRedirectIp } from '../../middleware/inactive-redirect.js';
 import { UserSession, SystemRole, CaptchaData } from '@pb/types';
 import { registerLoginFailure, clearLoginFailures } from './login-guard.js';
 
@@ -80,6 +81,13 @@ export class AuthService {
 
     // Wrong username / password counts toward the 3-in-a-row IP block (login-guard.ts).
     const left = (n: number) => ` (${n} attempt${n === 1 ? '' : 's'} left)`;
+    // Staffs page Active = NO: right username + password still doesn't log in — the login page
+    // sends the browser off to Google (live behaviour). Not counted as a wrong login.
+    if (user && !user.isActive && verifyPassword(password, user.passwordHash)) {
+      // ...and from now on this IP is sent to Google when it opens the site (inactive-redirect.ts)
+      if (clientIp) await addRedirectIp(clientIp, user.username);
+      throw new AppError('Account is inactive', 403, 'ACCOUNT_INACTIVE');
+    }
     if (!user || !user.isActive) {
       const remaining = clientIp ? await registerLoginFailure(clientIp, cleanUsername) : null;
       throw new UnauthorizedError('Invalid credentials or account is inactive' + (remaining !== null ? left(remaining) : ''));

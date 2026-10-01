@@ -1,4 +1,5 @@
 import { db, transactions, transactionEntries, ledgers, ledgerThirdPartyLinks, shifts, shiftCycles, agents, vouchers, voucherEntries, auditLogs, duplicateReviews, staff, declarations, users, roles, shiftRoleConfig, operatorShiftPermissions, sql as pgSql } from '@pb/database';
+import { LedgerService } from '../ledgers/ledger.service.js';
 import { eq, and, desc, asc, ne, gte, inArray, isNull, ilike, or, sql } from 'drizzle-orm';
 import { redis } from '../../config/redis.js';
 import { publishDashboardUpdate } from '../dashboard/dashboard.events.js';
@@ -102,6 +103,9 @@ export class TransactionService {
     );
     if (!party) throw new NotFoundError('Party / Ledger not found');
     if (party.isLocked) throw new AppError('Party account is locked. Transactions disallowed.', 400);
+    if (!(await LedgerService.isAccountActive(party.id))) {
+      throw new AppError('Party account is deactive. Transactions disallowed.', 400);
+    }
 
     // 3. Redis Idempotency Check
     if (input.idempotencyKey) {

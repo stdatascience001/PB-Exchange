@@ -166,7 +166,11 @@ export const Navbar: React.FC<NavbarProps> = ({
     {
       id: 'dashboard',
       label: 'Dashboard',
-      onClick: () => onNavigate('dashboard'),
+      // The Dashboard menu reloads the page on /dashboard (fresh data everywhere), from any
+      // page including the Dashboard itself. The logo keeps the in-app navigation.
+      onClick: () => {
+        window.location.href = '/dashboard';
+      },
     },
     {
       id: 'master',

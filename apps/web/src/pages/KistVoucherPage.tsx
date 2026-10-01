@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
+import { DateDMYInput } from '../components/DateDMYInput.js';
+import { PartyNameInput } from '../components/PartyNameInput.js';
 import { X, Edit2 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { AutoKistModal } from '../components/AutoKistModal.js';
@@ -108,12 +110,23 @@ export const KistVoucherPage: React.FC = () => {
   // Auto Kist (F3) popup: pick a date, tick its due kists, Process Voucher
   const [showAutoKist, setShowAutoKist] = useState(false);
 
-  const fetchList = async () => {
+  // notifyEmpty: page open and the Party Enter show the live "Error / Record not avaliable!"
+  // message when nothing comes back; date changes reload quietly.
+  const fetchList = async (notifyEmpty = false) => {
     setLoading(true);
     try {
       const params = new URLSearchParams({ voucherType: VOUCHER_TYPE, fromDate, toDate });
       const res = await apiRequest<ManualVoucherItem[]>(`/vouchers/manual?${params.toString()}`);
       if (res.data) setList(res.data);
+      if (notifyEmpty && (!res.data || res.data.length === 0)) {
+        toast.error(
+          <div>
+            <div className="font-bold text-base">Error</div>
+            <div className="text-sm mt-0.5">Record not avaliable!</div>
+          </div>,
+          { toastId: 'kist-no-record' }
+        );
+      }
     } catch (err) {
       console.warn('Failed to load vouchers:', err);
     } finally {
@@ -130,11 +143,24 @@ export const KistVoucherPage: React.FC = () => {
     }
   };
 
+  const firstLoadRef = React.useRef(true);
   useEffect(() => {
-    fetchList();
+    fetchList(firstLoadRef.current);
+    firstLoadRef.current = false;
     fetchParties();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromDate, toDate]);
+
+  // Page opens with the cursor on the From date's day part; Enter then walks
+  // From DD -> MM -> YYYY -> To DD -> MM -> YYYY -> Party (Up/Down steps the focused part)
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      const el = document.getElementById('kv-from-dd') as HTMLInputElement | null;
+      el?.focus();
+      el?.select();
+    });
+    return () => cancelAnimationFrame(id);
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -319,33 +345,56 @@ export const KistVoucherPage: React.FC = () => {
 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">From</span>
-            <input
-              type="date"
+            {/* DD / MM / YYYY (the browser picker showed MM/DD/YYYY); Enter on the year -> To */}
+            <DateDMYInput
               value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800"
+              onChange={setFromDate}
+              idPrefix="kv-from"
+              onEnterFromYear={() => {
+                const el = document.getElementById('kv-to-dd') as HTMLInputElement | null;
+                el?.focus();
+                el?.select();
+              }}
             />
           </div>
 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">To</span>
-            <input
-              type="date"
+            {/* Enter on the To year -> Party */}
+            <DateDMYInput
               value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800"
+              onChange={setToDate}
+              idPrefix="kv-to"
+              onEnterFromYear={() => (document.getElementById('kv-party') as HTMLInputElement | null)?.focus()}
             />
           </div>
 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">Party</span>
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder=""
-              className="w-40 sm:w-56 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500 shadow-xs"
-            />
+            {/* Party list (every ledger, A-Z, narrowed as you type); Up/Down fills the highlighted
+                party in, Enter keeps it and reloads the vouchers (spinner while loading) */}
+            <div
+              className="w-40 sm:w-56"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  fetchList(true);
+                }
+              }}
+            >
+              <PartyNameInput
+                id="kv-party"
+                value={search}
+                onChange={setSearch}
+                names={parties.map(p => p.partyName)}
+                pickOnEmpty={false}
+                fillOnArrow
+                className="w-full px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-blue-500 focus:bg-[#fde68a] shadow-xs"
+              />
+            </div>
+            {loading && (
+              <span className="inline-block h-4 w-4 rounded-full border-2 border-slate-400 border-t-transparent animate-spin" title="Loading..." />
+            )}
           </div>
 
           <button
@@ -549,7 +598,8 @@ export const KistVoucherPage: React.FC = () => {
 
                 <div>
                   <label className="block text-slate-700 mb-1 text-[13px]">Kist Start Date</label>
-                  <input type="date" value={kistStartDate} onChange={(e) => setKistStartDate(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xs text-[13px] text-slate-900 focus:outline-none focus:bg-[#fde68a] focus:border-amber-400 font-semibold" />
+                  {/* DD / MM / YYYY, same as the filter bar */}
+                  <DateDMYInput value={kistStartDate} onChange={setKistStartDate} idPrefix="kv-kist-start" />
                 </div>
 
                 <div>
@@ -598,13 +648,8 @@ export const KistVoucherPage: React.FC = () => {
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">Date</label>
-                  <input
-                    type="date"
-                    required
-                    value={voucherDate}
-                    onChange={(e) => setVoucherDate(e.target.value)}
-                    className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500"
-                  />
+                  {/* DD / MM / YYYY, same as the filter bar */}
+                  <DateDMYInput value={voucherDate} onChange={setVoucherDate} idPrefix="kv-voucher-date" />
                 </div>
 
                 <div className="relative col-span-2 sm:col-span-1">

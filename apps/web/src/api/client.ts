@@ -30,6 +30,10 @@ export async function apiRequest<T>(
       const error: any = new Error(json.error?.message || json.message || 'API request failed');
       error.code = json.error?.code;
       // Blocked IP (3 wrong logins / admin block): tell the app to show its blocked screen.
+      // IP an inactive staff member signed in from: the whole site goes to Google (live).
+      if (error.code === 'IP_REDIRECT' && typeof window !== 'undefined') {
+        window.location.replace('https://www.google.com');
+      }
       if (error.code === 'IP_BLOCKED' && typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('pb-ip-blocked', { detail: error.message }));
       }

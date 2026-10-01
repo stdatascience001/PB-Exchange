@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { ShiftDto, UserSession } from '@pb/types';
 import { apiRequest } from '../api/client.js';
+import { toast } from 'react-toastify';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 import { FileSpreadsheet, Eye, Trash2, CheckCircle2 } from 'lucide-react';
 
 interface DuplicateTransItem {
@@ -21,6 +23,11 @@ interface DuplicateTransPageProps {
 }
 
 export const DuplicateTransPage: React.FC<DuplicateTransPageProps> = ({ shifts = [] }) => {
+  // Page opens with the cursor on the Shift dropdown
+  useEffect(() => {
+    const id = requestAnimationFrame(() => document.getElementById('dup-shift')?.focus());
+    return () => cancelAnimationFrame(id);
+  }, []);
   const [list, setList] = useState<DuplicateTransItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedShiftId, setSelectedShiftId] = useState<string>('');
@@ -38,7 +45,9 @@ export const DuplicateTransPage: React.FC<DuplicateTransPageProps> = ({ shifts =
     return activeOnly.length > 0 ? activeOnly : shifts;
   }, [shifts]);
 
-  const fetchDuplicates = async () => {
+  // notifyEmpty: a Search (button / Enter) that finds nothing shows the live "Record not
+  // avaliable!" message; the automatic reload on a shift / date change stays quiet.
+  const fetchDuplicates = async (notifyEmpty = false) => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
@@ -48,6 +57,15 @@ export const DuplicateTransPage: React.FC<DuplicateTransPageProps> = ({ shifts =
       const res = await apiRequest<DuplicateTransItem[]>(`/transactions/duplicates?${params.toString()}`);
       if (res.data) {
         setList(res.data);
+      }
+      if (notifyEmpty && (!res.data || res.data.length === 0)) {
+        toast.error(
+          <div>
+            <div className="font-bold text-base">Message</div>
+            <div className="text-sm mt-0.5">Record not avaliable!</div>
+          </div>,
+          { toastId: 'dup-no-record' }
+        );
       }
     } catch (err) {
       console.warn('Failed to load duplicate transactions:', err);
@@ -63,7 +81,7 @@ export const DuplicateTransPage: React.FC<DuplicateTransPageProps> = ({ shifts =
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    fetchDuplicates();
+    fetchDuplicates(true);
   };
 
   // The live report's row action is Delete. A row stands for a GROUP of identical slips, so
@@ -122,8 +140,18 @@ export const DuplicateTransPage: React.FC<DuplicateTransPageProps> = ({ shifts =
             <div className="flex items-center gap-1.5">
               <span className="text-slate-600 font-medium text-xs">Shift</span>
               <select
+                id="dup-shift"
                 value={selectedShiftId}
                 onChange={(e) => setSelectedShiftId(e.target.value)}
+                // Up/Down picks the shift; Enter moves to the date's day part
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const el = document.getElementById('dup-date-dd') as HTMLInputElement | null;
+                    el?.focus();
+                    el?.select();
+                  }
+                }}
                 className="px-3 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer min-w-32 shadow-xs"
               >
                 <option value="">-- ALL --</option>
@@ -136,18 +164,21 @@ export const DuplicateTransPage: React.FC<DuplicateTransPageProps> = ({ shifts =
             {/* Date */}
             <div className="flex items-center gap-1.5">
               <span className="text-slate-600 font-medium text-xs">Date</span>
-              <input
-                type="date"
+              {/* DD / MM / YYYY, as live (the browser picker showed MM/DD/YYYY) */}
+              {/* Enter: DD -> MM -> YYYY -> Search (highlighted; its Enter runs the search) */}
+              <DateDMYInput
                 value={dateStr}
-                onChange={(e) => setDateStr(e.target.value)}
-                className="px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-700 tracking-wider focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer"
+                onChange={setDateStr}
+                idPrefix="dup-date"
+                onEnterFromYear={() => document.getElementById('dup-search-btn')?.focus()}
               />
             </div>
 
             {/* Search Teal Button */}
             <button
+              id="dup-search-btn"
               type="submit"
-              className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
+              className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#00897b]"
             >
               Search
             </button>

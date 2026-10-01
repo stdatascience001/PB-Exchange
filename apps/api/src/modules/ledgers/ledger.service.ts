@@ -1,8 +1,43 @@
-import { db, ledgers, agents, ledgerThirdPartyLinks, voucherEntries } from '@pb/database';
+import { db, sql as pgSql, ledgers, agents, ledgerThirdPartyLinks, voucherEntries } from '@pb/database';
 import { eq, ilike, or, and, isNull, isNotNull, asc, inArray, sql } from 'drizzle-orm';
 import { AppError, NotFoundError } from '../../common/errors.js';
 
+// Account tab "Login Status" (Active / Deactive) — the party's own login switch, separate from
+// Locked (which blocks its transactions) — and "Account Status" (Active / Deactive): a Deactive
+// account is left out of Transaction Add's party search and can't take new slips.
+// Both are kept out of the drizzle `ledgers` table on purpose:
+// every `select().from(ledgers)` elsewhere stays exactly as it was, and the column is added on
+// first use here (same DDL as migrate.ts) so a database that hasn't re-run migrations still works.
+let loginColumnReady: Promise<void> | null = null;
+function ensureLoginColumn(): Promise<void> {
+  if (!loginColumnReady) {
+    loginColumnReady = pgSql
+      .unsafe(`
+        ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS login_active BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS account_active BOOLEAN NOT NULL DEFAULT TRUE;
+      `)
+      .then(() => undefined)
+      .catch((err) => {
+        loginColumnReady = null;
+        throw err;
+      });
+  }
+  return loginColumnReady;
+}
+
+async function statusFlagsOf(id: number): Promise<{ loginActive: boolean; accountActive: boolean }> {
+  await ensureLoginColumn();
+  const rows = await pgSql<Array<{ login_active: boolean; account_active: boolean }>>`
+    SELECT login_active, account_active FROM ledgers WHERE id = ${id}`;
+  return { loginActive: rows[0]?.login_active ?? true, accountActive: rows[0]?.account_active ?? true };
+}
+
 export class LedgerService {
+  // Account Status: false once the account is switched to Deactive
+  static async isAccountActive(id: number): Promise<boolean> {
+    return (await statusFlagsOf(id)).accountActive;
+  }
+
   // Full detail for the Ledger Update popup's Info tab, with self-referencing
   // distributor/retailer/ref-ledger/HP-ledger ids resolved to their party names.
   static async getLedgerById(id: number) {
@@ -23,8 +58,16 @@ export class LedgerService {
       agentName = agent?.agentName || null;
     }
 
+    // The party's password never leaves the server — the Ledger Update popup's Password tab
+    // only ever shows a masked placeholder and can set a new one.
+    const { password: _password, ...ledgerWithoutPassword } = ledger;
+
+    const { loginActive, accountActive } = await statusFlagsOf(ledger.id);
+
     return {
-      ...ledger,
+      ...ledgerWithoutPassword,
+      loginActive,
+      accountActive,
       daraRate: parseFloat(ledger.daraRate),
       akharRate: parseFloat(ledger.akharRate),
       commissionRate: parseFloat(ledger.commissionRate),
@@ -127,8 +170,11 @@ export class LedgerService {
       capping: ledgers.capping,
       hasLimit: ledgers.hasLimit,
       vapsiTpr: ledgers.vapsiTpr,
+      rebate: ledgers.rebate,
       isLocked: ledgers.isLocked,
       isRisky: ledgers.isRisky,
+      isHidden: ledgers.isHidden,
+      deletedAt: ledgers.deletedAt,
       updatedBy: ledgers.updatedBy,
       updatedAt: ledgers.updatedAt,
       createdAt: ledgers.createdAt,
@@ -140,8 +186,27 @@ export class LedgerService {
       ? await query.where(whereClause).orderBy(asc(ledgers.id))
       : await query.orderBy(asc(ledgers.id));
 
+    // Ledgers list "Vapsi | TPR" column: TPR = YES when the party has a 3rd Party Rebate
+    // (Info tab's TPV link), e.g. "15 | YES" for rebate 15 + a TPV link.
+    const tpvRows = await db.selectDistinct({ ledgerId: ledgerThirdPartyLinks.ledgerId })
+      .from(ledgerThirdPartyLinks)
+      .where(eq(ledgerThirdPartyLinks.linkType, 'TPV'));
+    const hasTpvLink = new Set(tpvRows.map(r => r.ledgerId));
+
+    // Login Status: the (few) parties whose login is switched off
+    await ensureLoginColumn();
+    const loginOffRows = await pgSql<Array<{ id: number }>>`SELECT id FROM ledgers WHERE login_active = FALSE`;
+    const loginOff = new Set(loginOffRows.map(r => r.id));
+    const accountOffRows = await pgSql<Array<{ id: number }>>`SELECT id FROM ledgers WHERE account_active = FALSE`;
+    const accountOff = new Set(accountOffRows.map(r => r.id));
+
     return list.map(l => ({
       ...l,
+      rebate: parseFloat(l.rebate),
+      hasTpr: hasTpvLink.has(l.id),
+      loginActive: !loginOff.has(l.id),
+      accountActive: !accountOff.has(l.id),
+      deletedAt: l.deletedAt ? l.deletedAt.toISOString() : null,
       agentName: l.agentName || '-NA-',
       userName: l.userName || l.partyName.slice(0, 8),
       groupName: l.groupName || 'Fanter',
@@ -247,6 +312,15 @@ export class LedgerService {
       .returning();
 
     if (!updated) throw new AppError('Ledger not found', 404);
+
+    if (typeof data.loginActive === 'boolean') {
+      await ensureLoginColumn();
+      await pgSql`UPDATE ledgers SET login_active = ${data.loginActive} WHERE id = ${id}`;
+    }
+    if (typeof data.accountActive === 'boolean') {
+      await ensureLoginColumn();
+      await pgSql`UPDATE ledgers SET account_active = ${data.accountActive} WHERE id = ${id}`;
+    }
     return updated;
   }
 

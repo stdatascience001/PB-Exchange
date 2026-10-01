@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
+import { PartyNameInput } from '../components/PartyNameInput.js';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 import { X, Edit2, Trash2 } from 'lucide-react';
 import { toast } from 'react-toastify';
 
@@ -57,6 +59,16 @@ export const JournalVoucherPage: React.FC = () => {
   const [list, setList] = useState<ManualVoucherItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [fromDate, setFromDate] = useState(todayInputDate());
+  // Page opens with the cursor on the From date's day part; Enter then walks
+  // From DD -> MM -> YYYY -> To DD -> MM -> YYYY -> Party (Up/Down steps the focused part)
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      const el = document.getElementById('jv-from-dd') as HTMLInputElement | null;
+      el?.focus();
+      el?.select();
+    });
+    return () => cancelAnimationFrame(id);
+  }, []);
   const [toDate, setToDate] = useState(todayInputDate());
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
@@ -236,33 +248,52 @@ export const JournalVoucherPage: React.FC = () => {
 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">From</span>
-            <input
-              type="date"
+            {/* DD / MM / YYYY (the browser picker showed MM/DD/YYYY); Enter on the year -> To */}
+            <DateDMYInput
               value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800"
+              onChange={setFromDate}
+              idPrefix="jv-from"
+              onEnterFromYear={() => (document.getElementById('jv-to-dd') as HTMLInputElement | null)?.focus()}
             />
           </div>
 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">To</span>
-            <input
-              type="date"
+            {/* Enter on the To year -> Party */}
+            <DateDMYInput
               value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800"
+              onChange={setToDate}
+              idPrefix="jv-to"
+              onEnterFromYear={() => (document.getElementById('jv-party') as HTMLInputElement | null)?.focus()}
             />
           </div>
 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">Party</span>
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder=""
-              className="w-40 sm:w-56 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500 shadow-xs"
-            />
+            {/* Party list (every ledger, A-Z, narrowed as you type); Up/Down fills the highlighted
+                party in, Enter keeps it and reloads the vouchers (spinner while loading) */}
+            <div
+              className="w-40 sm:w-56"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  fetchList();
+                }
+              }}
+            >
+              <PartyNameInput
+                id="jv-party"
+                value={search}
+                onChange={setSearch}
+                names={sortedParties.map(p => p.partyName)}
+                pickOnEmpty={false}
+                fillOnArrow
+                className="w-full px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-blue-500 focus:bg-[#fde68a] shadow-xs"
+              />
+            </div>
+            {loading && (
+              <span className="inline-block h-4 w-4 rounded-full border-2 border-slate-400 border-t-transparent animate-spin" title="Loading..." />
+            )}
           </div>
 
           <button
@@ -363,13 +394,8 @@ export const JournalVoucherPage: React.FC = () => {
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">Date</label>
-                  <input
-                    type="date"
-                    required
-                    value={voucherDate}
-                    onChange={(e) => setVoucherDate(e.target.value)}
-                    className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500"
-                  />
+                  {/* DD / MM / YYYY, same as the filter bar */}
+                  <DateDMYInput value={voucherDate} onChange={setVoucherDate} idPrefix="jv-voucher-date" />
                 </div>
 
                 <div className="relative col-span-2 sm:col-span-1">

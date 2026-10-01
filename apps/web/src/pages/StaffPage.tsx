@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { apiRequest } from '../api/client.js';
+import { toast } from 'react-toastify';
+import { PartyNameInput } from '../components/PartyNameInput.js';
 import { X, Edit2, Trash2 } from 'lucide-react';
 import { UserSession } from '@pb/types';
 
@@ -64,12 +66,51 @@ const formatStaffDate = (dateStr?: string) => {
   }
 };
 
-export const StaffPage: React.FC<StaffPageProps> = () => {
+export const StaffPage: React.FC<StaffPageProps> = ({ user }) => {
+  // Action menu's Delete is for DEVELOPER only (the API refuses everyone else too)
+  const canDeleteStaff = (user?.roleName || '').toUpperCase() === 'DEVELOPER';
   const [staffList, setStaffList] = useState<StaffItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [showModal, setShowModal] = useState(false);
+  // Staff Update popup (Action -> Edit): Info / Password tabs, as live
+  const [editTab, setEditTab] = useState<'Info' | 'Password'>('Info');
+  const [editSaving, setEditSaving] = useState(false);
+
+  // Add Staff popup keyboard flow: opens on Staff Name; Enter walks Staff Name -> Role -> W-Mode
+  // -> Username -> Password -> Agent -> Mobile -> Address -> Save (highlighted), and Enter on Save
+  // saves. Role / W-Mode change with the Up/Down arrows as usual for a select.
+  const handleAddStaffKeyDown = (e: React.KeyboardEvent<HTMLFormElement>) => {
+    if (e.key !== 'Enter') return;
+    const target = e.target as HTMLElement;
+    if ((target as HTMLButtonElement).type === 'submit') return; // Enter on Save submits
+    e.preventDefault();
+    const fields = Array.from(
+      e.currentTarget.querySelectorAll<HTMLElement>('input, select, button[type="submit"]')
+    ).filter((el) => !(el as HTMLInputElement).disabled && el.offsetParent !== null);
+    const next = fields[fields.indexOf(target) + 1];
+    if (next) {
+      next.focus();
+      if (next instanceof HTMLInputElement) next.select();
+    }
+  };
   const [editingStaffId, setEditingStaffId] = useState<number | null>(null);
+  // Staff Update popup (Action -> Edit) closes on Esc
+  useEffect(() => {
+    if (!showModal || editingStaffId === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowModal(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showModal, editingStaffId]);
+
+  // Add Staff popup opens with the cursor in Staff Name
+  useEffect(() => {
+    if (!showModal || editingStaffId !== null) return;
+    const id = requestAnimationFrame(() => document.getElementById('staff-add-name')?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [showModal, editingStaffId]);
   const [actionMenuOpenId, setActionMenuOpenId] = useState<number | null>(null);
   const [availableAgents, setAvailableAgents] = useState<string[]>([]);
 
@@ -169,8 +210,73 @@ export const StaffPage: React.FC<StaffPageProps> = () => {
     setAgent(item.agent || '');
     setMobile(item.mobile || '');
     setAddress(item.address || '');
+    setEditTab('Info');
     setShowModal(true);
     setActionMenuOpenId(null);
+  };
+
+  // Staff Update -> Info tab Save: Role / W-Mode / Agent / Mobile / Address only (no Username
+  // field here, as live — the login username stays as it is).
+  // The password is NOT sent here (it used to go out as "123456" on every edit, resetting it) —
+  // it changes only from the Password tab.
+  const handleSaveStaffInfo = async () => {
+    if (!editingStaffId) return;
+    setEditSaving(true);
+    try {
+      await apiRequest(`/staff/${editingStaffId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          role,
+          designation: role,
+          wMode,
+          agent: agent.trim().toUpperCase(),
+          mobile: mobile.trim(),
+          address: address.trim().toUpperCase(),
+        }),
+      });
+      toast.success(
+        <div>
+          <div className="font-bold text-base">Success</div>
+          <div className="text-sm mt-0.5">Staff info has been updated successfully!</div>
+        </div>,
+        { toastId: 'staff-info-saved' }
+      );
+      setShowModal(false);
+      fetchStaff();
+    } catch (err: any) {
+      alert(err.message || 'Failed to update staff member');
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
+  // Staff Update -> Password tab Save: the password only
+  const handleSaveStaffPassword = async () => {
+    if (!editingStaffId) return;
+    if (!password.trim()) {
+      alert('Please enter a password');
+      return;
+    }
+    setEditSaving(true);
+    try {
+      await apiRequest(`/staff/${editingStaffId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ password: password.trim() }),
+      });
+      toast.success(
+        <div>
+          <div className="font-bold text-base">Success</div>
+          <div className="text-sm mt-0.5">Staff info (Password) has been updated successfully!</div>
+        </div>,
+        { toastId: 'staff-password-saved' }
+      );
+      setShowModal(false);
+      fetchStaff();
+    } catch (err: any) {
+      alert(err.message || 'Failed to change password');
+    } finally {
+      setEditSaving(false);
+    }
   };
 
   const handleToggleActive = async (id: number) => {
@@ -201,8 +307,18 @@ export const StaffPage: React.FC<StaffPageProps> = () => {
 
   const handleSaveStaff = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!staffName.trim()) {
-      alert('Staff Name is required');
+    // Staff Name, Username and Password are required (live: "Invalid / Please enter all valid
+    // fields!"); the cursor goes to the first one left empty.
+    if (!staffName.trim() || !username.trim() || !password.trim()) {
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Invalid</div>
+          <div className="text-sm mt-0.5">Please enter all valid fields!</div>
+        </div>,
+        { toastId: 'staff-invalid-fields' }
+      );
+      const firstEmpty = !staffName.trim() ? 'staff-add-name' : !username.trim() ? 'staff-add-username' : 'staff-add-password';
+      document.getElementById(firstEmpty)?.focus();
       return;
     }
 
@@ -212,7 +328,7 @@ export const StaffPage: React.FC<StaffPageProps> = () => {
         role,
         designation: role,
         wMode,
-        username: username.trim().toUpperCase() || 'NONE',
+        username: username.replace(/\s+/g, '').toUpperCase() || 'NONE',
         password: password.trim() || '123456',
         agent: agent.trim().toUpperCase(),
         mobile: mobile.trim(),
@@ -256,7 +372,9 @@ export const StaffPage: React.FC<StaffPageProps> = () => {
       (s.wMode && s.wMode.toLowerCase().includes(term)) ||
       (s.updatedBy && s.updatedBy.toLowerCase().includes(term))
     );
-  });
+  })
+    // Newest staff first — a just-created staff member shows at the top of the list
+    .sort((a, b) => b.id - a.id);
 
   return (
     <div className="min-h-full bg-[#eaedf2] p-3 sm:p-4 flex flex-col justify-between text-slate-800 select-none font-sans">
@@ -424,6 +542,7 @@ export const StaffPage: React.FC<StaffPageProps> = () => {
                               <span className="text-xs">🔄</span>
                               <span>{s.isActive ? 'Deactivate' : 'Activate'}</span>
                             </button>
+                            {canDeleteStaff && (
                             <button
                               type="button"
                               onClick={() => handleDeleteStaff(s.id, s.fullName)}
@@ -432,6 +551,7 @@ export const StaffPage: React.FC<StaffPageProps> = () => {
                               <Trash2 className="h-3.5 w-3.5 text-red-600" />
                               <span>Delete</span>
                             </button>
+                            )}
                           </div>
                         )}
                       </div>
@@ -469,8 +589,137 @@ export const StaffPage: React.FC<StaffPageProps> = () => {
         </div>
       </div>
 
-      {/* Staff Add / Edit Modal matching Image 3 */}
-      {showModal && (
+      {/* Staff Update popup (Action -> Edit), as live: "Staff Update | NAME" with Info / Password */}
+      {showModal && editingStaffId !== null && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 overflow-y-auto">
+          <div className="bg-white rounded shadow-2xl max-w-2xl w-full overflow-hidden border border-slate-300 my-auto animate-in fade-in zoom-in-95 duration-150">
+            <div className="bg-[#152847] text-white px-4 py-2.5 flex items-center justify-between">
+              <h2 className="text-sm font-bold tracking-wide">Staff Update | {staffName}</h2>
+              <button
+                type="button"
+                onClick={() => setShowModal(false)}
+                className="text-white hover:text-slate-300 transition-colors p-0.5"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="flex border-b border-slate-200 bg-slate-50 text-xs font-semibold">
+              {(['Info', 'Password'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setEditTab(tab)}
+                  className={`px-5 py-2 border-b-2 transition-colors ${
+                    editTab === tab ? 'border-[#152847] text-[#152847] bg-white' : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
+
+            {editTab === 'Info' ? (
+              <div className="p-4 space-y-3.5 text-xs">
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                  <div>
+                    <label className="block text-slate-700 font-medium mb-1">Role</label>
+                    <select
+                      value={role}
+                      onChange={(e) => setRole(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded font-bold text-slate-800 text-xs focus:outline-none focus:border-blue-500 uppercase"
+                    >
+                      {ROLES.map((r) => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-slate-700 font-medium mb-1">W-Mode</label>
+                    <select
+                      value={wMode}
+                      onChange={(e) => setWMode(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded font-bold text-slate-800 text-xs focus:outline-none focus:border-blue-500 uppercase"
+                    >
+                      {W_MODES.map((wm) => (
+                        <option key={wm} value={wm}>{wm}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-slate-700 font-medium mb-1">Agent</label>
+                    <input
+                      type="text"
+                      list="staff-agents-list-edit"
+                      value={agent}
+                      onChange={(e) => setAgent(e.target.value)}
+                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 uppercase focus:outline-none focus:border-blue-500"
+                    />
+                    <datalist id="staff-agents-list-edit">
+                      {availableAgents.map((ag) => (
+                        <option key={ag} value={ag} />
+                      ))}
+                    </datalist>
+                  </div>
+                  <div>
+                    <label className="block text-slate-700 font-medium mb-1">Mobile</label>
+                    <input
+                      type="text"
+                      value={mobile}
+                      onChange={(e) => setMobile(e.target.value)}
+                      placeholder="MOBILE"
+                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded font-mono text-slate-800 text-xs placeholder:text-slate-300 placeholder:font-bold focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                  <div>
+                    <label className="block text-slate-700 font-medium mb-1">Address</label>
+                    <input
+                      type="text"
+                      value={address}
+                      onChange={(e) => setAddress(e.target.value)}
+                      placeholder="ADDRESSS"
+                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-slate-800 text-xs uppercase placeholder:text-slate-300 placeholder:font-bold focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={editSaving}
+                  onClick={handleSaveStaffInfo}
+                  className="w-full sm:w-1/4 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded text-xs transition-colors shadow-xs disabled:opacity-50"
+                >
+                  {editSaving ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            ) : (
+              <div className="p-4 space-y-3 text-xs max-w-xs">
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">Password</label>
+                  <input
+                    type="text"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded font-bold text-slate-800 text-xs focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <button
+                  type="button"
+                  disabled={editSaving}
+                  onClick={handleSaveStaffPassword}
+                  className="w-full py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded text-xs transition-colors shadow-xs disabled:opacity-50"
+                >
+                  {editSaving ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Staff Add Modal matching Image 3 */}
+      {showModal && editingStaffId === null && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 overflow-y-auto">
           <div className="bg-white rounded shadow-2xl max-w-2xl w-full overflow-hidden border border-slate-300 my-auto animate-in fade-in zoom-in-95 duration-150">
             {/* Modal Header matching Image 3 */}
@@ -486,7 +735,7 @@ export const StaffPage: React.FC<StaffPageProps> = () => {
             </div>
 
             {/* Modal Body Form matching Image 3 */}
-            <form onSubmit={handleSaveStaff}>
+            <form onSubmit={handleSaveStaff} onKeyDown={handleAddStaffKeyDown}>
               <div className="p-4 space-y-3.5 text-xs">
                 {/* Row 1: Staff Name (yellow), Role, W-Mode */}
                 <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
@@ -495,8 +744,8 @@ export const StaffPage: React.FC<StaffPageProps> = () => {
                       Staff Name
                     </label>
                     <input
+                      id="staff-add-name"
                       type="text"
-                      required
                       autoFocus
                       value={staffName}
                       onChange={(e) => setStaffName(e.target.value)}
@@ -546,9 +795,11 @@ export const StaffPage: React.FC<StaffPageProps> = () => {
                       Username
                     </label>
                     <input
+                      id="staff-add-username"
                       type="text"
                       value={username}
-                      onChange={(e) => setUsername(e.target.value)}
+                      // No spaces in a login username — typed or pasted spaces are dropped
+                      onChange={(e) => setUsername(e.target.value.replace(/\s+/g, ''))}
                       placeholder="USERNAME"
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 placeholder:text-slate-300 placeholder:font-bold uppercase focus:outline-none focus:border-blue-500"
                     />
@@ -559,6 +810,7 @@ export const StaffPage: React.FC<StaffPageProps> = () => {
                       Password
                     </label>
                     <input
+                      id="staff-add-password"
                       type="text"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
@@ -571,18 +823,17 @@ export const StaffPage: React.FC<StaffPageProps> = () => {
                     <label className="block text-slate-700 font-medium mb-1">
                       Agent
                     </label>
-                    <input
-                      type="text"
-                      list="staff-agents-list"
+                    {/* Agent list on focus; ↑/↓ writes the highlighted agent in, Enter keeps it and
+                        moves on (an empty box just moves on) */}
+                    <PartyNameInput
+                      id="staff-add-agent"
                       value={agent}
-                      onChange={(e) => setAgent(e.target.value)}
-                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 uppercase focus:outline-none focus:border-blue-500"
+                      onChange={setAgent}
+                      names={availableAgents}
+                      pickOnEmpty={false}
+                      fillOnArrow
+                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 uppercase focus:outline-none focus:border-blue-500 focus:bg-[#fde68a]"
                     />
-                    <datalist id="staff-agents-list">
-                      {availableAgents.map((ag) => (
-                        <option key={ag} value={ag} />
-                      ))}
-                    </datalist>
                   </div>
 
                   <div>
@@ -592,7 +843,10 @@ export const StaffPage: React.FC<StaffPageProps> = () => {
                     <input
                       type="text"
                       value={mobile}
-                      onChange={(e) => setMobile(e.target.value)}
+                      inputMode="numeric"
+                      maxLength={10}
+                      // Digits only, at most 10 — letters / symbols / an 11th digit are dropped
+                      onChange={(e) => setMobile(e.target.value.replace(/\D/g, '').slice(0, 10))}
                       placeholder="MOBILE"
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded font-mono text-slate-800 text-xs placeholder:text-slate-300 placeholder:font-bold focus:outline-none focus:border-blue-500"
                     />
@@ -618,7 +872,7 @@ export const StaffPage: React.FC<StaffPageProps> = () => {
               <div className="p-3 bg-white border-t border-slate-200 flex justify-end items-center gap-3">
                 <button
                   type="submit"
-                  className="px-6 py-1.5 bg-[#152847] hover:bg-[#1e3a68] active:bg-[#0f1d33] text-white font-bold rounded text-xs transition-colors shadow-xs"
+                  className="px-6 py-1.5 bg-[#152847] hover:bg-[#1e3a68] active:bg-[#0f1d33] text-white font-bold rounded text-xs transition-colors shadow-xs outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#152847]"
                 >
                   Save
                 </button>

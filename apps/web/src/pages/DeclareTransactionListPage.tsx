@@ -4,6 +4,7 @@ import { apiRequest } from '../api/client.js';
 import { displayNumber } from '../utils/entryDisplay.js';
 import { X, Search as SearchIcon, Eye, Copy, Trash2, Plus, Edit } from 'lucide-react';
 import { TransactionItem } from './TransactionListPage.js';
+import { JantriViewModal } from '../components/JantriViewModal.js';
 
 interface DeclareTransactionListPageProps {
   shifts?: ShiftDto[];
@@ -56,6 +57,62 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
 
   const [searchParty, setSearchParty] = useState('');
   const [selectedStaff, setSelectedStaff] = useState('');
+  // Jantri View (F3) popup — the same grid as Live Transactions / Trans-Audit
+  const [showJantriModal, setShowJantriModal] = useState(false);
+
+  // Date box as three parts (DD / MM / YYYY), as live: Enter steps day -> month -> year ->
+  // Search Party, and Up/Down steps the focused part. dateStr is only updated once the parts
+  // make a real date, so a half-typed part never reloads the list.
+  const [dd, setDd] = useState(() => dateStr.slice(8, 10));
+  const [mm, setMm] = useState(() => dateStr.slice(5, 7));
+  const [yyyy, setYyyy] = useState(() => dateStr.slice(0, 4));
+  const commitDate = (d: string, m: string, y: string) => {
+    const di = parseInt(d, 10), mi = parseInt(m, 10), yi = parseInt(y, 10);
+    if (!/^\d{4}$/.test(y) || !(mi >= 1 && mi <= 12) || !(di >= 1)) return;
+    const daysInMonth = new Date(yi, mi, 0).getDate();
+    if (di > daysInMonth) return;
+    setDateStr(`${y}-${String(mi).padStart(2, '0')}-${String(di).padStart(2, '0')}`);
+  };
+  const focusField = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
+  const onDatePartKeyDown = (
+    part: 'dd' | 'mm' | 'yyyy',
+    e: React.KeyboardEvent<HTMLInputElement>,
+  ) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      focusField(part === 'dd' ? 'decl-date-mm' : part === 'mm' ? 'decl-date-yyyy' : 'decl-search-party');
+      return;
+    }
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    const step = e.key === 'ArrowUp' ? 1 : -1;
+    if (part === 'dd') {
+      const max = new Date(parseInt(yyyy, 10) || 2000, parseInt(mm, 10) || 1, 0).getDate();
+      let v = (parseInt(dd, 10) || 1) + step;
+      if (v > max) v = 1;
+      if (v < 1) v = max;
+      const next = String(v).padStart(2, '0');
+      setDd(next);
+      commitDate(next, mm, yyyy);
+    } else if (part === 'mm') {
+      let v = (parseInt(mm, 10) || 1) + step;
+      if (v > 12) v = 1;
+      if (v < 1) v = 12;
+      const next = String(v).padStart(2, '0');
+      setMm(next);
+      commitDate(dd, next, yyyy);
+    } else {
+      const next = String((parseInt(yyyy, 10) || new Date().getFullYear()) + step);
+      setYyyy(next);
+      commitDate(dd, mm, next);
+    }
+  };
+  // Staff filter: applied at once (dropdown pick / Up-Down), options from the loaded slips
+  const [appliedStaff, setAppliedStaff] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('ALL');
   
   // Selected transaction for right panel
@@ -127,6 +184,31 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedShiftId, selectedStatus, dateStr, isSelectedShiftDeclared]);
 
+  // Search Party filters as you type: the list reloads for the typed text a moment after the
+  // last keystroke (Enter / Search (F5) still reload straight away)
+  const searchTypedRef = React.useRef(false);
+  useEffect(() => {
+    if (!searchTypedRef.current) {
+      searchTypedRef.current = true;
+      return;
+    }
+    const t = setTimeout(() => fetchTransactions(), 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParty]);
+
+  // Page opens with the cursor on the Shift dropdown
+  useEffect(() => {
+    const id = requestAnimationFrame(() => document.getElementById('decl-shift')?.focus());
+    return () => cancelAnimationFrame(id);
+  }, []);
+
+  // F5 always reloads with the filters on screen now. The key listener below is only re-made
+  // when a few filters change, so it used to call a stale fetchTransactions (old date / old
+  // "is declared" state) — F5 then reloaded the wrong day or cleared the list.
+  const fetchTransactionsRef = React.useRef(fetchTransactions);
+  fetchTransactionsRef.current = fetchTransactions;
+
   // Keyboard Shortcuts: F2 -> Add Transaction New Tab, F3 -> Jantri, F5 -> Search Refresh
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -134,11 +216,12 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
         e.preventDefault();
         window.open(`/transaction_add/${selectedShiftId || '1'}`, '_blank');
       } else if (e.key === 'F3') {
+        // Jantri View popup for the selected slip's party (Consolidate / Cut toggles inside)
         e.preventDefault();
-        if (onNavigate) onNavigate('jantri');
+        setShowJantriModal(true);
       } else if (e.key === 'F5') {
         e.preventDefault();
-        fetchTransactions();
+        fetchTransactionsRef.current();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -188,7 +271,12 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
     }
   };
 
-  const totalSum = list.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0);
+  const visibleList = appliedStaff
+    ? list.filter(t => (t.addedBy || '').toUpperCase() === appliedStaff.toUpperCase())
+    : list;
+  const staffOptions = Array.from(new Set(list.map(t => (t.addedBy || '').trim()).filter(Boolean)))
+    .sort((a, b) => a.localeCompare(b));
+  const totalSum = visibleList.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0);
 
   return (
     <div className="h-[calc(100vh-82px)] max-h-[calc(100vh-82px)] min-h-[520px] bg-[#eaedf2] p-2 sm:p-2.5 flex flex-col justify-between text-slate-800 select-none font-sans text-xs overflow-hidden">
@@ -204,8 +292,16 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">Shift</span>
             <select
+              id="decl-shift"
               value={selectedShiftId}
               onChange={(e) => setSelectedShiftId(e.target.value)}
+              // Up/Down changes the shift (its slips load); Enter moves to the date's day part
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  focusField('decl-date-dd');
+                }
+              }}
               className="px-2.5 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer min-w-36 shadow-xs"
             >
               <option value="">-- CHOOSE --</option>
@@ -216,19 +312,54 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
           </div>
 
           {/* Date — a real filter now, not a label */}
-          <input
-            type="date"
-            value={dateStr}
-            onChange={(e) => setDateStr(e.target.value)}
-            className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-700 tracking-wider focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer"
-          />
+          <div className="flex items-center gap-1 px-2 py-1 bg-white border border-slate-300 rounded text-xs tracking-wider">
+            <input
+              id="decl-date-dd"
+              type="text"
+              inputMode="numeric"
+              maxLength={2}
+              value={dd}
+              onChange={(e) => { const v = e.target.value.replace(/\D/g, ''); setDd(v); commitDate(v, mm, yyyy); }}
+              onKeyDown={(e) => onDatePartKeyDown('dd', e)}
+              className="w-7 text-center bg-transparent outline-none font-semibold text-slate-700 focus:bg-[#fde68a] rounded-xs"
+            />
+            <span className="text-slate-500">/</span>
+            <input
+              id="decl-date-mm"
+              type="text"
+              inputMode="numeric"
+              maxLength={2}
+              value={mm}
+              onChange={(e) => { const v = e.target.value.replace(/\D/g, ''); setMm(v); commitDate(dd, v, yyyy); }}
+              onKeyDown={(e) => onDatePartKeyDown('mm', e)}
+              className="w-7 text-center bg-transparent outline-none font-semibold text-slate-700 focus:bg-[#fde68a] rounded-xs"
+            />
+            <span className="text-slate-500">/</span>
+            <input
+              id="decl-date-yyyy"
+              type="text"
+              inputMode="numeric"
+              maxLength={4}
+              value={yyyy}
+              onChange={(e) => { const v = e.target.value.replace(/\D/g, ''); setYyyy(v); commitDate(dd, mm, v); }}
+              onKeyDown={(e) => onDatePartKeyDown('yyyy', e)}
+              className="w-10 text-center bg-transparent outline-none font-semibold text-slate-700 focus:bg-[#fde68a] rounded-xs"
+            />
+          </div>
 
           {/* Search Party Input */}
           <div className="relative">
             <input
+              id="decl-search-party"
               type="text"
               value={searchParty}
               onChange={(e) => setSearchParty(e.target.value)}
+              // Enter still runs the Search (form submit), then the cursor moves to the staff filter
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  requestAnimationFrame(() => focusField('decl-staff'));
+                }
+              }}
               placeholder="SEARCH PARTY..."
               className="w-36 sm:w-44 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 focus:outline-none focus:border-blue-500 uppercase placeholder:text-slate-400 font-semibold"
             />
@@ -244,21 +375,43 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
 
           {/* All Staff dropdown */}
           <select
+            id="decl-staff"
             value={selectedStaff}
-            onChange={(e) => setSelectedStaff(e.target.value)}
+            // Up/Down (or a pick) switches the staff and the list follows at once; Enter -> status
+            onChange={(e) => {
+              setSelectedStaff(e.target.value);
+              setAppliedStaff(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                focusField('decl-status');
+              }
+            }}
             className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500 cursor-pointer"
           >
             <option value="">-- ALL STAFF --</option>
-            <option value="B09">B09</option>
-            <option value="B08">B08</option>
-            <option value="B10">B10</option>
-            <option value="U28">U28</option>
+            {staffOptions.map(name => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+            {selectedStaff && !staffOptions.includes(selectedStaff) && (
+              <option value={selectedStaff}>{selectedStaff}</option>
+            )}
           </select>
 
           {/* Status dropdown */}
           <select
+            id="decl-status"
             value={selectedStatus}
+            // Up/Down switches the status and the list reloads for it; Enter highlights Add (F2),
+            // whose own Enter then opens it
             onChange={(e) => setSelectedStatus(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                focusField('decl-add-btn');
+              }
+            }}
             className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500 cursor-pointer"
           >
             <option value="ALL">ALL</option>
@@ -292,7 +445,7 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
                       Loading declared transactions...
                     </td>
                   </tr>
-                ) : list.length === 0 ? (
+                ) : visibleList.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="py-12 text-center text-slate-400 font-medium">
                       {!selectedShiftId
@@ -303,7 +456,7 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
                     </td>
                   </tr>
                 ) : (
-                  list.map((tx, idx) => {
+                  visibleList.map((tx, idx) => {
                     const isSelected = selectedTx?.id === tx.id;
                     return (
                       <tr
@@ -359,8 +512,9 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setViewingTx(tx);
-                                setShowViewModal(true);
+                                // Live: View just shows the slip's numbers in the right-hand
+                                // panel (no popup) — same as clicking the row
+                                setSelectedTx(tx);
                               }}
                               title="View Slip Details"
                               className="px-2 py-0.5 bg-[#1662c6] hover:bg-[#1354ab] text-white text-[10px] font-bold rounded shadow-xs transition-colors cursor-pointer"
@@ -402,7 +556,7 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
                 {/* Summary Row matching Screenshot 3 */}
                 <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
                   <td className="py-2 px-2.5 text-center border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">
-                    {list.length}
+                    {visibleList.length}
                   </td>
                   <td className="py-2 px-2 text-center border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">D</td>
                   <td className="py-2 px-2.5 text-center border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">U/J</td>
@@ -470,15 +624,16 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
           {/* Right Buttons */}
           <div className="flex flex-wrap items-center gap-2">
             <button
+              id="decl-add-btn"
               type="button"
               onClick={() => window.open(`/transaction_add/${selectedShiftId || '1'}`, '_blank')}
-              className="px-4 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] active:bg-[#0f4691] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
+              className="px-4 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] active:bg-[#0f4691] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#1662c6]"
             >
               Add (F2)
             </button>
             <button
               type="button"
-              onClick={() => onNavigate && onNavigate('jantri')}
+              onClick={() => setShowJantriModal(true)}
               className="px-4 py-1.5 bg-[#d97706] hover:bg-[#b45309] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
             >
               Jantri View (F3)
@@ -618,6 +773,12 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
           </div>
         </div>
       )}
+      <JantriViewModal
+        open={showJantriModal}
+        onClose={() => setShowJantriModal(false)}
+        selectedTx={selectedTx}
+        list={visibleList}
+      />
     </div>
   );
 };

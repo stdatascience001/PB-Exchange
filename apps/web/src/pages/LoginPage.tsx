@@ -52,6 +52,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
       localStorage.setItem('pb_user', JSON.stringify(res.data.user));
       onLoginSuccess(res.data.user, res.data.token);
     } catch (err: any) {
+      // Inactive staff (Staffs page Active = NO) signing in with the right password: off to Google
+      if (err?.code === 'ACCOUNT_INACTIVE') {
+        window.location.replace('https://www.google.com');
+        return;
+      }
       setError(err.message || 'Login failed');
       fetchCaptcha();
     } finally {

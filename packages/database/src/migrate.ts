@@ -178,6 +178,19 @@ export async function runMigrations() {
     -- Ledger Update popup's Password/Account/Re-Config tabs
     ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS password VARCHAR(100) NOT NULL DEFAULT '123456';
     ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS is_hidden BOOLEAN NOT NULL DEFAULT FALSE;
+    -- IPs an inactive staff member signed in from: the site redirects them to Google
+    CREATE TABLE IF NOT EXISTS inactive_login_ips (
+      id SERIAL PRIMARY KEY,
+      ip_address VARCHAR(45) NOT NULL,
+      username VARCHAR(60) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMP NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS inactive_login_ips_ip_idx ON inactive_login_ips(ip_address);
+    -- Account tab "Login Status" (Active / Deactive), separate from is_locked
+    ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS login_active BOOLEAN NOT NULL DEFAULT TRUE;
+    -- Account tab "Account Status" (Active / Deactive): a Deactive account takes no new slips
+    ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS account_active BOOLEAN NOT NULL DEFAULT TRUE;
     ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS master_ledger_config BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS is_transaction_allow BOOLEAN NOT NULL DEFAULT TRUE;
 

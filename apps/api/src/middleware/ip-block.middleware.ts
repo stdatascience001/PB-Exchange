@@ -2,6 +2,9 @@ import { Request, Response, NextFunction } from 'express';
 import { db, blockedIps } from '@pb/database';
 import { eq } from 'drizzle-orm';
 import { AppError } from '../common/errors.js';
+import jwt from 'jsonwebtoken';
+import { env } from '../config/env.js';
+import { isRedirectIp } from './inactive-redirect.js';
 
 const blockedIpCache = new Set<string>();
 // IP → auto-unblock time for temporary blocks (LOGIN_BLOCK_MINUTES > 0)
@@ -61,6 +64,25 @@ export async function checkIpBlocked(req: Request, res: Response, next: NextFunc
     } else {
       // code IP_BLOCKED: the web app swaps the whole screen for its "access blocked" page.
       return next(new AppError(`Your IP address (${clientIp}) is blocked by the administrator.`, 403, 'IP_BLOCKED'));
+    }
+  }
+
+  // An IP an inactive staff member tried to sign in from: the app is sent to Google (code
+  // IP_REDIRECT). A request carrying a valid session token (someone already signed in on that
+  // IP) is let through, so an admin sharing the IP isn't locked out mid-session.
+  if (await isRedirectIp(clientIp)) {
+    const auth = req.headers.authorization;
+    let signedIn = false;
+    if (auth && auth.startsWith('Bearer ')) {
+      try {
+        jwt.verify(auth.slice(7), env.JWT_SECRET);
+        signedIn = true;
+      } catch {
+        signedIn = false;
+      }
+    }
+    if (!signedIn) {
+      return next(new AppError('Redirect', 403, 'IP_REDIRECT'));
     }
   }
 

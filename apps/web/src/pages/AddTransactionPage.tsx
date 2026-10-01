@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ShiftDto, LedgerDto, UserSession } from '@pb/types';
 import { apiRequest } from '../api/client.js';
-import { displayNumber } from '../utils/entryDisplay.js';
+import { displayNumber, harufOf } from '../utils/entryDisplay.js';
 import { toast } from 'react-toastify';
 import { ArrowLeft, X, Check, Search, Plus, Shuffle, Calendar, Clock } from 'lucide-react';
 
@@ -10,6 +10,102 @@ interface EntryRow {
   amount: number;
   entryType: 'DARA' | 'HARUF_ANDAR' | 'HARUF_BAHAR';
 }
+
+// NUMBER box accepts only: 1-100 (1 or 01 ... 9 or 09, 10-99, 100 or 00), Bahar haruf
+// 111 ... 999 / 000, and Andar haruf 1111 ... 9999 / 0000. Returns the value the grid shows
+// (1 -> "01", 00 -> "100"), or null for anything else.
+const normalizeTypedNumber = (raw: string): string | null => {
+  const v = raw.trim();
+  if (/^\d{1,2}$/.test(v)) {
+    if (v === '00') return '100';
+    const n = parseInt(v, 10);
+    return n >= 1 && n <= 99 ? String(n).padStart(2, '0') : null;
+  }
+  if (v === '100') return '100';
+  if (/^(\d)\1{2}$/.test(v) || /^(\d)\1{3}$/.test(v)) return v;
+  return null;
+};
+
+// A-/B- prefixed haruf tokens (A5, B-3) keep their existing handling and aren't checked here.
+const isPrefixedHaruf = (token: string) => /^[AB]/i.test(token.trim());
+
+// Every NUMBER-box token valid? Covers "12 34", "5=100" / "5*100", and "1-10" ranges.
+const allTypedNumbersValid = (rawInput: string): boolean => {
+  const tokens = rawInput.trim().split(/[\s,;]+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  return tokens.every((token) => {
+    if (isPrefixedHaruf(token)) return true;
+    const numPart = token.split(/[=*]/)[0];
+    if (numPart.includes('-')) {
+      const [a, b] = numPart.split('-');
+      return normalizeTypedNumber(a || '') !== null && normalizeTypedNumber(b || '') !== null
+        && /^\d{1,3}$/.test(a) && /^\d{1,3}$/.test(b)
+        && parseInt(a, 10) >= 1 && parseInt(b, 10) <= 100 && parseInt(a, 10) <= parseInt(b, 10);
+    }
+    return normalizeTypedNumber(numPart) !== null;
+  });
+};
+
+const showInvalidNumberToast = () => {
+  toast.error(
+    <div>
+      <div className="font-bold text-base">Message</div>
+      <div className="text-sm mt-0.5">Please enter a valid Number!</div>
+    </div>,
+    { toastId: 'invalid-number' }
+  );
+};
+
+// Main NUMBER box's wrong-number toast, worded as on the live page ("Invalid Amount" /
+// "Please enter a valid Amount!"). The popups keep showInvalidNumberToast above.
+const showInvalidEntryToast = () => {
+  toast.error(
+    <div>
+      <div className="font-bold text-base">Invalid Amount</div>
+      <div className="text-sm mt-0.5">Please enter a valid Amount!</div>
+    </div>,
+    { toastId: 'invalid-entry-number' }
+  );
+};
+
+// Jantri number 100 is stored as "00" (results are declared 00-99 and payout / Jantri match
+// on "00"); the grid shows it as 100.
+const toStoredNumber = (e: { numberValue: string; entryType: string }) =>
+  e.entryType === 'DARA' && e.numberValue.trim() === '100' ? '00' : e.numberValue;
+
+// F12 Jantri View cell key of an entry: "N1".."N100" for numbers (00 = 100), "B0".."B9" for
+// Bahar haruf (111 / B1), "A0".."A9" for Andar haruf (1111 / A1), or null.
+const jantriKeyOf = (e: { numberValue: string; entryType: string }): string | null => {
+  const h = harufOf(e);
+  if (h) return `${h.side}${h.digit}`;
+  const v = e.numberValue.trim();
+  if (!/^\d{1,3}$/.test(v)) return null;
+  const n = v === '00' ? 100 : parseInt(v, 10);
+  return n >= 1 && n <= 100 ? `N${n}` : null;
+};
+
+// Row value written back for a cell typed in the Jantri View — the same form the NUMBER box
+// produces (01 ... 100, 111 for Bahar 1, 1111 for Andar 1).
+const numberForJantriKey = (key: string): string => {
+  const kind = key[0];
+  const rest = key.slice(1);
+  if (kind === 'B') return rest.repeat(3);
+  if (kind === 'A') return rest.repeat(4);
+  const n = parseInt(rest, 10);
+  return n === 100 ? '100' : String(n).padStart(2, '0');
+};
+
+// Cross popup ANDER / BAHAR box: digits only, each digit at most once (a repeat is dropped,
+// the first one kept), and no more than 8 digits.
+const cleanCrossDigits = (raw: string): string => {
+  let out = '';
+  for (const ch of raw.replace(/\D/g, '')) {
+    if (out.includes(ch)) continue;
+    out += ch;
+    if (out.length === 8) break;
+  }
+  return out;
+};
 
 // Palti = the number reversed. A single digit is padded first, so "2" -> "02" -> "20", and
 // reversing "10" yields "01" which the live list shows as "1" (the leading zero is dropped
@@ -78,6 +174,9 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   const [selectedCopyShiftIds, setSelectedCopyShiftIds] = useState<number[]>([]);
   const [copyToAll, setCopyToAll] = useState(false);
   const [narration, setNarration] = useState('');
+  // Applied Narration list: one row per Cross / From-To popup saved into this slip, newest
+  // first — "Cross | 1234 x 1235 / 10 / Y", "P-From-To | 1 x 10 / 10 /" (live panel).
+  const [appliedNarrations, setAppliedNarrations] = useState<{ label: string; value: string }[]>([]);
 
   // Countdown to THIS shift's cut-off for the logged-in user's role — the time set per role
   // on Shift Manage's Time tab. Seeded from the shift's own timeRemainingSeconds (the API
@@ -129,8 +228,31 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
   // DOM Refs for fast keyboard navigation
   const partyInputRef = useRef<HTMLInputElement>(null);
+  // First open of the page: cursor starts in the Party box
+  useEffect(() => {
+    const id = requestAnimationFrame(() => partyInputRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, []);
   const numberInputRef = useRef<HTMLInputElement>(null);
   const amountInputRef = useRef<HTMLInputElement>(null);
+  // Enter presses in a row on an empty NUMBER + AMOUNT row: the 2nd one moves focus to (and
+  // highlights) Save Now, and the 3rd — pressed on the focused button — clicks it.
+  const emptyEnterStreakRef = useRef(0);
+  const saveNowBtnRef = useRef<HTMLButtonElement>(null);
+  // true = this Enter was handled here (Save Now focused)
+  const trackEmptyEnter = (key: string): boolean => {
+    if (key !== 'Enter' || inputNumber.trim() !== '' || inputAmount.trim() !== '') {
+      emptyEnterStreakRef.current = 0;
+      return false;
+    }
+    emptyEnterStreakRef.current += 1;
+    if (emptyEnterStreakRef.current < 2) return false;
+    emptyEnterStreakRef.current = 0;
+    const btn = saveNowBtnRef.current;
+    if (!btn || btn.disabled) return false;
+    btn.focus();
+    return true;
+  };
 
   // 1. Fetch parties & shifts on mount
   useEffect(() => {
@@ -186,7 +308,10 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
                 if (Array.isArray(txRes.data.entries)) {
                   setEntriesList(txRes.data.entries.map((e: any) => ({
-                    numberValue: displayNumber(e),
+                    // Stored "00" is jantri number 100; a single digit shows as "01"
+                    numberValue: (e.entryType === 'DARA' || !e.entryType) && /^\d{1,2}$/.test(String(e.numberValue).trim())
+                      ? (normalizeTypedNumber(String(e.numberValue)) ?? displayNumber(e))
+                      : displayNumber(e),
                     amount: parseFloat(e.amount),
                     entryType: e.entryType,
                   })));
@@ -296,8 +421,11 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
   // Filtered parties based on input
   const filteredParties = useMemo(() => {
-    if (!partySearch.trim()) return parties;
-    return parties.filter(p =>
+    // Only Active accounts are offered — a party whose Account Status is Deactive (Ledgers ->
+    // Account tab) is left out of the search (the API refuses its new slips too)
+    const activeParties = parties.filter(p => (p as { accountActive?: boolean }).accountActive !== false);
+    if (!partySearch.trim()) return activeParties;
+    return activeParties.filter(p =>
       p.partyName.toLowerCase().includes(partySearch.trim().toLowerCase())
     );
   }, [parties, partySearch]);
@@ -314,6 +442,57 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
     return entriesList.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
   }, [entriesList]);
 
+  // F12 Jantri View: amount per cell, summed over every entry of that number / haruf
+  const jantriTotals = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const e of entriesList) {
+      const k = jantriKeyOf(e);
+      if (k) m.set(k, (m.get(k) || 0) + (Number(e.amount) || 0));
+    }
+    return m;
+  }, [entriesList]);
+  const jantriCell = (key: string) => jantriTotals.get(key) || 0;
+
+  // Typing in a Jantri View cell sets that number's amount: its rows collapse into one row
+  // (kept where the first one was) carrying the typed amount; clearing the cell removes them.
+  const setJantriCell = (key: string, raw: string) => {
+    const amt = parseFloat(raw.replace(/[^\d.]/g, '')) || 0;
+    setEntriesList(prev => {
+      const firstIdx = prev.findIndex(e => jantriKeyOf(e) === key);
+      const rest = prev.filter(e => jantriKeyOf(e) !== key);
+      if (amt <= 0) return rest;
+      const row: EntryRow = { numberValue: numberForJantriKey(key), amount: amt, entryType: 'DARA' };
+      if (firstIdx === -1) return [row, ...rest];
+      const out = [...rest];
+      out.splice(Math.min(firstIdx, out.length), 0, row);
+      return out;
+    });
+  };
+
+  // Jantri View cell order for Enter / arrow navigation: 1..100, then B1..B0, then A1..A0
+  const JANTRI_DIGITS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
+  const jantriOrder = useMemo(() => [
+    ...Array.from({ length: 100 }, (_, i) => `N${i + 1}`),
+    ...JANTRI_DIGITS.map(d => `B${d}`),
+    ...JANTRI_DIGITS.map(d => `A${d}`),
+  ], []);
+  const focusJantriCell = (idx: number) => {
+    const key = jantriOrder[Math.max(0, Math.min(jantriOrder.length - 1, idx))];
+    const el = document.getElementById(`jantri-cell-${key}`) as HTMLInputElement | null;
+    el?.focus();
+    el?.select();
+  };
+  const closeJantriView = () => {
+    setShowJantriModal(false);
+    requestAnimationFrame(() => numberInputRef.current?.focus());
+  };
+  useEffect(() => {
+    if (!showJantriModal) return;
+    const id = requestAnimationFrame(() => focusJantriCell(0));
+    return () => cancelAnimationFrame(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showJantriModal]);
+
   // Add new entry (supports single entry or multiple entries separated by spaces/commas/ranges/equal)
   const handleAddEntry = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -322,6 +501,14 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
     if (!rawNum) {
       numberInputRef.current?.focus();
+      return;
+    }
+
+    if (!allTypedNumbersValid(rawNum)) {
+      showInvalidEntryToast();
+      // Wrong number stays selected in NUMBER so the next one typed replaces it
+      numberInputRef.current?.focus();
+      numberInputRef.current?.select();
       return;
     }
 
@@ -339,7 +526,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
           let entryType: 'DARA' | 'HARUF_ANDAR' | 'HARUF_BAHAR' = 'DARA';
           if (numPart.toUpperCase().startsWith('A')) entryType = 'HARUF_ANDAR';
           else if (numPart.toUpperCase().startsWith('B')) entryType = 'HARUF_BAHAR';
-          newEntries.push({ numberValue: numPart, amount: amtPart, entryType });
+          const shown = entryType === 'DARA' ? (normalizeTypedNumber(numPart) ?? numPart) : numPart;
+          newEntries.push({ numberValue: shown, amount: amtPart, entryType });
           continue;
         }
       }
@@ -351,7 +539,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
         const end = parseInt(parts[1], 10);
         if (!isNaN(start) && !isNaN(end) && start <= end && !isNaN(defaultAmt) && defaultAmt > 0) {
           for (let n = start; n <= end; n++) {
-            newEntries.push({ numberValue: String(n), amount: defaultAmt, entryType: 'DARA' });
+            newEntries.push({ numberValue: normalizeTypedNumber(String(n)) ?? String(n), amount: defaultAmt, entryType: 'DARA' });
           }
           continue;
         }
@@ -366,11 +554,14 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
       let entryType: 'DARA' | 'HARUF_ANDAR' | 'HARUF_BAHAR' = 'DARA';
       if (token.toUpperCase().startsWith('A')) entryType = 'HARUF_ANDAR';
       else if (token.toUpperCase().startsWith('B')) entryType = 'HARUF_BAHAR';
-      newEntries.push({ numberValue: token, amount: defaultAmt, entryType });
+      const shownToken = entryType === 'DARA' ? (normalizeTypedNumber(token) ?? token) : token;
+      newEntries.push({ numberValue: shownToken, amount: defaultAmt, entryType });
     }
 
     if (newEntries.length > 0) {
-      setEntriesList(prev => [...prev, ...newEntries]);
+      // Newest entry on top, as on the live list (entered 1, 20, 30 lists 30, 20, 1). Several
+      // numbers keyed at once land as if entered one by one, so the last one is on top.
+      setEntriesList(prev => [...[...newEntries].reverse(), ...prev]);
       setInputNumber('');
       setInputAmount('');
       numberInputRef.current?.focus();
@@ -390,6 +581,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
     setInputNumber('');
     setInputAmount('');
     setNarration('');
+    setAppliedNarrations([]);
     setSelectedCopyShiftIds([]);
     setCopyToAll(false);
     setErrorMsg(null);
@@ -465,6 +657,13 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
   // Save Now (F2)
   const handleSaveNow = async () => {
+    // Pressed from the Enter flow (Save focused): hand focus back to NUMBER so the button's
+    // highlight doesn't linger after the save or its error. Checks below that focus a
+    // specific field (party, number) still do so afterwards.
+    if (saveNowBtnRef.current && document.activeElement === saveNowBtnRef.current) {
+      saveNowBtnRef.current.blur();
+      numberInputRef.current?.focus();
+    }
     if (isDeclaredBlocked) {
       setErrorMsg(`Shift "${currentShiftName}" result is already declared (${resolvedShift?.declaredNumber || 'DECLARED'}). Transactions are closed.`);
       return;
@@ -515,7 +714,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
           body: JSON.stringify({
             entries: entriesList.map(e => ({
               entryType: e.entryType,
-              numberValue: e.numberValue,
+              numberValue: toStoredNumber(e),
               amount: e.amount,
             })),
           }),
@@ -531,7 +730,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
         partyId: selectedParty.id,
         entries: entriesList.map(e => ({
           entryType: e.entryType,
-          numberValue: e.numberValue,
+          numberValue: toStoredNumber(e),
           amount: e.amount,
         })),
         narration: narration.trim() || undefined,
@@ -566,6 +765,9 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   };
 
   // Generator Handlers
+  // Random (F4), Cross (F6), From-To (F7) and Random (F8) all add their rows at the TOP of
+  // the entry list, the same as a typed entry. Each popup already builds its rows in the
+  // order they should read from the top, so that block goes in ahead of the existing rows.
 
   // Cross builds every ANDER-digit x BAHAR-digit pair. Confirmed against the live popup:
   //   ANDER 12345 x BAHAR 12346, JODA "Y" -> 5 x 5 = 25 numbers, amount 10 -> TOTAL 250
@@ -634,7 +836,11 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
   const handleSaveCross = () => {
     if (crossEntries.length > 0) {
-      setEntriesList(prev => [...prev, ...crossEntries]);
+      setEntriesList(prev => [...crossEntries, ...prev]);
+      setAppliedNarrations(prev => [
+        { label: 'Cross', value: `${crossAnder.trim()} x ${crossBahar.trim()} / ${crossAmountStr.trim()} / ${crossJoda}` },
+        ...prev,
+      ]);
     }
     closeCrossModal();
   };
@@ -740,7 +946,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
       return;
     }
     const entries = buildRandom8Entries();
-    if (entries.length > 0) setEntriesList(prev => [...prev, ...entries]);
+    if (entries.length > 0) setEntriesList(prev => [...entries, ...prev]);
     closeRandom8Modal();
   };
 
@@ -800,9 +1006,38 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
     resetFromToForm();
   };
 
+  // From-To popup: From must be 1-99, To 1-100 (whole numbers), and From not above To.
+  const isValidFromNum = (v: string) => /^\d+$/.test(v.trim()) && parseInt(v, 10) >= 1 && parseInt(v, 10) <= 99;
+  const isValidToNum = (v: string) => /^\d+$/.test(v.trim()) && parseInt(v, 10) >= 1 && parseInt(v, 10) <= 100;
+  const focusFromToField = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    el?.select();
+  };
+
   const handleSaveFromTo = () => {
+    // Anything typed in From / To must be valid; an invalid one keeps the popup open on it.
+    // Both left blank still just closes, as before.
+    if (fromNumStr.trim() !== '' || toNumStr.trim() !== '') {
+      if (!isValidFromNum(fromNumStr)) {
+        showInvalidNumberToast();
+        focusFromToField('fromto-from-input');
+        return;
+      }
+      if (!isValidToNum(toNumStr) || parseInt(fromNumStr, 10) > parseInt(toNumStr, 10)) {
+        showInvalidNumberToast();
+        focusFromToField('fromto-to-input');
+        return;
+      }
+    }
     if (fromToEntries.length > 0) {
-      setEntriesList(prev => [...prev, ...fromToEntries]);
+      setEntriesList(prev => [...fromToEntries, ...prev]);
+      // "P-" when paltis were added too; the amount shown is the plain AMOUNT, as live
+      const hasPalti = (parseFloat(fromToPltAmountStr) || 0) > 0;
+      setAppliedNarrations(prev => [
+        { label: hasPalti ? 'P-From-To' : 'From-To', value: `${fromNumStr.trim()} x ${toNumStr.trim()} / ${fromToAmountStr.trim()} /` },
+        ...prev,
+      ]);
     }
     closeFromToModal();
   };
@@ -833,6 +1068,15 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
     resetRandomForm();
     setShowRandomModal(true);
   };
+
+  // Opening the Random popup (F4 / F5 / button) puts the cursor in its first NUMBER box.
+  useEffect(() => {
+    if (!showRandomModal) return;
+    const id = requestAnimationFrame(() => {
+      (document.getElementById('random-number-0') as HTMLInputElement | null)?.focus();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [showRandomModal]);
 
   const closeRandomModal = () => {
     setShowRandomModal(false);
@@ -879,6 +1123,18 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
       return;
     }
 
+    // Same number rule as the main NUMBER box: an invalid one keeps the popup open on that box.
+    const badIdx = randomNumbers.findIndex(v => v.trim() !== '' && !allTypedNumbersValid(v));
+    if (badIdx !== -1) {
+      showInvalidNumberToast();
+      const el = document.getElementById(`random-number-${badIdx}`) as HTMLInputElement | null;
+      el?.focus();
+      el?.select();
+      return;
+    }
+    // 1 -> 01, 00 -> 100 for the rows added (palti still worked out from what was typed)
+    const shownNumber = (num: string) => (isPrefixedHaruf(num) ? num : (normalizeTypedNumber(num) ?? num));
+
     const entryTypeOf = (num: string): 'DARA' | 'HARUF_ANDAR' | 'HARUF_BAHAR' => {
       if (num.toUpperCase().startsWith('A')) return 'HARUF_ANDAR';
       if (num.toUpperCase().startsWith('B')) return 'HARUF_BAHAR';
@@ -898,19 +1154,19 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
       for (const num of ordered) {
         const palti = paltiOfNumber(num);
         if (palti !== null) {
-          newEntries.push({ numberValue: palti, amount: pltAmt, entryType: entryTypeOf(num) });
+          newEntries.push({ numberValue: shownNumber(palti), amount: pltAmt, entryType: entryTypeOf(num) });
         }
       }
     }
 
     if (amt > 0) {
       for (const num of ordered) {
-        newEntries.push({ numberValue: num, amount: amt, entryType: entryTypeOf(num) });
+        newEntries.push({ numberValue: shownNumber(num), amount: amt, entryType: entryTypeOf(num) });
       }
     }
 
     if (newEntries.length > 0) {
-      setEntriesList(prev => [...prev, ...newEntries]);
+      setEntriesList(prev => [...newEntries, ...prev]);
     }
 
     closeRandomModal();
@@ -948,7 +1204,11 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
         openFromToModal();
       } else if (e.key === 'F12') {
         e.preventDefault();
-        setShowJantriModal(true);
+        // F12 opens the Jantri View; pressed again it returns to the entry list
+        setShowJantriModal(v => {
+          if (v) requestAnimationFrame(() => numberInputRef.current?.focus());
+          return !v;
+        });
       } else if (e.key === '`' || e.key === '~') {
         e.preventDefault();
         numberInputRef.current?.focus();
@@ -964,7 +1224,27 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   const partyAkharRate = selectedParty?.akharRate ? Math.round(Number(selectedParty.akharRate)) : 0;
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-[#eaedf2] text-slate-900 overflow-hidden font-sans select-none">
+    <div
+      className="no-number-spin h-screen w-screen flex flex-col bg-[#eaedf2] text-slate-900 overflow-hidden font-sans select-none"
+      // No negative numbers in any number field on this page (entry row and the generator
+      // popups): "-" can't be typed or pasted, and ArrowDown stops at 0. Capture phase, so each
+      // field's own onKeyDown (Enter to add, etc.) still runs exactly as before.
+      onKeyDownCapture={(e) => {
+        const el = e.target as HTMLInputElement;
+        if (el.tagName !== 'INPUT' || el.type !== 'number') return;
+        // Also e / E / + — a number input accepts them for exponents, but amounts never use them
+        if (e.key === '-' || e.key === 'Subtract' || e.key === 'e' || e.key === 'E' || e.key === '+') {
+          e.preventDefault();
+        } else if (e.key === 'ArrowDown' && (parseFloat(el.value) || 0) - (parseFloat(el.step) || 1) < 0) {
+          e.preventDefault();
+        }
+      }}
+      onPasteCapture={(e) => {
+        const el = e.target as HTMLInputElement;
+        if (el.tagName !== 'INPUT' || el.type !== 'number') return;
+        if (/[-+eE]/.test(e.clipboardData.getData('text'))) e.preventDefault();
+      }}
+    >
       {/* 1. TOP BAR matching Screenshot 2, 3, 5 */}
       <div className="bg-white border-b border-slate-300 px-3 py-2 flex flex-wrap items-center justify-between gap-2 flex-shrink-0">
         {/* Left Side: Back Arrow, Party Input, Rate, Limit, Capping, Bracket */}
@@ -1088,6 +1368,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
       {/* 2. MAIN WORKSPACE (3 Columns) matching Screenshot 2 & 3 */}
       <div className="flex-1 flex overflow-hidden bg-white">
+        {/* F12 Jantri View takes the place of columns 1 + 2 (right column stays) */}
+        {!showJantriModal ? (<>
         {/* COLUMN 1: Left - Entry Input & Table matching Screenshot 1 & 2 */}
         <div className="w-64 sm:w-72 flex flex-col border-r border-slate-300 bg-white flex-shrink-0">
           {/* Top Form Header with NUMBER, AMOUNT, and + */}
@@ -1099,12 +1381,35 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
               ref={numberInputRef}
               type="text"
               value={inputNumber}
-              onChange={(e) => setInputNumber(e.target.value)}
+              // Digits only — letters and symbols are dropped as they're typed or pasted. Haruf
+              // is keyed as 111 / 1111 (or a digit then + / -, handled in onKeyDown).
+              inputMode="numeric"
+              onChange={(e) => setInputNumber(e.target.value.replace(/\D/g, ''))}
               placeholder="NUMBER"
               className="flex-1 min-w-0 h-8 bg-[#fef08a] border-2 border-[#1b3258] text-center font-bold text-xs text-slate-900 outline-none uppercase placeholder:text-slate-400 rounded-xs"
               onKeyDown={(e) => {
+                if (trackEmptyEnter(e.key)) {
+                  e.preventDefault();
+                  return;
+                }
+                // Haruf shortcut: a single digit then "+" makes Bahar (3 -> 333), "-" makes
+                // Andar (3 -> 3333), and the cursor moves on to AMOUNT. Anything else typed
+                // before + / - (e.g. "10-20" ranges) keeps its existing handling.
+                if ((e.key === '+' || e.key === '-') && /^\d$/.test(inputNumber.trim())) {
+                  e.preventDefault();
+                  const d = inputNumber.trim();
+                  setInputNumber(e.key === '+' ? d.repeat(3) : d.repeat(4));
+                  amountInputRef.current?.focus();
+                  return;
+                }
                 if (e.key === 'Enter') {
                   e.preventDefault();
+                  if (inputNumber.trim() && !allTypedNumbersValid(inputNumber)) {
+                    showInvalidEntryToast();
+                    // Wrong number stays selected so the next one typed replaces it
+                    numberInputRef.current?.select();
+                    return;
+                  }
                   amountInputRef.current?.focus();
                 }
               }}
@@ -1117,6 +1422,10 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
               placeholder="AMOUNT"
               className="flex-1 min-w-0 h-8 bg-white border-2 border-[#1b3258] text-center font-bold text-xs text-slate-900 outline-none placeholder:text-slate-400 rounded-xs"
               onKeyDown={(e) => {
+                if (trackEmptyEnter(e.key)) {
+                  e.preventDefault();
+                  return;
+                }
                 if (e.key === 'Enter') {
                   e.preventDefault();
                   handleAddEntry();
@@ -1185,6 +1494,94 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
           </div>
         </div>
 
+        </>) : (
+          <div
+            className="flex-1 min-w-0 overflow-auto border-r border-slate-300 bg-white p-1"
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                closeJantriView();
+              }
+            }}
+          >
+            {(() => {
+              const cellInput = (key: string, label: string) => {
+                const idx = jantriOrder.indexOf(key);
+                const val = jantriCell(key);
+                return (
+                  <td key={key} className="relative border border-slate-200 p-0 h-9 min-w-[64px]">
+                    <span className="absolute top-0.5 left-0.5 text-[8px] leading-none font-bold px-1 py-0.5 rounded-xs bg-[#fcd34d] text-slate-800 pointer-events-none">
+                      {label}
+                    </span>
+                    <input
+                      id={`jantri-cell-${key}`}
+                      type="text"
+                      inputMode="numeric"
+                      value={val ? String(val) : ''}
+                      onChange={(e) => setJantriCell(key, e.target.value)}
+                      onKeyDown={(e) => {
+                        let next: number | null = null;
+                        if (e.key === 'Enter' || e.key === 'ArrowRight') next = idx + 1;
+                        else if (e.key === 'ArrowLeft') next = idx - 1;
+                        else if (e.key === 'ArrowDown') next = idx + 10;
+                        else if (e.key === 'ArrowUp') next = idx - 10;
+                        if (next !== null) {
+                          e.preventDefault();
+                          focusJantriCell(next);
+                        }
+                      }}
+                      className="w-full h-full pt-3 pr-2 text-right font-bold text-sm text-slate-900 bg-transparent outline-none focus:bg-[#fde68a]"
+                    />
+                  </td>
+                );
+              };
+              const rowTotal = (keys: string[]) => keys.reduce((sum, k) => sum + jantriCell(k), 0);
+              const numberKeys = Array.from({ length: 100 }, (_, i) => `N${i + 1}`);
+              const colTotal = (c: number) => Array.from({ length: 10 }, (_, r) => jantriCell(`N${r * 10 + c}`)).reduce((a, b) => a + b, 0);
+              const totalCell = (v: number, extra = '') => (
+                <td className={`bg-[#1b3258] text-white font-bold text-right px-2 text-xs border border-[#294979] ${extra}`}>{v}</td>
+              );
+              return (
+                <table className="w-full border-collapse font-mono text-xs select-none">
+                  <thead>
+                    <tr className="bg-[#1b3258] text-white">
+                      {Array.from({ length: 10 }, (_, c) => (
+                        <th key={c} className="py-1.5 font-bold text-center border border-[#294979]">{c + 1}</th>
+                      ))}
+                      <th className="py-1.5 px-2 font-bold text-center border border-[#294979] w-28">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Array.from({ length: 10 }, (_, r) => {
+                      const keys = Array.from({ length: 10 }, (_, c) => `N${r * 10 + c + 1}`);
+                      return (
+                        <tr key={r}>
+                          {keys.map((k) => cellInput(k, k.slice(1)))}
+                          {totalCell(rowTotal(keys))}
+                        </tr>
+                      );
+                    })}
+                    <tr>
+                      {Array.from({ length: 10 }, (_, c) => (
+                        <React.Fragment key={c}>{totalCell(colTotal(c + 1), 'py-1')}</React.Fragment>
+                      ))}
+                      {totalCell(rowTotal(numberKeys), 'py-1')}
+                    </tr>
+                    <tr>
+                      {JANTRI_DIGITS.map((d) => cellInput(`B${d}`, `B${d}`))}
+                      {totalCell(rowTotal(JANTRI_DIGITS.map(d => `B${d}`)))}
+                    </tr>
+                    <tr>
+                      {JANTRI_DIGITS.map((d) => cellInput(`A${d}`, `A${d}`))}
+                      {totalCell(rowTotal(JANTRI_DIGITS.map(d => `A${d}`)))}
+                    </tr>
+                  </tbody>
+                </table>
+              );
+            })()}
+          </div>
+        )}
+
         {/* COLUMN 3: Right - Shift Copy, Narration, Grand Total */}
         <div className="w-72 sm:w-80 flex flex-col bg-white flex-shrink-0">
           {/* Header matching Screenshot 2 (green for LIVE, pink for DECLARED, amber for cutoff-closed) */}
@@ -1237,6 +1634,22 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
           <div className="bg-[#1b3258] text-white text-xs font-bold py-1.5 px-3 flex-shrink-0">
             Applied Narration
           </div>
+
+          {/* Applied Cross / From-To calculations */}
+          {appliedNarrations.length > 0 && (
+            <div className="border-b border-slate-300 max-h-40 overflow-y-auto pbmax-table-scrollbar">
+              <table className="w-full text-xs border-collapse">
+                <tbody>
+                  {appliedNarrations.map((n, i) => (
+                    <tr key={i} className="border-b border-slate-200 last:border-b-0">
+                      <td className="py-2 px-2.5 font-bold text-slate-800 w-[30%] border-r border-slate-200">{n.label}</td>
+                      <td className="py-2 px-2.5 font-bold text-slate-800 font-mono">{n.value}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           {/* Narration Textarea */}
           <div className="p-2 border-b border-slate-300">
@@ -1303,9 +1716,10 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
           </button>
           <button
             type="button"
+            ref={saveNowBtnRef}
             disabled={submitting || isDeclaredBlocked || isCutoffBlocked}
             onClick={handleSaveNow}
-            className={`text-white text-xs font-bold px-4 py-1.5 rounded transition-colors shadow-xs ${
+            className={`text-white text-xs font-bold px-4 py-1.5 rounded transition-colors shadow-xs outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-[#1b3258] focus:ring-[#dc2626] ${
               isDeclaredBlocked || isCutoffBlocked
                 ? 'bg-slate-500 cursor-not-allowed opacity-75'
                 : 'bg-[#00897b] hover:bg-[#00796b] cursor-pointer'
@@ -1358,7 +1772,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
                         id="cross-ander-input"
                         type="text"
                         value={crossAnder}
-                        onChange={(e) => setCrossAnder(e.target.value.replace(/\D/g, ''))}
+                        onChange={(e) => setCrossAnder(cleanCrossDigits(e.target.value))}
                         onKeyDown={(e) => {
                           if (e.key !== 'Enter') return;
                           e.preventDefault();
@@ -1374,7 +1788,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
                         id="cross-bahar-input"
                         type="text"
                         value={crossBahar}
-                        onChange={(e) => setCrossBahar(e.target.value.replace(/\D/g, ''))}
+                        onChange={(e) => setCrossBahar(cleanCrossDigits(e.target.value))}
                         onKeyDown={(e) => {
                           if (e.key !== 'Enter') return;
                           e.preventDefault();
@@ -1413,8 +1827,10 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
                             e.preventDefault();
                             setCrossJoda(k as 'Y' | 'N');
                           } else if (e.key === 'Enter') {
+                            // Enter moves to (and highlights) Save; the next Enter, on the
+                            // focused button, saves — same as Random's PLT-AMOUNT.
                             e.preventDefault();
-                            handleSaveCross();
+                            document.getElementById('cross-save-btn')?.focus();
                           }
                         }}
                         title="Click or press Y / N to switch"
@@ -1438,8 +1854,9 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
               <div className="mt-4 flex items-center justify-end gap-4">
                 <button
                   type="button"
+                  id="cross-save-btn"
                   onClick={handleSaveCross}
-                  className="bg-[#24497e] hover:bg-[#1a355c] text-white font-bold text-xs px-6 py-1.5 rounded-xs transition-colors shadow-xs cursor-pointer"
+                  className="bg-[#24497e] hover:bg-[#1a355c] focus:bg-[#1a355c] text-white font-bold text-xs px-6 py-1.5 rounded-xs transition-colors shadow-xs cursor-pointer outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#24497e]"
                 >
                   Save
                 </button>
@@ -1493,6 +1910,11 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
                         onKeyDown={(e) => {
                           if (e.key !== 'Enter') return;
                           e.preventDefault();
+                          if (fromNumStr.trim() !== '' && !isValidFromNum(fromNumStr)) {
+                            showInvalidNumberToast();
+                            (e.currentTarget as HTMLInputElement).select();
+                            return;
+                          }
                           document.getElementById('fromto-to-input')?.focus();
                         }}
                         placeholder="FROM"
@@ -1509,6 +1931,11 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
                         onKeyDown={(e) => {
                           if (e.key !== 'Enter') return;
                           e.preventDefault();
+                          if (toNumStr.trim() !== '' && !isValidToNum(toNumStr)) {
+                            showInvalidNumberToast();
+                            (e.currentTarget as HTMLInputElement).select();
+                            return;
+                          }
                           document.getElementById('fromto-amount-input')?.focus();
                         }}
                         placeholder="TO"
@@ -1724,7 +2151,9 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
                       id={`random-number-${idx}`}
                       type="text"
                       value={numVal}
-                      onChange={(e) => handleRandomNumberChange(idx, e.target.value)}
+                      // Digits only in the Random popup's NUMBER boxes
+                      inputMode="numeric"
+                      onChange={(e) => handleRandomNumberChange(idx, e.target.value.replace(/\D/g, ''))}
                       onFocus={() => setActiveRandomFocus(`num-${idx}`)}
                       className={`w-32 h-7 text-center font-bold text-sm border border-slate-300 rounded-xs outline-none uppercase font-mono transition-colors ${
                         activeRandomFocus === `num-${idx}` ? 'bg-[#fde68a] border-amber-400' : 'bg-white'
@@ -1738,6 +2167,13 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
                         // drops down to AMOUNT — the behaviour this field already had.
                         if (numVal.trim() === '') {
                           document.getElementById('random-amount-input')?.focus();
+                          return;
+                        }
+
+                        // Invalid number: toast and stay on this box
+                        if (!allTypedNumbersValid(numVal)) {
+                          showInvalidNumberToast();
+                          (e.currentTarget as HTMLInputElement).select();
                           return;
                         }
 
@@ -1796,6 +2232,12 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
                     value={randomPltAmountStr}
                     onChange={(e) => setRandomPltAmountStr(e.target.value)}
                     onFocus={() => setActiveRandomFocus('plt-amount')}
+                    // Enter moves to Save; the second Enter then presses the focused Save button.
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter') return;
+                      e.preventDefault();
+                      document.getElementById('random-save-btn')?.focus();
+                    }}
                     placeholder="PLT-AMOUNT"
                     className={`w-32 h-7 text-center font-bold text-sm border border-slate-300 rounded-xs outline-none font-mono placeholder:text-slate-300 placeholder:text-xs uppercase transition-colors ${
                       activeRandomFocus === 'plt-amount' ? 'bg-[#fde68a] border-amber-400' : 'bg-white'
@@ -1813,8 +2255,9 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
               <div className="border-t border-slate-200 pt-3 flex items-center justify-center gap-4">
                 <button
                   type="button"
+                  id="random-save-btn"
                   onClick={handleSaveRandom}
-                  className="bg-[#24497e] hover:bg-[#1a355c] text-white font-bold text-xs px-6 py-1.5 rounded-xs transition-colors shadow-xs cursor-pointer"
+                  className="bg-[#24497e] hover:bg-[#1a355c] text-white font-bold text-xs px-6 py-1.5 rounded-xs transition-colors shadow-xs cursor-pointer outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#24497e]"
                 >
                   Save
                 </button>
@@ -1831,53 +2274,6 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
         </div>
       )}
 
-      {/* QUICK JANTRI MODAL (F12) */}
-      {showJantriModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in">
-          <div className="bg-[#1b3258] rounded-lg shadow-2xl max-w-4xl w-full overflow-hidden border border-slate-500">
-            <div className="bg-[#1b3258] text-white px-4 py-2.5 flex items-center justify-between border-b border-[#294979]">
-              <h3 className="text-xs font-bold uppercase tracking-wider">
-                Quick Jantri Preview ({selectedParty?.partyName || 'CURRENT SLIP'})
-              </h3>
-              <button
-                type="button"
-                onClick={() => setShowJantriModal(false)}
-                className="text-slate-300 hover:text-white"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="bg-white p-3 overflow-x-auto">
-              <div className="grid grid-cols-10 gap-1 font-mono text-center">
-                {Array.from({ length: 100 }, (_, i) => {
-                  const num = i + 1;
-                  const numStr = String(num);
-                  const numPadded = num < 100 ? String(num).padStart(2, '0') : '00';
-                  const match = entriesList.filter(
-                    e => e.numberValue === numStr || e.numberValue === numPadded
-                  );
-                  const sum = match.reduce((a, b) => a + b.amount, 0);
-                  return (
-                    <div
-                      key={num}
-                      className={`relative h-10 border flex items-center justify-center rounded-xs ${
-                        sum > 0
-                          ? 'bg-amber-100 border-amber-400 text-slate-900 font-bold'
-                          : 'bg-slate-50 border-slate-200 text-slate-400'
-                      }`}
-                    >
-                      <span className="absolute top-0.5 left-0.5 text-[8px] font-bold px-1 rounded-xs bg-[#fef9c3] text-[#854d0e]">
-                        {num}
-                      </span>
-                      {sum > 0 && <span className="text-xs font-bold">{sum}</span>}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

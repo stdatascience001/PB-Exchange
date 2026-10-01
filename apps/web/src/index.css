@@ -53,3 +53,14 @@
   scrollbar-width: thin;
   scrollbar-color: #94a3b8 #f1f5f9;
 }
+
+/* Transaction Add/Edit page: number fields without the browser's Up/Down spinner buttons */
+.no-number-spin input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.no-number-spin input[type='number']::-webkit-inner-spin-button,
+.no-number-spin input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}

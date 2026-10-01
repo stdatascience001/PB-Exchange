@@ -36,6 +36,11 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
 }) => {
   const [list, setList] = useState<TransactionItem[]>([]);
   const [loading, setLoading] = useState(false);
+  // Page opens with the cursor on the Shift dropdown
+  useEffect(() => {
+    const id = requestAnimationFrame(() => document.getElementById('audit-shift')?.focus());
+    return () => cancelAnimationFrame(id);
+  }, []);
   const [searchParty, setSearchParty] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('NOT-AUDIT');
   
@@ -213,8 +218,23 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
     setShowPartyList(false);
   };
 
+  // Filter bar Enter flow (as live): Shift -> Search Party -> Status -> Search (F5) highlighted,
+  // whose own Enter runs the search. Up/Down change the Shift / Status as usual for a select.
+  const focusAuditField = (id: string) => {
+    const el = document.getElementById(id) as HTMLElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
+
   const handlePartyKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!showPartyList || partySuggestions.length === 0) return;
+    if (!showPartyList || partySuggestions.length === 0) {
+      // No suggestion list open: Enter moves on to Status
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        focusAuditField('audit-status');
+      }
+      return;
+    }
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       setPartyHighlight(h => Math.min(h + 1, partySuggestions.length - 1));
@@ -226,6 +246,7 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
       e.preventDefault();
       const p = partySuggestions[partyHighlight];
       if (p) pickParty(p.partyName);
+      focusAuditField('audit-status');
     } else if (e.key === 'Escape') {
       setShowPartyList(false);
     }
@@ -307,8 +328,15 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">Shift</span>
             <select
+              id="audit-shift"
               value={selectedShiftId}
               onChange={(e) => setSelectedShiftId(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  focusAuditField('audit-search-party');
+                }
+              }}
               className="px-2.5 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer min-w-36 shadow-xs"
             >
               <option value="">-- ALL SHIFT --</option>
@@ -333,6 +361,7 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
           {/* Search Party Input */}
           <div className="relative">
             <input
+              id="audit-search-party"
               type="text"
               value={searchParty}
               onChange={(e) => {
@@ -341,7 +370,14 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
               }}
               onFocus={() => { if (!isDeclareMode) setShowPartyList(true); }}
               onBlur={() => setShowPartyList(false)}
-              onKeyDown={isDeclareMode ? undefined : handlePartyKeyDown}
+              onKeyDown={isDeclareMode
+                ? (e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      focusAuditField('audit-status');
+                    }
+                  }
+                : handlePartyKeyDown}
               autoComplete="off"
               placeholder="SEARCH PARTY..."
               className="w-36 sm:w-44 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 focus:outline-none focus:border-blue-500 uppercase placeholder:text-slate-400 font-semibold"
@@ -373,8 +409,15 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">Status</span>
             <select
+              id="audit-status"
               value={selectedStatus}
               onChange={(e) => setSelectedStatus(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  focusAuditField('audit-search-btn');
+                }
+              }}
               className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500 cursor-pointer"
             >
               {/* Live Trans-Audit offers exactly NOT-AUDIT / AUDITED / ALL (AUDITED = marked
@@ -394,10 +437,15 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
 
           {/* Search (F5) Teal Button */}
           <button
+            id="audit-search-btn"
             type="submit"
-            className="px-4 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
+            className="px-4 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#00897b] inline-flex items-center gap-1.5"
           >
             Search (F5)
+            {/* Spinner while the search runs, as live */}
+            {loading && (
+              <span className="inline-block h-3 w-3 rounded-full border-2 border-white/80 border-t-transparent animate-spin" />
+            )}
           </button>
         </form>
 

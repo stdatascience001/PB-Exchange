@@ -2,6 +2,7 @@ import { db, staff, staffAssets, users, roles } from '@pb/database';
 import { eq, asc, desc, sql } from 'drizzle-orm';
 import { AppError } from '../../common/errors.js';
 import { hashPassword } from '../auth/auth.service.js';
+import { clearRedirectForUsernames } from '../../middleware/inactive-redirect.js';
 
 export class StaffService {
   private static async getOrCreateRoleId(roleName: string): Promise<number> {
@@ -96,7 +97,7 @@ export class StaffService {
 
     // Determine target username for login
     const targetUsername = data.username && data.username.trim() && data.username.trim().toUpperCase() !== 'NONE'
-      ? data.username.trim()
+      ? data.username.replace(/\s+/g, '')
       : data.fullName.trim();
 
     const plainPassword = data.password && data.password.trim() ? data.password.trim() : '123456';
@@ -170,18 +171,34 @@ export class StaffService {
     const roleId = await this.getOrCreateRoleId(roleStr);
 
     const targetUsername: string = data.username && data.username.trim() && data.username.trim().toUpperCase() !== 'NONE'
-      ? data.username.trim()
-      : (data.fullName ? data.fullName.trim() : (existingStaff.username || existingStaff.fullName || 'STAFF_USER'));
+      ? data.username.replace(/\s+/g, '')
+      : (data.fullName
+          ? data.fullName.trim()
+          // a stored "NONE" is the no-username placeholder, never a real login name
+          : ((existingStaff.username && existingStaff.username.toUpperCase() !== 'NONE' ? existingStaff.username : existingStaff.fullName) || 'STAFF_USER'));
 
     const plainPassword = data.password && data.password.trim() ? data.password.trim() : (existingStaff.password || '123456');
     const pHash = hashPassword(plainPassword);
     const active = data.isActive !== undefined ? data.isActive : existingStaff.isActive;
 
-    // Sync or create user in `users` table
+    // Sync or create user in `users` table.
+    // This staff member's own login row: by its linked userId, else by its current username.
+    // A new username that already belongs to a DIFFERENT login is refused — it used to match
+    // that other row instead ("id = userId OR username = new"), silently re-pointing this
+    // staff member at someone else's login while its own username never changed.
     let userId = existingStaff.userId;
-    const [userRecord] = await db.select().from(users).where(
-      sql`id = ${userId} OR LOWER(${users.username}) = LOWER(${targetUsername})`
+    const [ownUser] = userId
+      ? await db.select().from(users).where(eq(users.id, userId))
+      : await db.select().from(users).where(
+          sql`LOWER(${users.username}) = LOWER(${existingStaff.username || targetUsername})`
+        );
+    const [takenBy] = await db.select({ id: users.id }).from(users).where(
+      sql`LOWER(${users.username}) = LOWER(${targetUsername})`
     );
+    if (takenBy && (!ownUser || takenBy.id !== ownUser.id)) {
+      throw new AppError(`Username "${targetUsername}" already exists`, 400);
+    }
+    const userRecord = ownUser;
 
     if (userRecord) {
       await db.update(users).set({
@@ -266,6 +283,16 @@ export class StaffService {
         .set({ isActive: newActive })
         .where(sql`LOWER(${users.username}) = LOWER(${existing.username})`)
         .catch(() => {});
+    }
+
+    // Made Active again: the IPs it was redirected on can open the site again
+    if (newActive) {
+      const names = [existing.username && existing.username !== 'NONE' ? existing.username : ''];
+      if (existing.userId) {
+        const [u] = await db.select({ username: users.username }).from(users).where(eq(users.id, existing.userId));
+        if (u?.username) names.push(u.username);
+      }
+      await clearRedirectForUsernames(names);
     }
 
     return updated;
