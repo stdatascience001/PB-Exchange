@@ -5,6 +5,7 @@ import { displayNumber } from '../utils/entryDisplay.js';
 import { X, Search as SearchIcon, Eye, Copy, Trash2, Plus, Edit } from 'lucide-react';
 import { TransactionItem } from './TransactionListPage.js';
 import { JantriViewModal } from '../components/JantriViewModal.js';
+import { CopyTransactionsModal } from '../components/CopyTransactionsModal.js';
 
 interface DeclareTransactionListPageProps {
   shifts?: ShiftDto[];
@@ -245,6 +246,10 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
       alert(err.message || 'Copy failed');
     }
   };
+
+  // Copy button: the live "Copy Transactions" popup (components/CopyTransactionsModal) — the
+  // same shift picker as Live Transactions: Active shifts without a declared number only.
+  const [copyTx, setCopyTx] = useState<TransactionItem | null>(null);
 
   const handleDeleteSlip = async (tx: TransactionItem) => {
     if (!window.confirm(`Are you sure you want to delete slip ${tx.slipNumber} for ${tx.partyName}?`)) return;
@@ -501,7 +506,7 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleCopySlip(tx);
+                                setCopyTx(tx);
                               }}
                               title="Copy Transaction Slip"
                               className="px-2 py-0.5 bg-[#d97706] hover:bg-[#b45309] text-white text-[10px] font-bold rounded shadow-xs transition-colors cursor-pointer"
@@ -778,6 +783,12 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
         onClose={() => setShowJantriModal(false)}
         selectedTx={selectedTx}
         list={visibleList}
+      />
+      <CopyTransactionsModal
+        tx={copyTx}
+        shifts={shifts}
+        onClose={() => setCopyTx(null)}
+        onCopied={fetchTransactions}
       />
     </div>
   );

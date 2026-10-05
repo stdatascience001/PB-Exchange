@@ -410,8 +410,21 @@ export class TransactionService {
     const needsName = list.filter(t => placeholder(t.addedBy) || placeholder(t.updatedBy)).map(t => t.createdBy);
     const nameByUser = await this.resolveActorNames(needsName);
 
+    // Slips edited after they were entered (Edit / amount change) — their Updated column shows
+    // in red on the live list. Read from the UPDATE rows every edit already writes to
+    // audit_logs, so slips edited before this existed are marked too.
+    const editedRows = txIds.length > 0
+      ? await db.selectDistinct({ entityId: auditLogs.entityId }).from(auditLogs).where(and(
+          eq(auditLogs.entityType, 'TRANSACTION'),
+          eq(auditLogs.action, 'UPDATE'),
+          inArray(auditLogs.entityId, txIds.map(String)),
+        ))
+      : [];
+    const editedIds = new Set(editedRows.map(r => r.entityId));
+
     return list.map(t => ({
       ...t,
+      isEdited: editedIds.has(String(t.id)),
       addedBy: (placeholder(t.addedBy) ? nameByUser.get(t.createdBy) : t.addedBy) || t.addedBy || 'SYSTEM',
       updatedBy: (placeholder(t.updatedBy) ? nameByUser.get(t.createdBy) : t.updatedBy) || t.updatedBy || 'SYSTEM',
       shiftName: t.shiftName || 'UNKNOWN',

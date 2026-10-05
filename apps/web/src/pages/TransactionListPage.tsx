@@ -4,6 +4,7 @@ import { apiRequest } from '../api/client.js';
 import { displayNumber, harufOf } from '../utils/entryDisplay.js';
 import { isOwnDataOnlyRole } from '../config/roleAccess.js';
 import { X, Search as SearchIcon, Eye, Copy, Trash2, Plus, Edit } from 'lucide-react';
+import { CopyTransactionsModal } from '../components/CopyTransactionsModal.js';
 
 export interface TransactionItem {
   id: number;
@@ -23,6 +24,8 @@ export interface TransactionItem {
   mistakeRemark?: string | null;
   // Slip was edited after the auditor marked it MISTAKE — Updated column shows in red
   mistakeEdited?: boolean;
+  // Slip was edited after it was entered — Updated column shows in red (live list)
+  isEdited?: boolean;
   isAudited?: boolean;
   createdAt: string;
   updatedAt: string;
@@ -582,6 +585,10 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
     }
   };
 
+  // Copy button: the live "Copy Transactions" popup (components/CopyTransactionsModal)
+  const [copyTx, setCopyTx] = useState<TransactionItem | null>(null);
+  const openCopyPopup = (tx: TransactionItem) => setCopyTx(tx);
+
   const handleDeleteSlip = async (tx: TransactionItem) => {
     if (!window.confirm(`Are you sure you want to delete slip ${tx.slipNumber} for ${tx.partyName}?`)) return;
     try {
@@ -889,10 +896,11 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
                           <div className="font-bold text-slate-900 uppercase text-[11px]">{tx.addedBy || 'SYSTEM'}</div>
                           <div className="font-mono text-slate-500 text-[10px]">{formatTimestamp(tx.createdAt)}</div>
                         </td>
-                        {/* Updated — red once a Mistake slip has been edited, as on the live list */}
+                        {/* Updated — red once the slip has been edited (or a Mistake slip edited, or
+                            deleted), as on the live list */}
                         <td className="py-1 px-3 border-r border-b border-slate-200 leading-snug">
-                          <div className={`font-bold uppercase text-[11px] ${tx.mistakeEdited || tx.status === 'VOIDED' ? 'text-red-600' : 'text-slate-900'}`}>{tx.updatedBy || 'SYSTEM'}</div>
-                          <div className={`font-mono text-[10px] ${tx.mistakeEdited || tx.status === 'VOIDED' ? 'text-red-500' : 'text-slate-500'}`}>{formatTimestamp(tx.updatedAt)}</div>
+                          <div className={`font-bold uppercase text-[11px] ${tx.isEdited || tx.mistakeEdited || tx.status === 'VOIDED' ? 'text-red-600' : 'text-slate-900'}`}>{tx.updatedBy || 'SYSTEM'}</div>
+                          <div className={`font-mono text-[10px] ${tx.isEdited || tx.mistakeEdited || tx.status === 'VOIDED' ? 'text-red-500' : 'text-slate-500'}`}>{formatTimestamp(tx.updatedAt)}</div>
                         </td>
                         {/* 4 Action Buttons matching Screenshot 1: Copy, View, Edit, Delete */}
                         <td className="py-1.5 px-2 text-center border-b border-slate-200">
@@ -904,7 +912,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleCopySlip(tx);
+                                openCopyPopup(tx);
                               }}
                               title="Copy Transaction Slip"
                               className="px-2 py-0.5 bg-[#d97706] hover:bg-[#b45309] text-white text-[10px] font-bold rounded shadow-xs transition-colors cursor-pointer"
@@ -1775,6 +1783,12 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
           </div>
         </div>
       )}
+      <CopyTransactionsModal
+        tx={copyTx}
+        shifts={shifts}
+        onClose={() => setCopyTx(null)}
+        onCopied={fetchTransactions}
+      />
     </div>
   );
 };
