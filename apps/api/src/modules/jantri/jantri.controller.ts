@@ -30,6 +30,8 @@ export class JantriController {
     try {
       const shiftId = parseInt(req.params.shiftId as string, 10);
       const date = req.query.date as string | undefined;
+      // Jantri page only (the sole caller of /net): closed until the shift's Main Jantri Time
+      await JantriService.assertJantriOpen(shiftId, date, req.user?.roleName);
       const data = await JantriService.getNetJantriView(shiftId, date);
       return sendSuccess(res, data, 'Net Jantri view data loaded');
     } catch (err) {

@@ -62,8 +62,19 @@ export class ShiftController {
   static async create(req: Request, res: Response, next: NextFunction) {
     try {
       const { name, openDate, isNextDay, roleConfigs } = req.body;
-      const created = await ShiftService.createShift(name, openDate, isNextDay, roleConfigs);
+      const created = await ShiftService.createShift(name, openDate, isNextDay, roleConfigs, req.user?.username || 'A100');
       return sendSuccess(res, created, 'Shift created successfully', 201);
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  // Edit Shift popup's Time tab: the live Action button's `ajax_shift_timings` (ShiftId)
+  static async timings(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = parseInt(req.params.id as string, 10);
+      const timings = await ShiftService.getShiftTimings(id);
+      return sendSuccess(res, timings, 'Shift Timing list!');
     } catch (err) {
       next(err);
     }

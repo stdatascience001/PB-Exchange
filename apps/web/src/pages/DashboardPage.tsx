@@ -66,6 +66,13 @@ const money = (v: unknown): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
+// Card badge as a whole number, rounded the mathematical way: .5 and up goes up, below .5
+// goes down (124.56 -> 125, 30.4 -> 30), the same for minus amounts (-30.6 -> -31).
+const roundHalfUp = (n: number): number => {
+  const r = Math.sign(n) * Math.round(Math.abs(n));
+  return r === 0 ? 0 : r;
+};
+
 interface DashboardPageProps {
   shifts: ShiftDto[];
   user: UserSession | null;
@@ -182,7 +189,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                           deducted — same per-party ledger-config approach as the Collection report. */}
                       {money(s.totalAmount) > 0 && (
                         <span className="border border-emerald-300 bg-emerald-50 text-emerald-700 rounded-md px-2 py-0.5 text-[11px] sm:text-xs font-bold font-mono tracking-tight">
-                          {money(s.netAmount).toLocaleString('en-IN')}
+                          {roundHalfUp(money(s.netAmount)).toLocaleString('en-IN')}
                         </span>
                       )}
                     </div>

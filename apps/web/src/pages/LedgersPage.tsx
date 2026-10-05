@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, useDeferredValue } from 'react';
 import { apiRequest } from '../api/client.js';
 import { Send, X } from 'lucide-react';
 import { PartyNameInput } from '../components/PartyNameInput.js';
@@ -35,6 +35,9 @@ interface LedgerItem {
   updatedBy: string;
   updatedAt: string;
   deletedAt?: string | null;
+  // Live "AddedBy" / "AddedDate": who created the party and when (null addedBy = not on record)
+  addedBy?: string | null;
+  createdAt?: string;
 }
 
 // Ledger list rate figures without float noise or needless decimals (9.5, 80, 20)
@@ -126,6 +129,182 @@ const formatDateTime = (dateStr?: string) => {
   return `${day}-${month}-${year} ${strHours}:${minutes} ${ampm}`;
 };
 
+// One Ledgers-list row. Memoized so a row only re-renders when its own party (or its
+// selection) changes — typing in the Add / Update popups, the search box or clicking another
+// row no longer rebuilds every one of the ~4000 rows. The handlers passed in are stable.
+interface LedgerRowProps {
+  l: LedgerItem;
+  idx: number;
+  isSelected: boolean;
+  onSelect: (id: number) => void;
+  onToggleLimit: (l: LedgerItem) => void;
+  onToggleLock: (l: LedgerItem) => void;
+  onOpenUpdate: (l: LedgerItem) => void;
+}
+
+const LedgerRow = React.memo(function LedgerRow({ l, idx, isSelected, onSelect, onToggleLimit, onToggleLock, onOpenUpdate }: LedgerRowProps) {
+  return (
+    <tr
+      key={l.id}
+      onClick={() => onSelect(l.id)}
+      className={`transition-colors cursor-pointer ${
+        l.loginActive === false
+          // Login Status Deactive: the whole row in orange, as live
+          ? 'bg-[#f4a460] text-slate-900'
+          : isSelected
+          ? 'bg-blue-50/80 text-slate-900'
+          : 'hover:bg-slate-50 text-slate-800'
+      }`}
+    >
+      {/* Sr */}
+      <td className="py-1.5 px-2.5 text-center font-mono border-r border-slate-200 text-slate-600">
+        {idx + 1}
+      </td>
+
+      {/* Telegram */}
+      <td className="py-1.5 px-2.5 text-center border-r border-slate-200 text-sky-600">
+        <Send className="h-3.5 w-3.5 mx-auto opacity-90 cursor-pointer hover:scale-110 transition-transform" />
+      </td>
+
+      {/* Party Name */}
+      <td className="py-1.5 px-3.5 font-bold uppercase tracking-tight border-r border-slate-200 text-slate-900">
+        {l.partyName}
+        {/* (Deleted) / (Hidden) tag after the name, as the live Deleted / Hidden lists show */}
+        {l.deletedAt ? (
+          <span className="ml-1 text-[9px] font-medium normal-case text-[#dc2626]">(Deleted)</span>
+        ) : l.isHidden ? (
+          <span className="ml-1 text-[9px] font-medium normal-case text-[#f97316]">(Hidden)</span>
+        ) : null}
+      </td>
+
+      {/* UserName */}
+      <td className="py-1.5 px-3 text-center font-mono border-r border-slate-200 text-slate-600">
+        {l.userName || '00154263'}
+      </td>
+
+      {/* Group */}
+      <td className="py-1.5 px-3 font-medium border-r border-slate-200 text-slate-700">
+        {l.groupName || 'Fanter'}
+      </td>
+
+      {/* Agent */}
+      <td className="py-1.5 px-3 font-medium uppercase border-r border-slate-200 text-slate-700">
+        {l.agentName || '-NA-'}
+      </td>
+
+      {/* Dara */}
+      <td className="py-1.5 px-2.5 text-center font-mono border-r border-slate-200 text-slate-800">
+        {/* Rate / Commission, same pairing as the Update popup's Rate box:
+            Dara commission = 100 - rate (80 -> 80/20, 100 -> 100/0) */}
+        {`${fmtRate(l.daraRate)}/${fmtRate(100 - l.daraRate)}`}
+      </td>
+
+      {/* Akhar */}
+      <td className="py-1.5 px-2.5 text-center font-mono border-r border-slate-200 text-slate-800">
+        {/* Akhar commission = 100 - rate x 10 (9 -> 9/10, 10 -> 10/0, 8 -> 8/20) */}
+        {`${fmtRate(l.akharRate)}/${fmtRate(100 - l.akharRate * 10)}`}
+      </td>
+
+      {/* Limit — double-click flips YES / NO */}
+      <td
+        className="py-1.5 px-2.5 text-center border-r border-slate-200 cursor-pointer select-none"
+        title="Double-click to change Limit"
+        onDoubleClick={() => onToggleLimit(l)}
+      >
+        <span
+          className={`inline-block min-w-10 px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+            l.hasLimit
+              ? 'bg-[#00897b] text-white'
+              : 'bg-[#d32f2f] text-white'
+          }`}
+        >
+          {l.hasLimit ? 'YES' : 'No'}
+        </span>
+      </td>
+
+      {/* Vapsi | TPR */}
+      <td className="py-1.5 px-2.5 text-center font-mono border-r border-slate-200 text-slate-700">
+        {/* Rebate | TPR (YES when a 3rd Party Rebate is set), as live; the
+            stored vapsiTpr text is the fallback for an older API */}
+        {typeof l.rebate === 'number'
+          ? `${Math.round(l.rebate * 100) / 100} | ${l.hasTpr ? 'YES' : 'NO'}`
+          : l.vapsiTpr}
+      </td>
+
+      {/* Capping */}
+      <td className="py-1.5 px-2.5 text-center font-mono border-r border-slate-200 text-slate-700">
+        {l.capping}
+      </td>
+
+      {/* Risky */}
+      <td className="py-1.5 px-2.5 text-center border-r border-slate-200">
+        <span
+          className={`inline-block min-w-10 px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+            l.isRisky
+              ? 'bg-[#d32f2f] text-white'
+              : 'bg-[#00897b] text-white'
+          }`}
+        >
+          {l.isRisky ? 'YES' : 'NO'}
+        </span>
+      </td>
+
+      {/* Locked */}
+      <td className="py-1.5 px-2.5 text-center border-r border-slate-200">
+        <span
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleLock(l);
+          }}
+          className={`inline-block min-w-12 px-2 py-0.5 rounded text-[10px] font-bold uppercase cursor-pointer transition-transform active:scale-95 ${
+            l.isLocked
+              ? 'bg-[#d32f2f] text-white'
+              : 'bg-[#00897b] text-white'
+          }`}
+        >
+          {l.isLocked ? 'LOCKED' : 'NO'}
+        </span>
+      </td>
+
+      {/* Updated */}
+      <td
+        className="py-1 px-3.5 text-center border-r border-slate-200 text-[10px]"
+        title={l.createdAt ? `Added by ${l.addedBy || '-'} on ${formatDateTime(l.createdAt)}` : undefined}
+      >
+        <div className="font-semibold text-rose-600 tracking-wider">
+          {l.updatedBy || 'A100'}
+        </div>
+        <div className="text-[9px] text-slate-500 font-mono">
+          {formatDateTime(l.updatedAt)}
+        </div>
+      </td>
+
+      {/* Action */}
+      <td className="py-1.5 px-2.5 text-center">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenUpdate(l);
+          }}
+          className="px-2.5 py-1 bg-[#1662c6] hover:bg-[#1354ab] text-white rounded text-[10px] font-bold shadow-xs transition-colors"
+        >
+          Action
+        </button>
+      </td>
+    </tr>
+  );
+});
+
+// Rows are put on the page in batches — the first batch at once, the rest a batch per frame —
+// so opening the page with thousands of parties no longer freezes the tab while one huge
+// table is built. Every row still ends up on the page (scroll / Ctrl+F work as before).
+const FIRST_ROW_BATCH = 150;
+const ROW_BATCH = 300;
+
+// Party Name A-Z (case-insensitive, numbers in names compared as numbers) — one collator
+// shared by every compare instead of localeCompare building its options each time.
+const partyNameCollator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
+
 export const LedgersPage: React.FC = () => {
   const [ledgers, setLedgers] = useState<LedgerItem[]>([]);
   const [agents, setAgents] = useState<AgentOption[]>([]);
@@ -189,7 +368,10 @@ export const LedgersPage: React.FC = () => {
   const addGroupHasDistributorField = groupName === 'Fanter';
   // Real, dynamic distributor list (plus the virtual "SELF" option) — used both for the
   // Distributor field's suggestions and to validate it actually exists.
-  const distributorOptions = ['SELF', ...ledgers.filter((l) => l.groupName === 'Distributor').map((l) => l.partyName)];
+  const distributorOptions = useMemo(
+    () => ['SELF', ...ledgers.filter((l) => l.groupName === 'Distributor').map((l) => l.partyName)],
+    [ledgers]
+  );
 
   // Add popup keyboard flow: Ledger Name gets the cursor on open; Enter walks field to field
   // (Save last, where Enter saves); the Distributor box shows its list on focus, ↑/↓ moves
@@ -293,8 +475,12 @@ export const LedgersPage: React.FC = () => {
       console.warn('Failed to load party names:', err);
     }
   };
+  // The pickers are filled from the list's own load whenever it shows active parties (see
+  // fetchLedgers), so they only need their own /ledgers call when it opens on Deleted —
+  // otherwise opening the page downloaded the whole ledger list twice.
   useEffect(() => {
-    fetchPickerParties();
+    if (statusFilter === 'Deleted') fetchPickerParties();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // Every active party — the ledger being edited included (e.g. a Hissa link back to itself).
   const reConfigPartyNames = pickerPartyNames.map(p => p.name);
@@ -341,6 +527,15 @@ export const LedgersPage: React.FC = () => {
     setAddErrorField(null);
   }, [showModal]);
 
+  // F5 = ReLoad Ledgers: the list (for the status now chosen — Active / Hidden / Deleted) and
+  // the Agent filter's list. Read through a ref so the key handler below always reloads with
+  // the current status, not the one the page opened on.
+  const reloadLedgersRef = useRef<() => void>(() => {});
+  reloadLedgersRef.current = () => {
+    fetchLedgers();
+    fetchAgents();
+  };
+
   // Keyboard shortcuts: F2 opens Add modal, F5 reloads, Escape closes
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -349,8 +544,9 @@ export const LedgersPage: React.FC = () => {
         setShowModal(true);
       }
       if (e.key === 'F5') {
+        // Stops the browser's own page refresh; holding F5 reloads once, not on every repeat
         e.preventDefault();
-        fetchLedgers();
+        if (!e.repeat) reloadLedgersRef.current();
       }
       if (e.key === 'Escape' && showModal) {
         e.preventDefault();
@@ -698,7 +894,7 @@ export const LedgersPage: React.FC = () => {
       e.preventDefault();
       focusRc(nextOf[id]);
     } else if (id === 'rc-save') {
-      // Enter on Save Reconfig saves and closes the popup (a mouse click still just saves)
+      // Enter on Save Reconfig saves and closes the popup (a mouse click does the same)
       e.preventDefault();
       if (await handleSaveReconfig()) setShowUpdateModal(false);
     } else if (id === 'rc-hissa-pct') {
@@ -990,9 +1186,12 @@ export const LedgersPage: React.FC = () => {
     }
   };
 
-  // Dynamic filter logic matching pbmax1.com controls
-  const filteredLedgers = ledgers.filter(l => {
-    const searchLower = searchTerm.trim().toLowerCase();
+  // Dynamic filter logic matching pbmax1.com controls. Memoized (re-run only when the list or a
+  // filter changes, not on every keystroke in a popup); the search box filters on a deferred
+  // copy of its text so typing stays smooth while the list catches up.
+  const deferredSearchTerm = useDeferredValue(searchTerm);
+  const filteredLedgers = useMemo(() => ledgers.filter(l => {
+    const searchLower = deferredSearchTerm.trim().toLowerCase();
     const matchesSearch =
       !searchLower ||
       l.partyName.toLowerCase().includes(searchLower) ||
@@ -1024,7 +1223,42 @@ export const LedgersPage: React.FC = () => {
     return matchesSearch && matchesCashAgent && matchesAgent && matchesCapping && matchesStatus;
   })
     // Listed A-Z by Party Name (case-insensitive, numbers in names compared as numbers)
-    .sort((a, b) => a.partyName.localeCompare(b.partyName, undefined, { sensitivity: 'base', numeric: true }));
+    .sort((a, b) => partyNameCollator.compare(a.partyName, b.partyName)),
+  [ledgers, deferredSearchTerm, cashAgentFilter, agentFilter, cappingFilter, statusFilter]);
+
+  // Row actions handed to the memoized rows: stable functions that always call the latest
+  // handler, so the rows don't re-render just because this component did.
+  const rowHandlersRef = useRef({ handleToggleLimit, handleToggleLock, handleOpenUpdateModal });
+  rowHandlersRef.current = { handleToggleLimit, handleToggleLock, handleOpenUpdateModal };
+  const onRowToggleLimit = useCallback((l: LedgerItem) => rowHandlersRef.current.handleToggleLimit(l), []);
+  const onRowToggleLock = useCallback((l: LedgerItem) => rowHandlersRef.current.handleToggleLock(l), []);
+  const onRowOpenUpdate = useCallback((l: LedgerItem) => rowHandlersRef.current.handleOpenUpdateModal(l), []);
+
+  // How many rows are on the page so far (see FIRST_ROW_BATCH). Only ever grows, so a list
+  // reload after a save never makes rows below the fold vanish and the page jump.
+  const [renderedRowCount, setRenderedRowCount] = useState(FIRST_ROW_BATCH);
+  useEffect(() => {
+    if (renderedRowCount >= filteredLedgers.length) return;
+    const id = requestAnimationFrame(() => setRenderedRowCount(c => c + ROW_BATCH));
+    return () => cancelAnimationFrame(id);
+  }, [renderedRowCount, filteredLedgers.length]);
+
+  // Update popup's party pickers (Distributor / Retailer / HP Ledger / Ref-Ledger and the
+  // ledger-names datalist): every other party, built once per list / party rather than four
+  // thousand-option lists rebuilt on every keystroke in the popup.
+  const updateDetailId = updateLedgerDetail?.id;
+  const otherLedgerIdOptions = useMemo(
+    () => ledgers.filter(o => o.id !== updateDetailId).map(o => (
+      <option key={o.id} value={o.id}>{o.partyName}</option>
+    )),
+    [ledgers, updateDetailId]
+  );
+  const otherLedgerNameOptions = useMemo(
+    () => ledgers.filter(o => o.id !== updateDetailId).map(o => (
+      <option key={o.id} value={o.partyName} />
+    )),
+    [ledgers, updateDetailId]
+  );
 
   return (
     <div className="min-h-full bg-[#eaedf2] p-3 sm:p-4 flex flex-col justify-between text-slate-800 select-none">
@@ -1104,10 +1338,11 @@ export const LedgersPage: React.FC = () => {
           </button>
         </div>
 
-        {/* Main Ledgers Table matching pbmax1.com */}
-        <div className="overflow-x-auto">
+        {/* Main Ledgers Table matching pbmax1.com — scrolls inside its own box (both ways), with
+            the header row pinned at the top and the footer row at the bottom, as on live */}
+        <div className="overflow-auto max-h-[calc(100vh-230px)] min-h-[240px]">
           <table className="w-full text-left text-xs border-collapse">
-            <thead>
+            <thead className="sticky top-0 z-10">
               <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
                 <th className="py-2 px-2.5 border-r border-[#223b63] text-center w-12">Sr</th>
                 <th className="py-2 px-2.5 border-r border-[#223b63] text-center w-14">Telegram</th>
@@ -1134,165 +1369,27 @@ export const LedgersPage: React.FC = () => {
                   </td>
                 </tr>
               ) : (
-                filteredLedgers.map((l, idx) => {
-                  const isSelected = selectedRowId === l.id;
-
-                  return (
-                    <tr
-                      key={l.id}
-                      onClick={() => setSelectedRowId(l.id)}
-                      className={`transition-colors cursor-pointer ${
-                        l.loginActive === false
-                          // Login Status Deactive: the whole row in orange, as live
-                          ? 'bg-[#f4a460] text-slate-900'
-                          : isSelected
-                          ? 'bg-blue-50/80 text-slate-900'
-                          : 'hover:bg-slate-50 text-slate-800'
-                      }`}
-                    >
-                      {/* Sr */}
-                      <td className="py-1.5 px-2.5 text-center font-mono border-r border-slate-200 text-slate-600">
-                        {idx + 1}
-                      </td>
-
-                      {/* Telegram */}
-                      <td className="py-1.5 px-2.5 text-center border-r border-slate-200 text-sky-600">
-                        <Send className="h-3.5 w-3.5 mx-auto opacity-90 cursor-pointer hover:scale-110 transition-transform" />
-                      </td>
-
-                      {/* Party Name */}
-                      <td className="py-1.5 px-3.5 font-bold uppercase tracking-tight border-r border-slate-200 text-slate-900">
-                        {l.partyName}
-                        {/* (Deleted) / (Hidden) tag after the name, as the live Deleted / Hidden lists show */}
-                        {l.deletedAt ? (
-                          <span className="ml-1 text-[9px] font-medium normal-case text-[#dc2626]">(Deleted)</span>
-                        ) : l.isHidden ? (
-                          <span className="ml-1 text-[9px] font-medium normal-case text-[#f97316]">(Hidden)</span>
-                        ) : null}
-                      </td>
-
-                      {/* UserName */}
-                      <td className="py-1.5 px-3 text-center font-mono border-r border-slate-200 text-slate-600">
-                        {l.userName || '00154263'}
-                      </td>
-
-                      {/* Group */}
-                      <td className="py-1.5 px-3 font-medium border-r border-slate-200 text-slate-700">
-                        {l.groupName || 'Fanter'}
-                      </td>
-
-                      {/* Agent */}
-                      <td className="py-1.5 px-3 font-medium uppercase border-r border-slate-200 text-slate-700">
-                        {l.agentName || '-NA-'}
-                      </td>
-
-                      {/* Dara */}
-                      <td className="py-1.5 px-2.5 text-center font-mono border-r border-slate-200 text-slate-800">
-                        {/* Rate / Commission, same pairing as the Update popup's Rate box:
-                            Dara commission = 100 - rate (80 -> 80/20, 100 -> 100/0) */}
-                        {`${fmtRate(l.daraRate)}/${fmtRate(100 - l.daraRate)}`}
-                      </td>
-
-                      {/* Akhar */}
-                      <td className="py-1.5 px-2.5 text-center font-mono border-r border-slate-200 text-slate-800">
-                        {/* Akhar commission = 100 - rate x 10 (9 -> 9/10, 10 -> 10/0, 8 -> 8/20) */}
-                        {`${fmtRate(l.akharRate)}/${fmtRate(100 - l.akharRate * 10)}`}
-                      </td>
-
-                      {/* Limit — double-click flips YES / NO */}
-                      <td
-                        className="py-1.5 px-2.5 text-center border-r border-slate-200 cursor-pointer select-none"
-                        title="Double-click to change Limit"
-                        onDoubleClick={() => handleToggleLimit(l)}
-                      >
-                        <span
-                          className={`inline-block min-w-10 px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                            l.hasLimit
-                              ? 'bg-[#00897b] text-white'
-                              : 'bg-[#d32f2f] text-white'
-                          }`}
-                        >
-                          {l.hasLimit ? 'YES' : 'No'}
-                        </span>
-                      </td>
-
-                      {/* Vapsi | TPR */}
-                      <td className="py-1.5 px-2.5 text-center font-mono border-r border-slate-200 text-slate-700">
-                        {/* Rebate | TPR (YES when a 3rd Party Rebate is set), as live; the
-                            stored vapsiTpr text is the fallback for an older API */}
-                        {typeof l.rebate === 'number'
-                          ? `${Math.round(l.rebate * 100) / 100} | ${l.hasTpr ? 'YES' : 'NO'}`
-                          : l.vapsiTpr}
-                      </td>
-
-                      {/* Capping */}
-                      <td className="py-1.5 px-2.5 text-center font-mono border-r border-slate-200 text-slate-700">
-                        {l.capping}
-                      </td>
-
-                      {/* Risky */}
-                      <td className="py-1.5 px-2.5 text-center border-r border-slate-200">
-                        <span
-                          className={`inline-block min-w-10 px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                            l.isRisky
-                              ? 'bg-[#d32f2f] text-white'
-                              : 'bg-[#00897b] text-white'
-                          }`}
-                        >
-                          {l.isRisky ? 'YES' : 'NO'}
-                        </span>
-                      </td>
-
-                      {/* Locked */}
-                      <td className="py-1.5 px-2.5 text-center border-r border-slate-200">
-                        <span
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleToggleLock(l);
-                          }}
-                          className={`inline-block min-w-12 px-2 py-0.5 rounded text-[10px] font-bold uppercase cursor-pointer transition-transform active:scale-95 ${
-                            l.isLocked
-                              ? 'bg-[#d32f2f] text-white'
-                              : 'bg-[#00897b] text-white'
-                          }`}
-                        >
-                          {l.isLocked ? 'LOCKED' : 'NO'}
-                        </span>
-                      </td>
-
-                      {/* Updated */}
-                      <td className="py-1 px-3.5 text-center border-r border-slate-200 text-[10px]">
-                        <div className="font-semibold text-rose-600 tracking-wider">
-                          {l.updatedBy || 'A100'}
-                        </div>
-                        <div className="text-[9px] text-slate-500 font-mono">
-                          {formatDateTime(l.updatedAt)}
-                        </div>
-                      </td>
-
-                      {/* Action */}
-                      <td className="py-1.5 px-2.5 text-center">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenUpdateModal(l);
-                          }}
-                          className="px-2.5 py-1 bg-[#1662c6] hover:bg-[#1354ab] text-white rounded text-[10px] font-bold shadow-xs transition-colors"
-                        >
-                          Action
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
+                filteredLedgers.slice(0, renderedRowCount).map((l, idx) => (
+                  <LedgerRow
+                    key={l.id}
+                    l={l}
+                    idx={idx}
+                    isSelected={selectedRowId === l.id}
+                    onSelect={setSelectedRowId}
+                    onToggleLimit={onRowToggleLimit}
+                    onToggleLock={onRowToggleLock}
+                    onOpenUpdate={onRowOpenUpdate}
+                  />
+                ))
               )}
             </tbody>
 
             {/* Table Footer matching pbmax1.com */}
-            <tfoot>
+            <tfoot className="sticky bottom-0 z-10">
               <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
                 <th className="py-2 px-2.5 border-r border-[#223b63] text-center font-mono">
-                  {3241}
+                  {/* Real count of the parties listed (follows Search and the filters) */}
+                  {filteredLedgers.length}
                 </th>
                 <th className="py-2 px-2.5 border-r border-[#223b63] text-center">Telegram</th>
                 <th className="py-2 px-3.5 border-r border-[#223b63]">Party Name</th>
@@ -1316,7 +1413,16 @@ export const LedgersPage: React.FC = () => {
         {/* Bottom Help & Status Bar matching pbmax1.com */}
         <div className="p-2.5 bg-[#f8fafc] border-t border-slate-200 flex items-center justify-between text-xs font-semibold text-slate-600">
           <div className="text-slate-500 hover:text-slate-700 cursor-pointer">Need Help?</div>
-          <div className="font-mono text-slate-500 tracking-wider">[ F5 = ReLoad Ledgers ]</div>
+          {/* Also clickable; shows the reload while it runs */}
+          <button
+            type="button"
+            onClick={() => reloadLedgersRef.current()}
+            disabled={loading}
+            title="Reload Ledgers (F5)"
+            className="font-mono text-slate-500 tracking-wider hover:text-slate-800 disabled:cursor-wait"
+          >
+            {loading ? '[ ReLoading Ledgers... ]' : '[ F5 = ReLoad Ledgers ]'}
+          </button>
           <div>
             <select
               value={statusFilter}
@@ -1658,9 +1764,12 @@ export const LedgersPage: React.FC = () => {
                       <label className="block text-slate-700 font-medium mb-1">Mobile</label>
                       <input
                         type="text"
+                        inputMode="numeric"
+                        maxLength={10}
                         value={mobile}
                         onChange={(e) => {
-                          setMobile(e.target.value);
+                          // Digits only, at most 10 (typed or pasted)
+                          setMobile(e.target.value.replace(/\D/g, '').slice(0, 10));
                           if (addErrorField === 'mobile') {
                             setAddErrorField(null);
                             setAddFormError(null);
@@ -1830,7 +1939,8 @@ export const LedgersPage: React.FC = () => {
                     id="rc-save"
                     type="button"
                     disabled={rcSaving}
-                    onClick={handleSaveReconfig}
+                    // Saves, then closes the popup once the save went through (as Enter does)
+                    onClick={async () => { if (await handleSaveReconfig()) setShowUpdateModal(false); }}
                     className="px-4 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded text-xs transition-colors shadow-xs disabled:opacity-50 outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#00897b]"
                   >
                     {rcSaving ? 'Saving...' : 'Save Reconfig'}
@@ -1902,7 +2012,9 @@ export const LedgersPage: React.FC = () => {
                 <button
                   id="rc-update-hissa"
                   type="button"
-                  onClick={() => { /* re-fetch already reflects latest state client-side */ }}
+                  disabled={rcSaving}
+                  // Saves (same save as Save Reconfig, with its Success message), then closes
+                  onClick={async () => { if (await handleSaveReconfig()) setShowUpdateModal(false); }}
                   className="px-6 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded text-xs transition-colors shadow-xs outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#00897b]"
                 >
                   Update Hissa/TPC
@@ -1933,7 +2045,9 @@ export const LedgersPage: React.FC = () => {
                 <button
                   id="rc-update-tpv"
                   type="button"
-                  onClick={() => { /* rows already save individually on add/remove */ }}
+                  disabled={rcSaving}
+                  // Saves (same save as Save Reconfig, with its Success message), then closes
+                  onClick={async () => { if (await handleSaveReconfig()) setShowUpdateModal(false); }}
                   className="px-6 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded text-xs transition-colors shadow-xs outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#00897b]"
                 >
                   Update TPV
@@ -1941,9 +2055,7 @@ export const LedgersPage: React.FC = () => {
 
                 {/* ledger-names datalist kept for any other input still pointing at it */}
                 <datalist id="ledger-names">
-                  {ledgers.filter(o => o.id !== updateLedgerDetail?.id).map(o => (
-                    <option key={o.id} value={o.partyName} />
-                  ))}
+                  {otherLedgerNameOptions}
                 </datalist>
 
                 <div className="pt-2 border-t border-slate-200 flex items-center gap-6">
@@ -2099,9 +2211,7 @@ export const LedgersPage: React.FC = () => {
                         className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 font-medium focus:outline-none focus:border-blue-500"
                       >
                         <option value="">-Direct-</option>
-                        {ledgers.filter(o => o.id !== updateLedgerDetail?.id).map(o => (
-                          <option key={o.id} value={o.id}>{o.partyName}</option>
-                        ))}
+                        {otherLedgerIdOptions}
                       </select>
                     </div>
                     <div>
@@ -2112,9 +2222,7 @@ export const LedgersPage: React.FC = () => {
                         className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 font-medium focus:outline-none focus:border-blue-500"
                       >
                         <option value="">-Direct-</option>
-                        {ledgers.filter(o => o.id !== updateLedgerDetail?.id).map(o => (
-                          <option key={o.id} value={o.id}>{o.partyName}</option>
-                        ))}
+                        {otherLedgerIdOptions}
                       </select>
                     </div>
                   </div>
@@ -2216,9 +2324,7 @@ export const LedgersPage: React.FC = () => {
                         className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 font-medium focus:outline-none focus:border-blue-500"
                       >
                         <option value="">-</option>
-                        {ledgers.filter(o => o.id !== updateLedgerDetail?.id).map(o => (
-                          <option key={o.id} value={o.id}>{o.partyName}</option>
-                        ))}
+                        {otherLedgerIdOptions}
                       </select>
                     </div>
                     <div>
@@ -2229,9 +2335,7 @@ export const LedgersPage: React.FC = () => {
                         className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 font-medium focus:outline-none focus:border-blue-500"
                       >
                         <option value="">-</option>
-                        {ledgers.filter(o => o.id !== updateLedgerDetail?.id).map(o => (
-                          <option key={o.id} value={o.id}>{o.partyName}</option>
-                        ))}
+                        {otherLedgerIdOptions}
                       </select>
                     </div>
                   </div>

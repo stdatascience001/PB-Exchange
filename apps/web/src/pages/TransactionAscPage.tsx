@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ShiftDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 
 const DECLARE_MODE = false;
 const PAGE_TITLE = 'Transaction ASC';
@@ -13,12 +14,23 @@ interface EntryAscRow {
   id: number;
   partyName: string;
   numberValue: string;
+  entryType?: string;
   sale: number;
   pnlAmount: number;
   rate: string;
   sHissa: number;
   oHissa: number;
 }
+
+// Number as the live report prints it: Dara without the leading zero (05 -> 5, 00 -> 100),
+// Andar / Bahar with their A / B prefix (as on the Jantri grid).
+const displayNumber = (r: { numberValue: string; entryType?: string }) => {
+  if (r.entryType === 'HARUF_ANDAR') return `A${r.numberValue}`;
+  if (r.entryType === 'HARUF_BAHAR') return `B${r.numberValue}`;
+  const n = parseInt(r.numberValue, 10);
+  if (isNaN(n)) return r.numberValue;
+  return String(n === 0 && r.numberValue.length === 2 ? 100 : n);
+};
 
 const todayInputDate = () => new Date().toISOString().slice(0, 10);
 
@@ -89,7 +101,7 @@ export const TransactionAscPage: React.FC<TransactionAscPageProps> = ({ shifts =
     }
     const csvContent = 'data:text/csv;charset=utf-8,' +
       ['Party,Number,Sale,P&L Amount,Rate,S-Hissa,O-Hissa'].concat(
-        list.map(r => `"${r.partyName}",${r.numberValue},${r.sale},${r.pnlAmount},${r.rate},${r.sHissa},${r.oHissa}`)
+        list.map(r => `"${r.partyName}",${displayNumber(r)},${r.sale},${r.pnlAmount},${r.rate},${r.sHissa},${r.oHissa}`)
       ).join('\n');
     const link = document.createElement('a');
     link.setAttribute('href', encodeURI(csvContent));
@@ -118,7 +130,8 @@ export const TransactionAscPage: React.FC<TransactionAscPageProps> = ({ shifts =
             </div>
             <div className="flex items-center gap-1.5">
               <span className="text-slate-600 font-medium text-xs">Date</span>
-              <input type="date" value={reportDate} onChange={(e) => setReportDate(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800" />
+              {/* DD / MM / YYYY as on live (the browser picker showed MM/DD/YYYY); still sends YYYY-MM-DD */}
+              <DateDMYInput value={reportDate} onChange={setReportDate} idPrefix="asc-date" />
             </div>
             <div className="flex items-center gap-1.5">
               <span className="text-slate-600 font-medium text-xs">Amount</span>
@@ -163,7 +176,7 @@ export const TransactionAscPage: React.FC<TransactionAscPageProps> = ({ shifts =
                   <tr key={r.id} className="hover:bg-slate-50 transition-colors">
                     <td className="py-2 px-3 text-center font-mono text-slate-600 border-r border-slate-200">{idx + 1}</td>
                     <td className="py-2 px-4 font-bold text-slate-900 uppercase border-r border-slate-200">{r.partyName}</td>
-                    <td className="py-2 px-4 text-center font-mono font-bold text-blue-700 border-r border-slate-200">{r.numberValue}</td>
+                    <td className="py-2 px-4 text-center font-mono font-bold text-slate-900 border-r border-slate-200">{displayNumber(r)}</td>
                     <td className="py-2 px-4 text-right font-mono text-slate-900 border-r border-slate-200">{r.sale.toLocaleString('en-IN')}</td>
                     <td className={`py-2 px-4 text-right font-mono font-bold border-r border-slate-200 ${r.pnlAmount >= 0 ? 'text-emerald-800' : 'text-rose-800'}`}>
                       {r.pnlAmount.toLocaleString('en-IN')}

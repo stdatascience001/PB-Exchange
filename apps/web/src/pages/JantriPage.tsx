@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { ShiftDto, JantriViewDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
+import { toast } from 'react-toastify';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 
 interface JantriPageProps {
   shifts: ShiftDto[];
@@ -47,7 +49,29 @@ export const JantriPage: React.FC<JantriPageProps> = ({
       // Calculation), which must keep showing raw amounts.
       const res = await apiRequest<JantriViewDto>(`/jantri/${shiftId}/net?date=${dateStr}`);
       if (res.data) setData(res.data);
-    } catch (err) {
+    } catch (err: any) {
+      // Before the shift's Main Jantri Time (Edit Shift > Time tab), as on live: an error
+      // toast and the Jantri grid shown empty, never the previous shift's figures.
+      if (err?.code === 'JANTRI_NOT_OPEN') {
+        toast.error(
+          <div>
+            <div className="font-bold text-base">Error</div>
+            <div className="text-sm mt-0.5">{err.message}</div>
+          </div>,
+          { toastId: 'jantri-not-open' }
+        );
+        const shift = shifts.find(s => s.id === shiftId);
+        setData({
+          shiftId,
+          shiftName: shift?.name || '',
+          shiftDate: dateStr,
+          totalCollected: 0,
+          totalRisk: 0,
+          grid: [],
+          haruf: [],
+        });
+        return;
+      }
       console.warn('Failed to load Jantri view:', err);
     } finally {
       setLoading(false);
@@ -138,10 +162,21 @@ export const JantriPage: React.FC<JantriPageProps> = ({
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">Shift</span>
             <select
+              id="jantri-shift"
+              autoFocus
               value={selectedShift?.id || ''}
               onChange={(e) => {
                 const s = availableShifts.find(sh => sh.id === parseInt(e.target.value, 10));
                 if (s) onSelectShift(s);
+              }}
+              // As on live: Up/Down picks the shift; Enter moves to the date's day part
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  const el = document.getElementById('jantri-date-dd') as HTMLInputElement | null;
+                  el?.focus();
+                  el?.select();
+                }
               }}
               className="px-3 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer min-w-32 shadow-xs"
             >
@@ -153,11 +188,12 @@ export const JantriPage: React.FC<JantriPageProps> = ({
 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">Date</span>
-            <input
-              type="date"
+            {/* DD-MM-YYYY; Enter steps DD -> MM -> YYYY (as live). Still sends YYYY-MM-DD. */}
+            <DateDMYInput
               value={dateStr}
-              onChange={(e) => setDateStr(e.target.value)}
-              className="px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-700 tracking-wider focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer"
+              onChange={setDateStr}
+              idPrefix="jantri-date"
+              separator="-"
             />
           </div>
 

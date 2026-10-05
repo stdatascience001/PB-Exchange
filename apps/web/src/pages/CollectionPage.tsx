@@ -1,6 +1,21 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { ShiftDto, LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
+import { DateDMYInput } from '../components/DateDMYInput.js';
+
+// Live Enter order across the filter bar: Shift -> DD -> MM -> YYYY -> Commission -> Hissa ->
+// Dibba -> Akh-Mix -> Amt-Less -> Less-% -> Submit (whose own Enter runs it).
+const focusById = (id: string) => {
+  const el = document.getElementById(id) as HTMLInputElement | null;
+  el?.focus();
+  if (el && typeof el.select === 'function' && el.type !== 'checkbox') el.select();
+};
+const enterTo = (id: string) => (e: React.KeyboardEvent) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    focusById(id);
+  }
+};
 
 interface CollectionPageProps {
   shifts: ShiftDto[];
@@ -39,8 +54,10 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
   const [viewLoading, setViewLoading] = useState(false);
 
   // Report filters, all applied server-side on Submit against each party's own ledger config:
-  // Commission and Hissa deduct their rates, Dibba narrows to dibba-flagged parties, Akh-Mix
-  // adjusts the Akhar side, and Amt-Less / Less-% take a flat then a percentage off each cell.
+  // Hissa takes off what each party gives other ledgers through its Hissa Party rows (live: DK
+  // ROHIT 50%, "50 | HP A/C", 200 -> 100), Akh-Mix adjusts the Akhar side, Commission and Dibba
+  // leave the figures as they are (as live shows), and Amt-Less / Less-% take a flat then a
+  // percentage off each cell.
   // Confirmed against the live page: the book reads 200 untouched and with Commission on
   // (both parties sit at 0% commission), and drops to 150 once Hissa is ticked — the 100 on
   // number 2 halving for the 50%-hissa party while the other party's 100 stays put.
@@ -195,6 +212,8 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
         setAmounts(newAmounts);
         setHarufData(res.data.haruf || []);
         setIsCollectionView(true);
+        // As on live: once the report draws, the cursor lands on number 1's cell
+        setTimeout(() => focusById('coll-cell-1'), 0);
       }
     } catch (err: any) {
       alert(err.message || 'Failed to load collection data');
@@ -257,51 +276,57 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
           </span>
 
           <select
+            id="coll-shift"
+            autoFocus
             value={shiftId}
             onChange={(e) => setShiftId(parseInt(e.target.value, 10))}
+            onKeyDown={enterTo('coll-date-dd')}
             className="px-3 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer min-w-32 shadow-xs"
           >
             {availableShifts.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
 
-          <input
-            type="date"
+          {/* DD-MM-YYYY; Enter steps DD -> MM -> YYYY -> Commission. Still sends YYYY-MM-DD. */}
+          <DateDMYInput
             value={dateStr}
-            onChange={(e) => setDateStr(e.target.value)}
-            className="px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-700 tracking-wider focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer"
+            onChange={setDateStr}
+            idPrefix="coll-date"
+            separator="-"
+            onEnterFromYear={() => focusById('coll-commission')}
           />
 
           <label className="flex items-center gap-1.5 cursor-pointer">
-            <input type="checkbox" checked={commission} onChange={(e) => setCommission(e.target.checked)} />
+            <input id="coll-commission" type="checkbox" checked={commission} onChange={(e) => setCommission(e.target.checked)} onKeyDown={enterTo('coll-hissa')} className="focus:ring-2 focus:ring-amber-400" />
             <span className="text-slate-600 font-medium">Commission</span>
           </label>
           <label className="flex items-center gap-1.5 cursor-pointer">
-            <input type="checkbox" checked={hissa} onChange={(e) => setHissa(e.target.checked)} />
+            <input id="coll-hissa" type="checkbox" checked={hissa} onChange={(e) => setHissa(e.target.checked)} onKeyDown={enterTo('coll-dibba')} className="focus:ring-2 focus:ring-amber-400" />
             <span className="text-slate-600 font-medium">Hissa</span>
           </label>
           <label className="flex items-center gap-1.5 cursor-pointer">
-            <input type="checkbox" checked={dibba} onChange={(e) => setDibba(e.target.checked)} />
+            <input id="coll-dibba" type="checkbox" checked={dibba} onChange={(e) => setDibba(e.target.checked)} onKeyDown={enterTo('coll-akhmix')} className="focus:ring-2 focus:ring-amber-400" />
             <span className="text-slate-600 font-medium">Dibba</span>
           </label>
           <label className="flex items-center gap-1.5 cursor-pointer">
-            <input type="checkbox" checked={akhMix} onChange={(e) => setAkhMix(e.target.checked)} />
+            <input id="coll-akhmix" type="checkbox" checked={akhMix} onChange={(e) => setAkhMix(e.target.checked)} onKeyDown={enterTo('coll-amtless')} className="focus:ring-2 focus:ring-amber-400" />
             <span className="text-slate-600 font-medium">Akh-Mix</span>
           </label>
 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium">Amt-Less</span>
-            <input type="number" value={amtLess} onChange={(e) => setAmtLess(e.target.value)} className="w-20 px-2 py-1 bg-white border border-slate-300 rounded text-xs" />
+            <input id="coll-amtless" type="number" value={amtLess} onChange={(e) => setAmtLess(e.target.value)} onKeyDown={enterTo('coll-lesspct')} className="w-20 px-2 py-1 bg-white border border-slate-300 rounded text-xs focus:outline-none focus:bg-[#fde68a]" />
           </div>
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium">Less-%</span>
-            <input type="number" value={lessPercent} onChange={(e) => setLessPercent(e.target.value)} className="w-16 px-2 py-1 bg-white border border-slate-300 rounded text-xs" />
+            <input id="coll-lesspct" type="number" value={lessPercent} onChange={(e) => setLessPercent(e.target.value)} onKeyDown={enterTo('coll-submit')} className="w-16 px-2 py-1 bg-white border border-slate-300 rounded text-xs focus:outline-none focus:bg-[#fde68a]" />
           </div>
 
           <button
+            id="coll-submit"
             type="button"
             onClick={handleSubmit}
             disabled={submitting || viewLoading}
-            className="ml-auto px-5 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] active:bg-[#0f4691] text-white font-bold text-xs rounded shadow-xs transition-colors disabled:opacity-50"
+            className="ml-auto px-5 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] active:bg-[#0f4691] text-white font-bold text-xs rounded shadow-xs transition-colors disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-amber-400"
           >
             {submitting ? 'Submitting...' : viewLoading ? 'Loading...' : 'Submit'}
           </button>
@@ -391,11 +416,16 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
                             {num}
                           </span>
                           {isCollectionView ? (
-                            <span className="block w-full font-bold text-slate-900">
+                            <span
+                              id={`coll-cell-${num}`}
+                              tabIndex={0}
+                              className="block w-full font-bold text-slate-900 outline-none focus:bg-[#fde68a] rounded-xs"
+                            >
                               {amounts[num] ? adjustedAmount(parseFloat(amounts[num])).toLocaleString('en-IN') : ''}
                             </span>
                           ) : (
                             <input
+                              id={`coll-cell-${num}`}
                               type="number"
                               value={amounts[num] || ''}
                               onChange={(e) => handleAmountChange(num, e.target.value)}

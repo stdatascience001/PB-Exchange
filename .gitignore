@@ -22,3 +22,6 @@ npm-debug.log*
 # Editor/OS
 .DS_Store
 Thumbs.db
+
+# Live panel data exports (party names, mobiles, staff logins) — never commit
+packages/database/live-data/

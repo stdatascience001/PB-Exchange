@@ -1,10 +1,40 @@
 import { db, shifts, shiftCycles, transactions, transactionEntries, ledgers, agents, ledgerThirdPartyLinks, sql as pgSql } from '@pb/database';
 import { eq, and, inArray, sql as dsql } from 'drizzle-orm';
 import { redis } from '../../config/redis.js';
-import { NotFoundError } from '../../common/errors.js';
+import { AppError, NotFoundError } from '../../common/errors.js';
 import { JantriViewDto, JantriCell, HarufCell } from '@pb/types';
 
 export class JantriService {
+  // Live Jantri page gate: a shift's Jantri opens only once its Edit Shift > Time tab time has
+  // passed on the requested date — "Main Jantri Time" (live MainJantriTime) for staff, and
+  // "Fanter Panel Time" (live ApiTimeRebateForTransaction) for a FANTER login. An unset time
+  // ("0" / 00:00:00) leaves the Jantri open all day, as live does for DELHI BAZAAR. Applies to
+  // every role, SUPER ADMIN included (live blocks it too); past dates are always open.
+  static async assertJantriOpen(shiftId: number, date?: string, roleName?: string) {
+    const [shift] = await db.select().from(shifts).where(eq(shifts.id, shiftId));
+    if (!shift) throw new NotFoundError('Shift not found');
+
+    const isFanter = roleName === 'FANTER';
+    const openTime = (isFanter ? shift.fanterPanelTime : shift.mainJantriTime) || '';
+    const [h, m, s] = openTime.split(':').map(Number);
+    if (!openTime || openTime === '0' || ((h || 0) === 0 && (m || 0) === 0 && (s || 0) === 0)) return;
+
+    const targetDate = date || shift.openDate;
+    const [y, mo, d] = targetDate.split('-').map(Number);
+    if (!y || !mo || !d) return;
+    const opensAt = new Date(y, mo - 1, d, h || 0, m || 0, s || 0, 0);
+
+    if (new Date() < opensAt) {
+      throw new AppError(
+        isFanter
+          ? 'Fanter panel time is not opened yet. Try after some time.'
+          : 'Main jantri time is not opened yet. Try after some time.',
+        400,
+        'JANTRI_NOT_OPEN'
+      );
+    }
+  }
+
   static async getJantriView(shiftId: number, date?: string): Promise<JantriViewDto> {
     const [shift] = await db.select().from(shifts).where(eq(shifts.id, shiftId));
     if (!shift) throw new NotFoundError('Shift not found');

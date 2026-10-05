@@ -8,12 +8,14 @@ interface DateDMYInputProps {
   idPrefix: string;
   // Enter on the year part (e.g. focus the next filter); unset = Enter just stays
   onEnterFromYear?: () => void;
+  // Shown between the parts; unset = '/' (DD / MM / YYYY), e.g. '-' for DD-MM-YYYY
+  separator?: string;
 }
 
 // Date box shown as DD / MM / YYYY (three parts, as the live panels do) instead of the
 // browser's own locale picker. Enter steps day -> month -> year; Up/Down steps the focused
 // part (wrapping within the month / year); only digits can be typed.
-export const DateDMYInput: React.FC<DateDMYInputProps> = ({ value, onChange, idPrefix, onEnterFromYear }) => {
+export const DateDMYInput: React.FC<DateDMYInputProps> = ({ value, onChange, idPrefix, onEnterFromYear, separator = '/' }) => {
   const [dd, setDd] = useState(() => value.slice(8, 10));
   const [mm, setMm] = useState(() => value.slice(5, 7));
   const [yyyy, setYyyy] = useState(() => value.slice(0, 4));
@@ -84,7 +86,7 @@ export const DateDMYInput: React.FC<DateDMYInputProps> = ({ value, onChange, idP
         onKeyDown={(e) => onKeyDown('dd', e)}
         className={`w-7 ${seg}`}
       />
-      <span className="text-slate-500">/</span>
+      <span className="text-slate-500">{separator}</span>
       <input
         id={`${idPrefix}-mm`}
         type="text"
@@ -95,7 +97,7 @@ export const DateDMYInput: React.FC<DateDMYInputProps> = ({ value, onChange, idP
         onKeyDown={(e) => onKeyDown('mm', e)}
         className={`w-7 ${seg}`}
       />
-      <span className="text-slate-500">/</span>
+      <span className="text-slate-500">{separator}</span>
       <input
         id={`${idPrefix}-yyyy`}
         type="text"

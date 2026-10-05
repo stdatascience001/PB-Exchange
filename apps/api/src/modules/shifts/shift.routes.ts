@@ -20,6 +20,7 @@ router.get('/permissions/:userId', ShiftController.getOperatorPermissions);
 router.post('/permissions/:userId', requireRoles('DEVELOPER', 'SUPER ADMIN', 'ADMIN'), ShiftController.saveOperatorPermissions);
 // Registered before '/:id' so "reorder" isn't read as a shift id.
 router.patch('/reorder', requireRoles('DEVELOPER', 'SUPER ADMIN', 'ADMIN'), ShiftController.reorder);
+router.get('/:id/timings', requireRoles('DEVELOPER', 'SUPER ADMIN', 'ADMIN'), ShiftController.timings);
 router.patch('/:id/toggle-active', requireRoles('DEVELOPER', 'SUPER ADMIN', 'ADMIN'), ShiftController.toggleActive);
 router.patch('/:id', requireRoles('DEVELOPER', 'SUPER ADMIN', 'ADMIN'), ShiftController.update);
 router.put('/:id', requireRoles('DEVELOPER', 'SUPER ADMIN', 'ADMIN'), ShiftController.update);

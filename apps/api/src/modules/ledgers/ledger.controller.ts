@@ -38,6 +38,7 @@ export class LedgerController {
     try {
       const created = await LedgerService.createLedger({
         ...req.body,
+        addedBy: req.user?.username || 'A100',
         updatedBy: req.user?.username || 'A100',
       });
       return sendSuccess(res, created, 'Ledger created', 201);

@@ -29,13 +29,22 @@ export async function apiRequest<T>(
     if (!res.ok) {
       const error: any = new Error(json.error?.message || json.message || 'API request failed');
       error.code = json.error?.code;
-      // Blocked IP (3 wrong logins / admin block): tell the app to show its blocked screen.
+      // Blocked IP (3 wrong logins / admin block): the site is sent to Google (below).
       // IP an inactive staff member signed in from: the whole site goes to Google (live).
       if (error.code === 'IP_REDIRECT' && typeof window !== 'undefined') {
         window.location.replace('https://www.google.com');
       }
+      // This session was replaced by a newer login of the same account on the same IP:
+      // the app signs this browser out.
+      if (error.code === 'SESSION_REPLACED' && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('pb-session-replaced', { detail: error.message }));
+      }
       if (error.code === 'IP_BLOCKED' && typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('pb-ip-blocked', { detail: error.message }));
+        // A blocked IP (3 wrong logins / Access Block) doesn't get the site at all: like an
+        // inactive staff member's IP it is sent to Google. The blocked screen above is only
+        // what's left showing if the browser refuses to leave.
+        window.location.replace('https://www.google.com');
       }
       throw error;
     }

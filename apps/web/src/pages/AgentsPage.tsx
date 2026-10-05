@@ -283,9 +283,11 @@ export const AgentsPage: React.FC = () => {
         </div>
 
         {/* 7-Column Agents Table matching Image 2 */}
-        <div className="overflow-x-auto">
+        {/* Agents table scrolls inside its own box (both ways), header row pinned at the top and
+            footer row at the bottom, as on live */}
+        <div className="overflow-auto max-h-[calc(100vh-230px)] min-h-[240px]">
           <table className="w-full text-left text-xs border-collapse">
-            <thead>
+            <thead className="sticky top-0 z-10">
               <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
                 <th className="py-2 px-2.5 border-r border-[#223b63] w-12 text-center">Sr</th>
                 <th className="py-2 px-3.5 border-r border-[#223b63]">Group</th>
@@ -388,7 +390,7 @@ export const AgentsPage: React.FC = () => {
             </tbody>
 
             {/* Table Footer matching Image 2 */}
-            <tfoot>
+            <tfoot className="sticky bottom-0 z-10">
               <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
                 <th className="py-2 px-2.5 border-r border-[#223b63] text-center font-mono">
                   {filteredAgents.length}

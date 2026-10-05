@@ -95,6 +95,12 @@ export async function runMigrations() {
       is_active BOOLEAN NOT NULL DEFAULT TRUE,
       CONSTRAINT unique_shift_role UNIQUE(shift_id, role_id)
     );
+    -- Live "Shift Timing list" per-row stamps (AddedBy/AddedDate/UpdatedBy/UpdatedDate);
+    -- null on rows saved before these columns existed
+    ALTER TABLE shift_role_config ADD COLUMN IF NOT EXISTS added_by VARCHAR(100);
+    ALTER TABLE shift_role_config ADD COLUMN IF NOT EXISTS added_at TIMESTAMP;
+    ALTER TABLE shift_role_config ADD COLUMN IF NOT EXISTS updated_by VARCHAR(100);
+    ALTER TABLE shift_role_config ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP;
 
     CREATE TABLE IF NOT EXISTS operator_shift_permissions (
       id SERIAL PRIMARY KEY,
@@ -193,6 +199,19 @@ export async function runMigrations() {
     ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS account_active BOOLEAN NOT NULL DEFAULT TRUE;
     ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS master_ledger_config BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS is_transaction_allow BOOLEAN NOT NULL DEFAULT TRUE;
+    -- One session per account per IP (apps/api session-store.ts): a newer login of the same
+    -- account on the same IP revokes the older session
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id SERIAL PRIMARY KEY,
+      sid VARCHAR(64) NOT NULL UNIQUE,
+      user_id INTEGER NOT NULL,
+      ip_address VARCHAR(45) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      revoked_at TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS user_sessions_user_ip_idx ON user_sessions(user_id, ip_address);
+    -- Live ledger "AddedBy": who created the party (null for rows made before this column)
+    ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS added_by VARCHAR(100);
 
     CREATE TABLE IF NOT EXISTS ledger_third_party_links (
       id SERIAL PRIMARY KEY,

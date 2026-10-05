@@ -2,6 +2,9 @@ import { db, sql as pgSql, ledgers, agents, ledgerThirdPartyLinks, voucherEntrie
 import { eq, ilike, or, and, isNull, isNotNull, asc, inArray, sql } from 'drizzle-orm';
 import { AppError, NotFoundError } from '../../common/errors.js';
 
+// Live ledger "AddedBy": who created the party (UpdatedBy only says who touched it last).
+// Rows created before this column existed have no creator on record and come back null.
+//
 // Account tab "Login Status" (Active / Deactive) — the party's own login switch, separate from
 // Locked (which blocks its transactions) — and "Account Status" (Active / Deactive): a Deactive
 // account is left out of Transaction Add's party search and can't take new slips.
@@ -15,6 +18,7 @@ function ensureLoginColumn(): Promise<void> {
       .unsafe(`
         ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS login_active BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS account_active BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS added_by VARCHAR(100);
       `)
       .then(() => undefined)
       .catch((err) => {
@@ -30,6 +34,13 @@ async function statusFlagsOf(id: number): Promise<{ loginActive: boolean; accoun
   const rows = await pgSql<Array<{ login_active: boolean; account_active: boolean }>>`
     SELECT login_active, account_active FROM ledgers WHERE id = ${id}`;
   return { loginActive: rows[0]?.login_active ?? true, accountActive: rows[0]?.account_active ?? true };
+}
+
+async function addedByOf(id: number): Promise<string | null> {
+  await ensureLoginColumn();
+  const rows = await pgSql<Array<{ added_by: string | null }>>`
+    SELECT added_by FROM ledgers WHERE id = ${id}`;
+  return rows[0]?.added_by ?? null;
 }
 
 export class LedgerService {
@@ -63,11 +74,13 @@ export class LedgerService {
     const { password: _password, ...ledgerWithoutPassword } = ledger;
 
     const { loginActive, accountActive } = await statusFlagsOf(ledger.id);
+    const addedBy = await addedByOf(ledger.id);
 
     return {
       ...ledgerWithoutPassword,
       loginActive,
       accountActive,
+      addedBy,
       daraRate: parseFloat(ledger.daraRate),
       akharRate: parseFloat(ledger.akharRate),
       commissionRate: parseFloat(ledger.commissionRate),
@@ -178,6 +191,17 @@ export class LedgerService {
       updatedBy: ledgers.updatedBy,
       updatedAt: ledgers.updatedAt,
       createdAt: ledgers.createdAt,
+      // Live ledger list fields (RefLedgerId, HPLedgerId, Grantor, DealingType, Address,
+      // IsDibba/DibbaAmount, IsApplyLedgerConfigOnTransaction, IsTransactionAllow)
+      refLedgerId: ledgers.refLedgerId,
+      hpLedgerId: ledgers.hpLedgerId,
+      address: ledgers.address,
+      grantor: ledgers.grantor,
+      dealing: ledgers.dealing,
+      dibba: ledgers.dibba,
+      dAmt: ledgers.dAmt,
+      masterLedgerConfig: ledgers.masterLedgerConfig,
+      isTransactionAllow: ledgers.isTransactionAllow,
     })
     .from(ledgers)
     .leftJoin(agents, eq(ledgers.agentId, agents.id));
@@ -199,9 +223,22 @@ export class LedgerService {
     const loginOff = new Set(loginOffRows.map(r => r.id));
     const accountOffRows = await pgSql<Array<{ id: number }>>`SELECT id FROM ledgers WHERE account_active = FALSE`;
     const accountOff = new Set(accountOffRows.map(r => r.id));
+    const addedByRows = await pgSql<Array<{ id: number; added_by: string }>>`
+      SELECT id, added_by FROM ledgers WHERE added_by IS NOT NULL`;
+    const addedById = new Map(addedByRows.map(r => [r.id, r.added_by]));
+
+    // Live "HPLedgerName": resolved separately because the HP A/C itself is left out of the list
+    const hpIds = Array.from(new Set(list.map(l => l.hpLedgerId).filter((v): v is number => v != null)));
+    const hpRows = hpIds.length > 0
+      ? await db.select({ id: ledgers.id, partyName: ledgers.partyName }).from(ledgers).where(inArray(ledgers.id, hpIds))
+      : [];
+    const hpNameById = new Map(hpRows.map(r => [r.id, r.partyName]));
 
     return list.map(l => ({
       ...l,
+      addedBy: addedById.get(l.id) ?? null,
+      hpLedgerName: l.hpLedgerId ? hpNameById.get(l.hpLedgerId) || null : null,
+      dAmt: parseFloat(l.dAmt),
       rebate: parseFloat(l.rebate),
       hasTpr: hasTpvLink.has(l.id),
       loginActive: !loginOff.has(l.id),
@@ -265,7 +302,11 @@ export class LedgerService {
       updatedBy: data.updatedBy || 'A100',
     }).returning();
 
-    return created;
+    const addedBy = data.addedBy || data.updatedBy || 'A100';
+    await ensureLoginColumn();
+    await pgSql`UPDATE ledgers SET added_by = ${addedBy} WHERE id = ${created.id}`;
+
+    return { ...created, addedBy };
   }
 
   static async updateLedger(id: number, data: any) {

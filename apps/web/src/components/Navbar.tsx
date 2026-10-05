@@ -446,6 +446,10 @@ export const Navbar: React.FC<NavbarProps> = ({
           }
 
           const isOpen = openDropdown === menu.id;
+          // The menu holding the page that's open (e.g. Transactions on Live Transactions) is
+          // marked the same way Dashboard is when it's the open page, so the active page can be
+          // told at a glance with the dropdown closed.
+          const isParentActive = menu.items.some((sub) => sub.page === currentPage);
           return (
             <div
               key={menu.id}
@@ -455,8 +459,10 @@ export const Navbar: React.FC<NavbarProps> = ({
             >
               <button
                 onClick={() => setOpenDropdown(isOpen ? null : menu.id)}
-                className={`flex items-center gap-1 px-3.5 py-1.5 rounded transition-all font-semibold ${isOpen
+                className={`flex items-center gap-1 px-3.5 py-1.5 rounded transition-all font-semibold ${isParentActive ? 'border border-red-500/80 ' : 'border border-transparent '}${isOpen
                   ? 'text-white bg-white/15'
+                  : isParentActive
+                  ? 'text-white bg-red-500/10'
                   : 'text-slate-200 hover:text-white hover:bg-white/5'
                   }`}
               >

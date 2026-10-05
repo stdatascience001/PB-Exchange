@@ -47,6 +47,14 @@ const ALL_ROLES = [
   { id: 12, name: 'TALLY OPERATOR' },
 ];
 
+// Time tab's Fanter Panel Time / Main Jantri Time: an unset time ('', '0' or the column's
+// 00:00:00 default — live returns "0") shows as a blank box, as on live, and a blank box saves
+// back as 00:00:00, which the Jantri page treats as "open all day".
+const jantriTimeToInput = (v?: string | null) =>
+  !v || v === '0' || v === '00:00' || v === '00:00:00' ? '' : v.slice(0, 5);
+const jantriTimeFromInput = (v: string) =>
+  !v ? '00:00:00' : v.split(':').length === 2 ? `${v}:00` : v;
+
 export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefreshShifts, user }) => {
   // Delete is offered to SUPER ADMIN only (the API enforces the same). The shift picked for
   // deletion waits in `deleteTarget` until the "Are you sure delete this shift?" popup's Yes.
@@ -86,8 +94,9 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
   const [savingSection, setSavingSection] = useState<string | null>(null);
 
   // Time tab — 2 extra shift-wide fields beyond the 12 per-role cut-offs
-  const [fanterPanelTime, setFanterPanelTime] = useState('00:00');
-  const [mainJantriTime, setMainJantriTime] = useState('00:00');
+  // '' = not set (shown blank "--:-- --" as on live; the Jantri then stays open all day)
+  const [fanterPanelTime, setFanterPanelTime] = useState('');
+  const [mainJantriTime, setMainJantriTime] = useState('');
 
   // Config tab
   const [applyShiftConfig, setApplyShiftConfig] = useState(false);
@@ -175,7 +184,12 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shifts]);
 
+  // Shift whose timing list (GET /shifts/:id/timings) the Edit popup is waiting on, so a late
+  // reply for a previously opened shift can't overwrite the one now open.
+  const timingsRequestRef = useRef<number | null>(null);
+
   const handleOpenAdd = () => {
+    timingsRequestRef.current = null;
     setEditingShift(null);
     setShiftName('');
     setOpenDate(getTodayFormatted());
@@ -215,8 +229,8 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
     });
     setRoleTimings(timings);
 
-    setFanterPanelTime((s.fanterPanelTime || '00:00:00').slice(0, 5));
-    setMainJantriTime((s.mainJantriTime || '00:00:00').slice(0, 5));
+    setFanterPanelTime(jantriTimeToInput(s.fanterPanelTime));
+    setMainJantriTime(jantriTimeToInput(s.mainJantriTime));
 
     setApplyShiftConfig(!!s.applyShiftConfig);
     setDRate(String(s.dRate ?? 0));
@@ -248,6 +262,23 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
 
     setActiveEditTab('info');
     setShowModal(true);
+
+    // As on the live Action button: fetch this shift's timing list fresh by ShiftId. The
+    // times above (from the shift list) show instantly and stay if this call fails.
+    timingsRequestRef.current = s.id;
+    apiRequest<Array<{ roleId: number; closeTime: string }>>(`/shifts/${s.id}/timings`)
+      .then(res => {
+        if (timingsRequestRef.current !== s.id || !Array.isArray(res.data)) return;
+        setRoleTimings(prev => {
+          const next = { ...prev };
+          ALL_ROLES.forEach(r => {
+            const found = res.data.find(rc => rc.roleId === r.id);
+            if (found && found.closeTime) next[r.name] = found.closeTime.slice(0, 5);
+          });
+          return next;
+        });
+      })
+      .catch(() => { /* keep the shift list's times */ });
   };
 
   // Every tab section (except Info, which reuses the existing handleSaveShift submit) has its
@@ -992,8 +1023,8 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
                         type="button"
                         disabled={savingSection === 'time-extras'}
                         onClick={() => saveShiftSection('time-extras', {
-                          fanterPanelTime: fanterPanelTime.split(':').length === 2 ? `${fanterPanelTime}:00` : fanterPanelTime,
-                          mainJantriTime: mainJantriTime.split(':').length === 2 ? `${mainJantriTime}:00` : mainJantriTime,
+                          fanterPanelTime: jantriTimeFromInput(fanterPanelTime),
+                          mainJantriTime: jantriTimeFromInput(mainJantriTime),
                         }, { closeAfter: true })}
                         className="mt-3 px-6 py-2 bg-[#1b3a6d] hover:bg-[#152e57] text-white font-bold rounded text-xs transition-colors shadow-sm cursor-pointer disabled:opacity-60"
                       >

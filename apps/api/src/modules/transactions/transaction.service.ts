@@ -800,6 +800,7 @@ export class TransactionService {
       const partyIds = Array.from(new Set(txRows.map(t => t.partyId)));
       const partyRows = await db.select({
         id: ledgers.id,
+        partyName: ledgers.partyName,
         commissionRate: ledgers.commissionRate,
         hissaPercentage: ledgers.hissaPercentage,
         dibba: ledgers.dibba,
@@ -808,13 +809,36 @@ export class TransactionService {
       const partyById = new Map(partyRows.map(p => [p.id, p]));
       const partyByTx = new Map(txRows.map(t => [t.id, t.partyId]));
 
+      // Hissa given to OTHER ledgers through the party's Hissa Party rows (Ledger Update →
+      // Hissa, the O-Hissa of Transaction ASC). Live: DK ROHIT 50% ("50 | HP A/C") reads 200 →
+      // 100 once Hissa is ticked, while DK ROHIT 20% ("20 | DK ROHIT 20%", its own ledger)
+      // keeps its 100 — so a row naming the party itself is not taken off.
+      const otherHissaByParty = new Map<number, number>();
+      if (filters.hissa) {
+        const hissaLinks = await db.select({
+          ledgerId: ledgerThirdPartyLinks.ledgerId,
+          partyName: ledgerThirdPartyLinks.partyName,
+          percent: ledgerThirdPartyLinks.percent,
+        })
+          .from(ledgerThirdPartyLinks)
+          .where(and(eq(ledgerThirdPartyLinks.linkType, 'HISSA'), inArray(ledgerThirdPartyLinks.ledgerId, partyIds)));
+        for (const l of hissaLinks) {
+          const ownName = (partyById.get(l.ledgerId)?.partyName || '').trim().toUpperCase();
+          if ((l.partyName || '').trim().toUpperCase() === ownName) continue;
+          otherHissaByParty.set(l.ledgerId, (otherHissaByParty.get(l.ledgerId) || 0) + (parseFloat(l.percent) || 0));
+        }
+      }
+
       const txIds = txRows.map(t => t.id);
       const entries = await db.select().from(transactionEntries).where(inArray(transactionEntries.transactionId, txIds));
 
       for (const e of entries) {
         const partyId = partyByTx.get(e.transactionId);
         const party = partyId !== undefined ? partyById.get(partyId) : undefined;
-        if (filters.dibba && !party?.dibba) continue;
+        // Dibba no longer drops the parties that aren't Dibba-flagged: live keeps DK ROHIT
+        // 50% (Dibba NO) at 100 with Dibba ticked. Like Commission, the flag stays plumbed
+        // until a Dibba-flagged party on live shows what it does to that party's figures.
+        void filters.dibba;
 
         let amt = parseFloat(e.amount);
         const isHaruf = e.entryType === 'HARUF_ANDAR' || e.entryType === 'HARUF_BAHAR';
@@ -839,8 +863,8 @@ export class TransactionService {
           amt = amt * (1 - akharComm / 100);
         }
         if (filters.hissa && party) {
-          const hissaPct = parseFloat(party.hissaPercentage) || 0;
-          amt = amt * (1 - hissaPct / 100);
+          const hissaPct = (parseFloat(party.hissaPercentage) || 0) + (otherHissaByParty.get(party.id) || 0);
+          amt = amt * Math.max(0, 1 - hissaPct / 100);
         }
 
         const key = e.entryType === 'HARUF_ANDAR'
@@ -1097,6 +1121,7 @@ export class TransactionService {
       rate: transactionEntries.rate,
       rateStr: transactions.rateStr,
       hissaPercentage: ledgers.hissaPercentage,
+      partyRebate: ledgers.rebate,
       shiftId: transactions.shiftId,
       shiftName: shifts.name,
       declaredNumber: shifts.declaredNumber,
@@ -1180,14 +1205,61 @@ export class TransactionService {
       return resultByCycle.get(`${r.shiftId}|${cycleDate}`) ?? null;
     };
 
-    return filtered.map(r => {
+    // Undeclared cycle — live shows each row's P&L as "if this number comes": the party's
+    // winnings on it, less everything it staked in the shift, plus its Rebate (Vapsi %) on the
+    // stake that loses, scaled to the book's share after the party's S-Hissa. Live: DK ROHIT
+    // 20% (Rebate 10, S-Hissa 20) with 10 each on 5/6/7 → (900 − 30 + 2) × 0.8 = 697.6 → 698.
+    // Worked over ALL of the party's entries in that shift/cycle (not just the Amount-filtered
+    // rows), so filtering doesn't change a row's figure.
+    const bookKey = (r: typeof rows[number]) => `${r.partyId}|${r.shiftId}|${cycleDateOf(r)}`;
+    const bookEntries = new Map<string, typeof rows>();
+    for (const r of rows) {
+      const k = bookKey(r);
+      if (!bookEntries.has(k)) bookEntries.set(k, []);
+      bookEntries.get(k)!.push(r);
+    }
+    const projectedPnl = (r: typeof rows[number], selfHissa: number) => {
+      const book = bookEntries.get(bookKey(r)) || [];
+      const totalStake = book.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+      let wins: (e: typeof rows[number]) => boolean;
+      if (r.entryType === 'DARA') {
+        const n = r.numberValue.padStart(2, '0');
+        wins = e => (e.entryType === 'DARA' && e.numberValue.padStart(2, '0') === n)
+          || (e.entryType === 'HARUF_ANDAR' && e.numberValue === n[0])
+          || (e.entryType === 'HARUF_BAHAR' && e.numberValue === n[1]);
+      } else {
+        wins = e => e.entryType === r.entryType && e.numberValue === r.numberValue;
+      }
+      let payout = 0;
+      let winStake = 0;
+      for (const e of book) {
+        if (!wins(e)) continue;
+        payout += (parseFloat(e.amount) || 0) * (parseFloat(e.rate) || 0);
+        winStake += parseFloat(e.amount) || 0;
+      }
+      const rebatePct = parseFloat(r.partyRebate) || 0;
+      const partyNet = payout - totalStake + (totalStake - winStake) * rebatePct / 100;
+      return Math.round(partyNet * (1 - selfHissa / 100));
+    };
+
+    // Live Rate column shows the rate of the entry's own side: "90/10" for a Dara number,
+    // "9/10" for Andar/Bahar (the slip's rate string is "90/10-9/10").
+    const rateFor = (r: typeof rows[number], rate: number) => {
+      const parts = (r.rateStr || '').split('-');
+      if (parts.length === 2 && parts[0] && parts[1]) return r.entryType === 'DARA' ? parts[0] : parts[1];
+      return r.rateStr || `${rate}/10`;
+    };
+
+    const result = filtered.map(r => {
       const amount = parseFloat(r.amount);
       const rate = parseFloat(r.rate);
       const partyHissa = hissaByParty.get(r.partyId) || { self: 0, other: 0 };
       let pnlAmount = 0;
 
       const cycleDeclared = declaredFor(r);
-      if (cycleDeclared) {
+      if (!cycleDeclared) {
+        pnlAmount = projectedPnl(r, partyHissa.self);
+      } else {
         const padded = cycleDeclared.padStart(2, '0');
         const tensDigit = padded[0];
         const unitsDigit = padded[1];
@@ -1203,15 +1275,28 @@ export class TransactionService {
         transactionId: r.transactionId,
         partyName: r.partyName,
         numberValue: r.numberValue,
+        entryType: r.entryType,
         sale: amount,
         pnlAmount,
-        rate: r.rateStr || `${rate}/10`,
+        rate: rateFor(r, rate),
         sHissa: partyHissa.self,
         oHissa: partyHissa.other,
         shiftId: r.shiftId,
         shiftName: r.shiftName,
       };
     });
+
+    // "ASC": numbers in ascending order as on live (5, 6, 7 — 100 last), Dara before
+    // Andar/Bahar, entry order breaking ties.
+    const typeOrder: Record<string, number> = { DARA: 0, HARUF_ANDAR: 1, HARUF_BAHAR: 2 };
+    const numOrder = (r: { entryType: string; numberValue: string }) => {
+      const n = parseInt(r.numberValue, 10) || 0;
+      return r.entryType === 'DARA' && n === 0 ? 100 : n;
+    };
+    return result.sort((a, b) =>
+      (typeOrder[a.entryType] ?? 9) - (typeOrder[b.entryType] ?? 9)
+      || numOrder(a) - numOrder(b)
+      || a.id - b.id);
   }
 
   // Party-wise collection totals for a date/shift range. Powers TPC Report.

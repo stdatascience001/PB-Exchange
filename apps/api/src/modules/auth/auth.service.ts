@@ -7,6 +7,7 @@ import { UnauthorizedError, AppError } from '../../common/errors.js';
 import { addRedirectIp } from '../../middleware/inactive-redirect.js';
 import { UserSession, SystemRole, CaptchaData } from '@pb/types';
 import { registerLoginFailure, clearLoginFailures } from './login-guard.js';
+import { createSession } from './session-store.js';
 
 const captchaStore = new Map<string, { answer: string; expiresAt: number }>();
 
@@ -117,7 +118,10 @@ export class AuthService {
       roleName: (role?.name || 'DATA ENTRY OPERATOR') as SystemRole,
     };
 
-    const token = jwt.sign(session, env.JWT_SECRET, { expiresIn: '1d' });
+    // One session per account per IP: this login signs out the account's earlier session on
+    // the same IP (session-store.ts). The session id rides in the token only.
+    const sid = clientIp ? await createSession(user.id, clientIp) : undefined;
+    const token = jwt.sign(sid ? { ...session, sid } : session, env.JWT_SECRET, { expiresIn: '1d' });
 
     return {
       user: session,

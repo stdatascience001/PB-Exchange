@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { UserSession, ShiftDto } from '@pb/types';
 import { apiRequest } from './api/client.js';
+import { toast } from 'react-toastify';
 import { Navbar } from './components/Navbar.js';
 import { RoleMessageNotice } from './components/RoleMessageNotice.js';
 import { isAdminRole, isPageRestrictedForAdmin, isManagerRole, isPageAllowedForManager, isDataEntryOperatorRole, isPageAllowedForDataEntryOperator, isTallyOperatorRole, isPageAllowedForTallyOperator } from './config/roleAccess.js';
@@ -165,6 +166,8 @@ const PATH_TO_PAGE: Record<string, string> = {
   '/msg_manage': 'message-manage',
   '/flash_msg_manage': 'flash-message-manage',
   '/rpt_staff_attendance': 'staff-attendance',
+  // Live panel's own spelling of this page's address
+  '/rpt_staff_attandance': 'staff-attendance',
   '/payroll_attendance': 'payroll-attendance-manage',
   '/payroll_salary_register': 'salary-register',
   '/payroll_leave': 'leave-manage',
@@ -406,13 +409,38 @@ export const App: React.FC = () => {
     navigateTo('dashboard');
   };
 
+  // Same account signed in again from this IP: this (older) session is over — sign out and
+  // say why. Only the newest login of an account on an IP stays active.
+  const logoutRef = React.useRef(handleLogout);
+  logoutRef.current = handleLogout;
+  useEffect(() => {
+    const onReplaced = (e: Event) => {
+      if (!localStorage.getItem('pb_token')) return;
+      logoutRef.current();
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Logged out</div>
+          <div className="text-sm mt-0.5">{(e as CustomEvent<string>).detail || 'This session has been logged out.'}</div>
+        </div>,
+        { toastId: 'session-replaced', autoClose: 8000 }
+      );
+    };
+    window.addEventListener('pb-session-replaced', onReplaced);
+    return () => window.removeEventListener('pb-session-replaced', onReplaced);
+  }, []);
+
   // Login security: a blocked IP (3 wrong logins in a row, or an Access Block entry) sees only
   // the blocked screen — checked on start-up and whenever any request comes back IP_BLOCKED.
   const [ipBlockedMessage, setIpBlockedMessage] = useState<string | null>(null);
+  // Nothing of the site is shown until the start-up IP check has answered, so a blocked IP is
+  // sent to Google without first seeing the login page. Any other outcome (allowed, API down,
+  // network error) shows the app as before.
+  const [accessChecked, setAccessChecked] = useState(false);
   const checkAccess = useCallback(() => {
     apiRequest('/auth/access-check')
       .then(() => setIpBlockedMessage(null))
-      .catch(() => { /* IP_BLOCKED arrives through the event below */ });
+      .catch(() => { /* IP_BLOCKED arrives through the event below */ })
+      .finally(() => setAccessChecked(true));
   }, []);
   useEffect(() => {
     const onBlocked = (e: Event) => setIpBlockedMessage((e as CustomEvent<string>).detail || 'Your IP address is blocked.');
@@ -423,6 +451,10 @@ export const App: React.FC = () => {
 
   if (ipBlockedMessage) {
     return <IpBlockedScreen message={ipBlockedMessage} onRetry={checkAccess} />;
+  }
+
+  if (!accessChecked) {
+    return <div className="min-h-screen bg-[#eaedf2]" />;
   }
 
   if (!user) {

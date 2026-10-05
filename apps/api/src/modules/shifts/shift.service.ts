@@ -1,4 +1,4 @@
-import { db, shifts, shiftRoleConfig, shiftCycles, roles, users, staff, operatorShiftPermissions, transactions, declarations, vouchers, auditLogs } from '@pb/database';
+import { db, sql as pgSql, shifts,shiftRoleConfig, shiftCycles, roles, users, staff, operatorShiftPermissions, transactions, declarations, vouchers, auditLogs } from '@pb/database';
 import { eq, and, desc, asc, inArray } from 'drizzle-orm';
 import { AppError, CutoffError } from '../../common/errors.js';
 import { publishShiftsUpdate } from './shift.events.js';
@@ -6,7 +6,83 @@ import { publishDashboardUpdate } from '../dashboard/dashboard.events.js';
 import { redis } from '../../config/redis.js';
 import { ShiftDto, ShiftRoleConfigDto, SystemRole } from '@pb/types';
 
+// Live "Shift Timing list" (ajax_shift_timings) stamps each role's timing row with who added
+// and last changed it. Kept out of the drizzle `shiftRoleConfig` table so every existing
+// `select().from(shiftRoleConfig)` stays exactly as it was; the columns are added on first use
+// here (same DDL as migrate.ts) so a database that hasn't re-run migrations still works.
+let roleConfigAuditReady: Promise<void> | null = null;
+function ensureRoleConfigAuditColumns(): Promise<void> {
+  if (!roleConfigAuditReady) {
+    roleConfigAuditReady = pgSql
+      .unsafe(`
+        ALTER TABLE shift_role_config ADD COLUMN IF NOT EXISTS added_by VARCHAR(100);
+        ALTER TABLE shift_role_config ADD COLUMN IF NOT EXISTS added_at TIMESTAMP;
+        ALTER TABLE shift_role_config ADD COLUMN IF NOT EXISTS updated_by VARCHAR(100);
+        ALTER TABLE shift_role_config ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP;
+      `)
+      .then(() => undefined)
+      .catch((err) => {
+        roleConfigAuditReady = null;
+        throw err;
+      });
+  }
+  return roleConfigAuditReady;
+}
+
+async function stampRoleConfigAdded(ids: number[], actor: string) {
+  if (ids.length === 0) return;
+  await ensureRoleConfigAuditColumns();
+  await pgSql`
+    UPDATE shift_role_config
+    SET added_by = ${actor}, added_at = NOW(), updated_by = ${actor}, updated_at = NOW()
+    WHERE id IN ${pgSql(ids)}`;
+}
+
+async function stampRoleConfigUpdated(ids: number[], actor: string) {
+  if (ids.length === 0) return;
+  await ensureRoleConfigAuditColumns();
+  await pgSql`
+    UPDATE shift_role_config SET updated_by = ${actor}, updated_at = NOW()
+    WHERE id IN ${pgSql(ids)}`;
+}
+
 export class ShiftService {
+  // Edit Shift popup's Time tab — the live Action button's own `ajax_shift_timings` call
+  // (ShiftId → that shift's per-role timing rows), read fresh from the database rather than
+  // the cached shift list. Every role is listed in role order, with its name and stamps.
+  static async getShiftTimings(shiftId: number) {
+    const [shift] = await db.select({ id: shifts.id }).from(shifts).where(eq(shifts.id, shiftId));
+    if (!shift) throw new AppError('Shift not found', 404);
+
+    await ensureRoleConfigAuditColumns();
+    const rows = await pgSql<Array<{
+      id: number; shift_id: number; role_id: number; role_name: string;
+      open_time: string; close_time: string; is_active: boolean;
+      added_by: string | null; added_at: Date | null; updated_by: string | null; updated_at: Date | null;
+    }>>`
+      SELECT src.id, src.shift_id, src.role_id, r.name AS role_name,
+             src.open_time, src.close_time, src.is_active,
+             src.added_by, src.added_at, src.updated_by, src.updated_at
+      FROM shift_role_config src
+      JOIN roles r ON r.id = src.role_id
+      WHERE src.shift_id = ${shiftId}
+      ORDER BY src.role_id`;
+
+    return rows.map(r => ({
+      id: r.id,
+      shiftId: r.shift_id,
+      roleId: r.role_id,
+      roleName: r.role_name,
+      openTime: r.open_time,
+      closeTime: r.close_time,
+      isActive: r.is_active,
+      addedBy: r.added_by,
+      addedAt: r.added_at ? new Date(r.added_at).toISOString() : null,
+      updatedBy: r.updated_by,
+      updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : null,
+    }));
+  }
+
   // The moment a role's cut-off falls for the shift's CURRENT cycle — anchored to the shift's own
   // open_date rather than today. An undeclared shift is held on its open_date by the rollover
   // worker, so once the calendar moves past that date its cut-off has already gone by and the
@@ -328,7 +404,7 @@ export class ShiftService {
     }
   }
 
-  static async createShift(name: string, openDate: string, isNextDay = false, roleConfigs?: any[]) {
+  static async createShift(name: string, openDate: string, isNextDay = false, roleConfigs?: any[], addedBy = 'A100') {
     const [created] = await db.insert(shifts).values({
       name: name.toUpperCase(),
       openDate,
@@ -336,28 +412,32 @@ export class ShiftService {
       status: 'OPEN',
     }).returning();
 
+    const insertedRoleConfigIds: number[] = [];
     if (roleConfigs && roleConfigs.length > 0) {
       for (const rc of roleConfigs) {
-        await db.insert(shiftRoleConfig).values({
+        const [inserted] = await db.insert(shiftRoleConfig).values({
           shiftId: created.id,
           roleId: rc.roleId,
           openTime: rc.openTime,
           closeTime: rc.closeTime,
           isActive: rc.isActive ?? true,
-        });
+        }).returning({ id: shiftRoleConfig.id });
+        insertedRoleConfigIds.push(inserted.id);
       }
     } else {
       const allRoles = await db.select().from(roles);
       for (const r of allRoles) {
-        await db.insert(shiftRoleConfig).values({
+        const [inserted] = await db.insert(shiftRoleConfig).values({
           shiftId: created.id,
           roleId: r.id,
           openTime: '09:00:00',
           closeTime: '20:00:00',
           isActive: true,
-        });
+        }).returning({ id: shiftRoleConfig.id });
+        insertedRoleConfigIds.push(inserted.id);
       }
     }
+    await stampRoleConfigAdded(insertedRoleConfigIds, addedBy);
 
     publishShiftsUpdate();
     this.invalidateListCache();
@@ -509,6 +589,11 @@ export class ShiftService {
       .returning();
 
     if (data.roleConfigs && data.roleConfigs.length > 0) {
+      // Live per-row stamps: a new row gets AddedBy/AddedDate; an existing row only gets
+      // UpdatedBy/UpdatedDate when its times or active flag actually changed (the Time tab
+      // always sends all 12 roles, so untouched roles keep their last real update).
+      const addedIds: number[] = [];
+      const changedIds: number[] = [];
       for (const rc of data.roleConfigs) {
         const [existingRc] = await db
           .select()
@@ -516,24 +601,31 @@ export class ShiftService {
           .where(and(eq(shiftRoleConfig.shiftId, id), eq(shiftRoleConfig.roleId, rc.roleId)));
 
         if (existingRc) {
+          const next = {
+            closeTime: rc.closeTime,
+            openTime: rc.openTime || existingRc.openTime,
+            isActive: rc.isActive !== undefined ? rc.isActive : existingRc.isActive,
+          };
           await db
             .update(shiftRoleConfig)
-            .set({
-              closeTime: rc.closeTime,
-              openTime: rc.openTime || existingRc.openTime,
-              isActive: rc.isActive !== undefined ? rc.isActive : existingRc.isActive,
-            })
+            .set(next)
             .where(eq(shiftRoleConfig.id, existingRc.id));
+          if (next.closeTime !== existingRc.closeTime || next.openTime !== existingRc.openTime || next.isActive !== existingRc.isActive) {
+            changedIds.push(existingRc.id);
+          }
         } else {
-          await db.insert(shiftRoleConfig).values({
+          const [inserted] = await db.insert(shiftRoleConfig).values({
             shiftId: id,
             roleId: rc.roleId,
             openTime: rc.openTime || '09:00:00',
             closeTime: rc.closeTime || '20:44:00',
             isActive: rc.isActive ?? true,
-          });
+          }).returning({ id: shiftRoleConfig.id });
+          addedIds.push(inserted.id);
         }
       }
+      await stampRoleConfigAdded(addedIds, updatedBy);
+      await stampRoleConfigUpdated(changedIds, updatedBy);
     }
 
     publishShiftsUpdate();
