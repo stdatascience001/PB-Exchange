@@ -1,9 +1,13 @@
 import { db, shifts, shiftCycles, transactions, transactionEntries, ledgers, agents, ledgerThirdPartyLinks, sql as pgSql } from '@pb/database';
-import { eq, and, inArray, sql as dsql } from 'drizzle-orm';
+import { eq, ne, and, inArray, sql as dsql } from 'drizzle-orm';
 import { redis } from '../../config/redis.js';
 import { AppError, NotFoundError } from '../../common/errors.js';
 import { JantriViewDto, JantriCell, HarufCell } from '@pb/types';
 
+// Live slips = every slip that isn't deleted (VOIDED). A slip the duplicate check flagged
+// (DUPLICATE_FLAGGED) still counts, exactly as the Dashboard and Live Transactions count it —
+// leaving it out dropped a whole party (live: DK ROHIT 50%'s 8,000 slip) from the Jantri,
+// Collection and Company Calculation figures.
 export class JantriService {
   // Live Jantri page gate: a shift's Jantri opens only once its Edit Shift > Time tab time has
   // passed on the requested date — "Main Jantri Time" (live MainJantriTime) for staff, and
@@ -127,7 +131,7 @@ export class JantriService {
       const slips = await db.select().from(transactions).where(
         and(
           eq(transactions.shiftId, shiftId),
-          eq(transactions.status, 'ACTIVE'),
+          ne(transactions.status, 'VOIDED'),
           inArray(transactions.partyId, partyIds),
           dsql`${transactions.createdAt}::date = ${targetDate}::date`
         )
@@ -203,13 +207,19 @@ export class JantriService {
     const activeSlips = await db.select().from(transactions).where(
       and(
         eq(transactions.shiftId, shiftId),
-        eq(transactions.status, 'ACTIVE'),
+        ne(transactions.status, 'VOIDED'),
         dsql`${transactions.createdAt}::date = ${targetDate}::date`
       )
     );
 
     const hash: Record<string, number> = {};
     let totalCollected = 0;
+    // Company Calculation's SALE ASC list (live): per Dara number, the raw sale booked on it
+    // and the payout if it wins after each party's Hissa (commission is not taken off a
+    // payout). Live HYDRABAD NIGHT: 1000 on 5 at 90, Hissa 20% -> 72,000 payout, less the
+    // book's net 1,080 = the 70,920 shown.
+    const rawSale: Record<string, number> = {};
+    const hissaPayout: Record<string, number> = {};
 
     if (activeSlips.length > 0) {
       const partyIds = Array.from(new Set(activeSlips.map(s => s.partyId)));
@@ -253,6 +263,15 @@ export class JantriService {
           ? `B_${e.numberValue}`
           : e.numberValue;
         hash[key] = (hash[key] || 0) + amt;
+        if (e.entryType === 'DARA') {
+          const raw = parseFloat(e.amount) || 0;
+          rawSale[key] = (rawSale[key] || 0) + raw;
+          hissaPayout[key] = (hissaPayout[key] || 0)
+            + raw * (parseFloat(e.rate) || 0) * (1 - hissaPct / 100) * linkFactor;
+        } else {
+          // Andar / Bahar raw sale under "A_d" / "B_d" (live lists them as 9999 / 888)
+          rawSale[key] = (rawSale[key] || 0) + (parseFloat(e.amount) || 0);
+        }
       }
     }
 
@@ -289,6 +308,8 @@ export class JantriService {
       totalRisk: maxLiability,
       grid,
       haruf,
+      rawSale,
+      hissaPayout,
     };
   }
 
@@ -301,7 +322,7 @@ export class JantriService {
     const activeSlips = await db.select().from(transactions).where(
       and(
         eq(transactions.shiftId, shiftId),
-        eq(transactions.status, 'ACTIVE'),
+        ne(transactions.status, 'VOIDED'),
         dsql`${transactions.createdAt}::date = ${openDate}::date`
       )
     );
@@ -368,7 +389,7 @@ export class JantriService {
     const activeSlips = await db.select().from(transactions).where(
       and(
         eq(transactions.shiftId, shiftId),
-        eq(transactions.status, 'ACTIVE'),
+        ne(transactions.status, 'VOIDED'),
         dsql`${transactions.createdAt}::date = ${targetDate}::date`
       )
     );
@@ -598,7 +619,7 @@ export class JantriService {
         FROM recent r
         JOIN transactions t
           ON t.shift_id = ${shiftId}
-         AND t.status = 'ACTIVE'
+         AND t.status <> 'VOIDED'
          -- A slip's cycle date is the shift open_date stamped into its slip number
          -- (SLIP-YYYYMMDD-...), falling back to the day it was created.
          AND (CASE WHEN t.slip_number ~ '^SLIP-[0-9]{8}-'

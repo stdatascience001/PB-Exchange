@@ -36,14 +36,16 @@ interface TransactionListPageProps {
   shifts?: ShiftDto[];
   user?: UserSession | null;
   onNavigate?: (page: string) => void;
+  // From /transaction_list/:shiftId (e.g. the slip entry page's back arrow): open on that shift
+  initialShiftId?: string;
 }
 
-export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts = [], user, onNavigate }) => {
+export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts = [], user, onNavigate, initialShiftId }) => {
   const [list, setList] = useState<TransactionItem[]>([]);
   const [loading, setLoading] = useState(false);
   // Opens on "-- CHOOSE --" with an empty list; slips show once a shift is picked (live).
   // (It used to default to id 3 while the dropdown showed "-- ALL SHIFTS --".)
-  const [selectedShiftId, setSelectedShiftId] = useState<string>('');
+  const [selectedShiftId, setSelectedShiftId] = useState<string>(initialShiftId || '');
   // Was a hardcoded, non-editable stale date (never wired into the fetch at all) — now a real
   // filter defaulting to today, matching the same "today" convention used elsewhere in the app.
   const [dateStr, setDateStr] = useState<string>(() => {
@@ -889,7 +891,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
                         </td>
                         {/* Amount */}
                         <td className="py-1.5 px-3 text-right font-mono font-bold text-slate-900 border-r border-b border-slate-200">
-                          {tx.totalAmount.toLocaleString('en-IN')}
+                          {Math.round(tx.totalAmount)}
                         </td>
                         {/* Added */}
                         <td className="py-1 px-3 border-r border-b border-slate-200 leading-snug">
@@ -971,7 +973,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
                   <td className="py-2 px-3 border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Party</td>
                   <td className="py-2 px-3 border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Rate</td>
                   <td className="py-2 px-3 text-right font-mono border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">
-                    {totalSum.toLocaleString('en-IN')}
+                    {Math.round(totalSum)}
                   </td>
                   <td className="py-2 px-3 border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Added</td>
                   <td className="py-2 px-3 border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Updated</td>
@@ -1021,7 +1023,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
                 selectedTx.entries.map((ent, i) => (
                   <div key={i} className="grid grid-cols-2 py-1.5 px-3 hover:bg-slate-50 font-mono text-xs text-slate-800">
                     <span className="font-bold text-blue-700">{displayNumber(ent)}</span>
-                    <span className="text-right font-semibold">{ent.amount.toLocaleString('en-IN')}</span>
+                    <span className="text-right font-semibold">{Math.round(ent.amount)}</span>
                   </div>
                 ))
               )}

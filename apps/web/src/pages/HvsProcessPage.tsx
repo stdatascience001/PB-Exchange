@@ -58,7 +58,19 @@ export const HvsProcessPage: React.FC<HvsProcessPageProps> = ({ onNavigate }) =>
     })();
   }, []);
 
+  // Live keyboard flow: the page opens on Month; Enter walks Month -> Year -> Load Data,
+  // whose Enter loads the month (spinner beside the button).
+  useEffect(() => {
+    document.getElementById('hvs-month')?.focus();
+  }, []);
+  const enterTo = (id: string) => (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    document.getElementById(id)?.focus();
+  };
+
   const handleLoadData = async () => {
+    if (loading) return;
     setLoading(true);
     try {
       const { fromDate, toDate } = monthRange(month, year);
@@ -143,20 +155,24 @@ export const HvsProcessPage: React.FC<HvsProcessPageProps> = ({ onNavigate }) =>
         </button>
         <span className="font-bold text-sm text-slate-900 tracking-tight mr-1">HVS Process</span>
 
-        <select value={month} onChange={(e) => setMonth(e.target.value)} className="px-2 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900">
+        <span className="font-bold text-sm text-slate-900">Month</span>
+        <select id="hvs-month" value={month} onChange={(e) => setMonth(e.target.value)} onKeyDown={enterTo('hvs-year')} className="px-2 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-400">
           {Object.keys(MONTH_INDEX).map(m => <option key={m} value={m}>{m}</option>)}
         </select>
-        <select value={year} onChange={(e) => setYear(parseInt(e.target.value, 10))} className="px-2 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900">
+        <select id="hvs-year" value={year} onChange={(e) => setYear(parseInt(e.target.value, 10))} onKeyDown={enterTo('hvs-load-btn')} className="px-2 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-400">
           {Array.from({ length: 8 }, (_, i) => now.getFullYear() - i).map(y => <option key={y} value={y}>{y}</option>)}
         </select>
 
         <button
+          id="hvs-load-btn"
           type="button"
           onClick={handleLoadData}
-          className="px-4 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] text-white font-bold text-xs rounded shadow-xs"
+          className="px-4 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] text-white font-bold text-xs rounded shadow-xs focus:outline-none focus:ring-2 focus:ring-amber-400"
         >
           Load Data
         </button>
+        {/* Spinner beside Load Data while the month loads, as on live */}
+        {loading && <span className="inline-block h-3.5 w-3.5 rounded-full border-2 border-slate-500 border-t-transparent animate-spin" />}
 
         <select
           value={agentId}

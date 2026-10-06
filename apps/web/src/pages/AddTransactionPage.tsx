@@ -208,7 +208,21 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   const [r8BaharAmt, setR8BaharAmt] = useState('');
   const [r8Andar, setR8Andar] = useState('');
   const [r8AndarAmt, setR8AndarAmt] = useState('');
-  const [r8Toast, setR8Toast] = useState<{ title: string; body: string } | null>(null);
+  // Random (F8) validation toasts go through the app's react-toastify container (top-right,
+  // red, X to close, auto-hides) — every error shows each time it happens; null clears them.
+  const setR8Toast = (t: { title: string; body: string } | null) => {
+    if (!t) {
+      ['Invalid Amount', 'Invalid Number Pair', 'Invalid Number'].forEach(title => toast.dismiss(`r8-${title}`));
+      return;
+    }
+    toast.error(
+      <div>
+        <div className="font-bold text-base">{t.title}</div>
+        <div className="text-sm mt-0.5">{t.body}</div>
+      </div>,
+      { toastId: `r8-${t.title}` }
+    );
+  };
 
   // From-To (F7) — every number in the From..To range at AMOUNT, plus (when a PLT-AMOUNT is
   // given) each one's palti at that second amount.
@@ -424,7 +438,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
     // Only Active accounts are offered — a party whose Account Status is Deactive (Ledgers ->
     // Account tab) is left out of the search (the API refuses its new slips too)
     const activeParties = parties.filter(p => (p as { accountActive?: boolean }).accountActive !== false);
-    if (!partySearch.trim()) return activeParties;
+    // The list only appears once something is typed (an empty box shows no list, as live)
+    if (!partySearch.trim()) return [];
     return activeParties.filter(p =>
       p.partyName.toLowerCase().includes(partySearch.trim().toLowerCase())
     );
@@ -721,6 +736,19 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
         });
         setSuccessMsg('Transaction updated successfully!');
         setSubmitting(false);
+        // Edit from Live Transactions: once saved, go back to Transaction List opened on this
+        // slip's shift, so the updated slip is listed straight away. (Declare edits stay put.)
+        if (!declareEdit && onNavigate) {
+          const backShiftId = editShiftId || (resolvedShift ? String(resolvedShift.id) : undefined);
+          toast.success(
+            <div>
+              <div className="font-bold text-base">Success</div>
+              <div className="text-sm mt-0.5">Transaction updated successfully!</div>
+            </div>,
+            { toastId: `tx-updated-${editingTxNumericId}` }
+          );
+          onNavigate('transaction-list', backShiftId);
+        }
         return;
       }
 
@@ -829,9 +857,20 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
     setShowCrossModal(true);
   };
 
+  // Once a generator popup has gone, put the cursor back in the main NUMBER box
+  const focusNumberAfterPopup = () => {
+    requestAnimationFrame(() => {
+      numberInputRef.current?.focus();
+      numberInputRef.current?.select();
+    });
+  };
+
   const closeCrossModal = () => {
     setShowCrossModal(false);
     resetCrossForm();
+    // Every way out of the popup (Save, Cancel/Close, X, Esc, outside click) leaves the
+    // cursor in the main NUMBER box for the next entry
+    focusNumberAfterPopup();
   };
 
   const handleSaveCross = () => {
@@ -843,6 +882,12 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
       ]);
     }
     closeCrossModal();
+    // Live: after Save the rows are listed and the cursor is back in the main NUMBER box,
+    // ready for the next entry (once the popup has gone)
+    requestAnimationFrame(() => {
+      numberInputRef.current?.focus();
+      numberInputRef.current?.select();
+    });
   };
 
   // --- Random (F8) -----------------------------------------------------------------------
@@ -885,7 +930,12 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   const r8DaraState = r8SectionState(r8Dara, r8DaraAmt, 2);
   const r8BaharState = r8SectionState(r8Bahar, r8BaharAmt, 1);
   const r8AndarState = r8SectionState(r8Andar, r8AndarAmt, 1);
-  const r8HasError = !!(r8DaraState.error || r8BaharState.error || r8AndarState.error);
+  // A section with digits but no Amount yet ("Invalid Amount" on Enter / Save) — not shown as
+  // "Invalid No." beside the Amount, but it holds TOTAL AMOUNT at 0 like the other errors
+  const r8NeedsAmount = (raw: string, amountStr: string) =>
+    raw.replace(/\D/g, '').length > 0 && !((parseFloat(amountStr) || 0) > 0);
+  const r8HasError = !!(r8DaraState.error || r8BaharState.error || r8AndarState.error)
+    || r8NeedsAmount(r8Dara, r8DaraAmt) || r8NeedsAmount(r8Bahar, r8BaharAmt) || r8NeedsAmount(r8Andar, r8AndarAmt);
   // Live screenshots 2 and 3 both read TOTAL AMOUNT : 0 while one section is flagged, even
   // though the other two sections show their own figures — so any error zeroes the total.
   const r8TotalAmount = r8HasError ? 0 : r8DaraState.total + r8BaharState.total + r8AndarState.total;
@@ -937,17 +987,81 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   const closeRandom8Modal = () => {
     setShowRandom8Modal(false);
     resetRandom8Form();
+    // Every way out of the popup (Save, Cancel/Close, X, Esc, outside click) leaves the
+    // cursor in the main NUMBER box for the next entry
+    focusNumberAfterPopup();
   };
 
-  const handleSaveRandom8 = () => {
-    const firstError = r8DaraState.error || r8BaharState.error || r8AndarState.error;
-    if (firstError) {
-      setR8Toast(r8ErrorToast(firstError));
+  // Live flow: the popup opens with the cursor in Dara; Enter walks Dara -> Amount ->
+  // Akhar Bahar -> Amount -> Akhar Andar -> Amount -> Save (Enter on Save saves).
+  const R8_ENTER_ORDER = ['r8-dara', 'r8-dara-amt', 'r8-bahar', 'r8-bahar-amt', 'r8-andar', 'r8-andar-amt', 'r8-save-btn'];
+  // Live checks, in this order, for one section:
+  //   number typed, Amount blank/0   -> "Invalid Amount" (cursor stays on that Amount)
+  //   Dara digits not in pairs       -> "Invalid Number Pair" (cursor back on the number, selected)
+  //   Amount given, number blank     -> "Invalid Number" (cursor back on the number)
+  const r8CheckSection = (key: 'dara' | 'bahar' | 'andar'): boolean => {
+    const raw = key === 'dara' ? r8Dara : key === 'bahar' ? r8Bahar : r8Andar;
+    const amt = key === 'dara' ? r8DaraAmt : key === 'bahar' ? r8BaharAmt : r8AndarAmt;
+    const state = key === 'dara' ? r8DaraState : key === 'bahar' ? r8BaharState : r8AndarState;
+    const focusSel = (id: string) => {
+      const el = document.getElementById(id) as HTMLInputElement | HTMLTextAreaElement | null;
+      el?.focus();
+      el?.select();
+    };
+    if (r8NeedsAmount(raw, amt)) {
+      setR8Toast({ title: 'Invalid Amount', body: 'Please enter a valid amount!' });
+      focusSel(`r8-${key}-amt`);
+      return false;
+    }
+    if (state.error) {
+      setR8Toast(r8ErrorToast(state.error));
+      focusSel(`r8-${key}`);
+      return false;
+    }
+    return true;
+  };
+
+  const r8EnterNext = (id: string) => (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    // Enter on an Amount box checks its section first; a problem keeps the cursor there
+    const amtMatch = id.match(/^r8-(dara|bahar|andar)-amt$/);
+    if (amtMatch && !r8CheckSection(amtMatch[1] as 'dara' | 'bahar' | 'andar')) return;
+    // Enter in Dara with an odd digit run (e.g. "45 65 6") says so straight away and keeps
+    // the cursor in Dara with the text selected — Amount or not
+    if (id === 'r8-dara' && r8Dara.replace(/\D/g, '').length % 2 !== 0) {
+      setR8Toast(r8ErrorToast('PAIR'));
+      const el = document.getElementById('r8-dara') as HTMLTextAreaElement | null;
+      el?.focus();
+      el?.select();
       return;
+    }
+    setR8Toast(null);
+    const next = R8_ENTER_ORDER[R8_ENTER_ORDER.indexOf(id) + 1];
+    const el = next ? document.getElementById(next) : null;
+    el?.focus();
+    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) el.select();
+  };
+  useEffect(() => {
+    if (!showRandom8Modal) return;
+    const id = requestAnimationFrame(() => document.getElementById('r8-dara')?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [showRandom8Modal]);
+
+  const handleSaveRandom8 = () => {
+    // Same checks as Enter, Dara -> Bahar -> Andar; the first problem keeps the popup open
+    // with the cursor on the box to fix
+    for (const key of ['dara', 'bahar', 'andar'] as const) {
+      if (!r8CheckSection(key)) return;
     }
     const entries = buildRandom8Entries();
     if (entries.length > 0) setEntriesList(prev => [...entries, ...prev]);
     closeRandom8Modal();
+    // Back to the main NUMBER box for the next entry, as after the other popups' Save
+    requestAnimationFrame(() => {
+      numberInputRef.current?.focus();
+      numberInputRef.current?.select();
+    });
   };
 
   // Confirmed against the live popup: From 1 / To 5 / AMOUNT 10 reads TOTAL AMOUNT 50, and
@@ -1004,6 +1118,9 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   const closeFromToModal = () => {
     setShowFromToModal(false);
     resetFromToForm();
+    // Every way out of the popup (Save, Close, X, Esc, outside click) leaves the cursor in
+    // the main NUMBER box for the next entry
+    focusNumberAfterPopup();
   };
 
   // From-To popup: From must be 1-99, To 1-100 (whole numbers), and From not above To.
@@ -1040,6 +1157,12 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
       ]);
     }
     closeFromToModal();
+    // Live: after Save the rows are listed and the cursor is back in the main NUMBER box,
+    // ready for the next entry (once the popup has gone)
+    requestAnimationFrame(() => {
+      numberInputRef.current?.focus();
+      numberInputRef.current?.select();
+    });
   };
 
   const handleRandomNumberChange = (index: number, val: string) => {
@@ -1081,6 +1204,47 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   const closeRandomModal = () => {
     setShowRandomModal(false);
     resetRandomForm();
+    // Every way out of the popup (Save, Cancel/Close, X, Esc, outside click) leaves the
+    // cursor in the main NUMBER box for the next entry
+    focusNumberAfterPopup();
+  };
+
+  // Esc (or a click on the dimmed area outside the box) closes whichever generator popup is
+  // open — Random (F4), Cross (F6), From-To (F7), Random (F8) — like its Close button, and
+  // the cursor goes back to the main NUMBER box. (Shift+Esc still exits the page.)
+  const closeOpenPopup = () => {
+    if (showRandomModal) closeRandomModal();
+    else if (showCrossModal) closeCrossModal();
+    else if (showFromToModal) closeFromToModal();
+    else if (showRandom8Modal) closeRandom8Modal();
+    else return;
+    requestAnimationFrame(() => {
+      numberInputRef.current?.focus();
+      numberInputRef.current?.select();
+    });
+  };
+  const closeOpenPopupRef = useRef(closeOpenPopup);
+  closeOpenPopupRef.current = closeOpenPopup;
+  const anyPopupOpen = showRandomModal || showCrossModal || showFromToModal || showRandom8Modal;
+  useEffect(() => {
+    if (!anyPopupOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.shiftKey) return;
+      e.preventDefault();
+      closeOpenPopupRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [anyPopupOpen]);
+  // Backdrop click: only a press that starts AND ends on the dimmed area itself, so a drag
+  // that begins inside the box (e.g. selecting text) doesn't close it.
+  const backdropDownRef = useRef(false);
+  const backdropProps = {
+    onMouseDown: (e: React.MouseEvent) => { backdropDownRef.current = e.target === e.currentTarget; },
+    onClick: (e: React.MouseEvent) => {
+      if (backdropDownRef.current && e.target === e.currentTarget) closeOpenPopup();
+      backdropDownRef.current = false;
+    },
   };
 
   const randomTotalAmount = useMemo(() => {
@@ -1170,6 +1334,24 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
     }
 
     closeRandomModal();
+    // Live: after Save the rows are listed and the cursor is back in the main NUMBER box,
+    // ready for the next entry (once the popup has gone)
+    requestAnimationFrame(() => {
+      numberInputRef.current?.focus();
+      numberInputRef.current?.select();
+    });
+  };
+
+  // A tab opened from the Dashboard's shift card goes on to Transaction List (on this shift)
+  // when exited, instead of closing; tabs opened from the transaction lists still just close
+  // back to the list they came from.
+  const openedFromDashboard = () => {
+    try {
+      const path = (window.opener?.location?.pathname || '').toLowerCase().replace(/\/$/, '');
+      return path === '' || path === '/dashboard';
+    } catch {
+      return false;
+    }
   };
 
   // Keyboard Shortcuts: F2, F4, F6, F7, F8, F12, ~, Shift+Esc
@@ -1177,10 +1359,10 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.shiftKey && e.key === 'Escape') {
         e.preventDefault();
-        if (window.opener) {
+        if (window.opener && !openedFromDashboard()) {
           window.close();
         } else if (onNavigate) {
-          onNavigate(declareEdit ? 'declare-transactions' : 'transaction-list');
+          onNavigate(declareEdit ? 'declare-transactions' : 'transaction-list', declareEdit ? undefined : (resolvedShift ? String(resolvedShift.id) : undefined));
         } else {
           window.location.href = declareEdit ? '/declare_transaction_list' : '/transaction_list';
         }
@@ -1217,7 +1399,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [entriesList, selectedParty, selectedCopyShiftIds, narration]);
+  }, [entriesList, selectedParty, selectedCopyShiftIds, narration, resolvedShift]);
 
   // Rate string display
   const partyDaraRate = selectedParty?.daraRate ? Math.round(Number(selectedParty.daraRate)) : 0;
@@ -1252,10 +1434,10 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
           <button
             type="button"
             onClick={() => {
-              if (window.opener) {
+              if (window.opener && !openedFromDashboard()) {
                 window.close();
               } else if (onNavigate) {
-                onNavigate(declareEdit ? 'declare-transactions' : 'transaction-list');
+                onNavigate(declareEdit ? 'declare-transactions' : 'transaction-list', declareEdit ? undefined : (resolvedShift ? String(resolvedShift.id) : undefined));
               } else {
                 window.location.href = declareEdit ? '/declare_transaction_list' : '/transaction_list';
               }
@@ -1300,7 +1482,10 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
             />
 
             {/* Dropdown Menu matching Screenshot 2 */}
-            {showPartyDropdown && filteredParties.length > 0 && (
+            {/* No list while the box just holds the party already chosen (e.g. an Edit slip
+                opened with its party filled in) — it opens again as soon as the text is changed */}
+            {showPartyDropdown && filteredParties.length > 0
+              && !(selectedParty && partySearch.trim().toUpperCase() === selectedParty.partyName.toUpperCase()) && (
               <div className="absolute top-full left-0 mt-1 w-64 sm:w-72 bg-white border border-slate-300 shadow-2xl rounded-xs z-50 max-h-60 overflow-y-auto pbmax-table-scrollbar divide-y divide-slate-100">
                 {filteredParties.map((p, idx) => {
                   const isHighlighted = idx === activePartyIndex;
@@ -1739,7 +1924,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
       {/* GENERATOR MODAL 1: Cross Generator (F6) */}
       {showCrossModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
           <div className="bg-white rounded-xs shadow-2xl w-full max-w-[520px] border border-slate-300">
             {/* Header */}
             <div className="bg-[#24497e] text-white px-4 py-2.5 flex items-center justify-between rounded-t-xs">
@@ -1875,7 +2060,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
       {/* GENERATOR MODAL 2: From-To Generator (F7) */}
       {showFromToModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
           <div className="bg-white rounded-xs shadow-2xl w-full max-w-[480px] border border-slate-300">
             {/* Header */}
             <div className="bg-[#24497e] text-white px-4 py-2.5 flex items-center justify-between rounded-t-xs">
@@ -2007,21 +2192,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
       {/* Random (F8) — Dara / Akhar Bahar / Akhar Andar, each with its own Amount */}
       {showRandom8Modal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
-          {/* Validation toast, top-right, exactly where the live popup floats it */}
-          {r8Toast && (
-            <div className="fixed top-4 right-4 z-[60] w-[380px] max-w-[90vw] bg-[#e8443a] text-white rounded shadow-2xl px-4 py-3 animate-in fade-in slide-in-from-top-2">
-              <button
-                type="button"
-                onClick={() => setR8Toast(null)}
-                className="absolute top-2 right-2 text-white/90 hover:text-white cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-              <div className="font-bold text-base pr-6">{r8Toast.title}</div>
-              <div className="text-sm mt-1">{r8Toast.body}</div>
-            </div>
-          )}
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
 
           <div className="bg-white rounded-xs shadow-2xl w-full max-w-[500px] border border-slate-300">
             <div className="bg-[#24497e] text-white px-4 py-2.5 flex items-center justify-between rounded-t-xs">
@@ -2061,6 +2232,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
                     <label className="block text-xs text-slate-700 mb-1">{sec.label}</label>
                     {sec.multiline ? (
                       <textarea
+                        id={`r8-${sec.key}`}
+                        onKeyDown={r8EnterNext(`r8-${sec.key}`)}
                         value={sec.value}
                         onChange={(e) => sec.setValue(sec.format(e.target.value))}
                         onBlur={() => { if (sec.state.error) setR8Toast(r8ErrorToast(sec.state.error)); }}
@@ -2070,6 +2243,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
                       />
                     ) : (
                       <input
+                        id={`r8-${sec.key}`}
+                        onKeyDown={r8EnterNext(`r8-${sec.key}`)}
                         type="text"
                         value={sec.value}
                         onChange={(e) => sec.setValue(sec.format(e.target.value))}
@@ -2087,6 +2262,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
                       </span>
                     </div>
                     <input
+                      id={`r8-${sec.key}-amt`}
+                      onKeyDown={r8EnterNext(`r8-${sec.key}-amt`)}
                       type="number"
                       value={sec.amount}
                       onChange={(e) => sec.setAmount(e.target.value)}
@@ -2104,8 +2281,9 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
               <div className="border-t border-slate-200 pt-3 flex items-center justify-end gap-4">
                 <button
                   type="button"
+                  id="r8-save-btn"
                   onClick={handleSaveRandom8}
-                  className="bg-[#24497e] hover:bg-[#1a355c] text-white font-bold text-xs px-6 py-1.5 rounded-xs transition-colors shadow-xs cursor-pointer"
+                  className="bg-[#24497e] hover:bg-[#1a355c] text-white font-bold text-xs px-6 py-1.5 rounded-xs transition-colors shadow-xs cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#24497e]/40 focus:ring-offset-1"
                 >
                   Save
                 </button>
@@ -2124,7 +2302,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
       {/* GENERATOR MODAL 3: Random Generator matching Screenshot 1 & 3 */}
       {showRandomModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
           <div className="bg-white rounded-xs shadow-2xl w-full max-w-[340px] overflow-hidden border border-slate-300">
             {/* Header */}
             <div className="bg-[#24497e] text-white px-4 py-2.5 flex items-center justify-between">

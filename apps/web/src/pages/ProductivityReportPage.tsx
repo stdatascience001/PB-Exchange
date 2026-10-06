@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ShiftDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { ArrowLeft } from 'lucide-react';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 
 interface ProductivityReportPageProps {
   shifts?: ShiftDto[];
@@ -50,13 +51,28 @@ export const ProductivityReportPage: React.FC<ProductivityReportPageProps> = ({ 
     }
   };
 
+  // Live flow: the page opens with the cursor on From's day and an empty table; Enter walks
+  // From DD -> MM -> YYYY -> To DD -> MM -> YYYY -> Shift -> D-Min -> Search, and the report
+  // loads on Search (Enter or click) with a spinner on the button.
+  const [hasSearched, setHasSearched] = useState(false);
+  const focusById = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
+  const enterTo = (id: string) => (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    focusById(id);
+  };
   useEffect(() => {
-    fetchList();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate, shiftId]);
+    focusById('prod-fromDate-dd');
+  }, []);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
+    setHasSearched(true);
     fetchList();
   };
 
@@ -92,20 +108,26 @@ export const ProductivityReportPage: React.FC<ProductivityReportPageProps> = ({ 
             )}
             <span className="font-bold text-sm text-slate-900 tracking-tight mr-2">Productivity Report</span>
             <span className="text-slate-600 font-medium">From</span>
-            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800" />
+            <DateDMYInput value={fromDate} onChange={setFromDate} idPrefix="prod-fromDate" separator="-" onEnterFromYear={() => focusById('prod-toDate-dd')} />
             <span className="text-slate-600 font-medium">To</span>
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800" />
+            <DateDMYInput value={toDate} onChange={setToDate} idPrefix="prod-toDate" separator="-" onEnterFromYear={() => focusById('prod-shift')} />
+            <span className="text-slate-600 font-medium">Shift</span>
             <select
+              id="prod-shift"
               value={shiftId}
               onChange={(e) => setShiftId(e.target.value)}
+              onKeyDown={enterTo('prod-dmin')}
               className="px-3 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer min-w-32 shadow-xs"
             >
               <option value="">ALL</option>
               {shifts.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
-            <input type="number" value={dMin} onChange={(e) => setDMin(e.target.value)} placeholder="D-Min" className="w-20 px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800" />
-            <button type="submit" className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors">
+            <span className="text-slate-600 font-medium">D-Min</span>
+            <input id="prod-dmin" type="number" value={dMin} onChange={(e) => setDMin(e.target.value)} onKeyDown={enterTo('prod-search-btn')} placeholder="D-Min" className="w-20 px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:bg-[#fde68a]" />
+            <button id="prod-search-btn" type="submit" disabled={loading} className="px-10 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5">
               Search
+              {/* Spinner while the report loads, as on live */}
+              {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
             </button>
           </div>
           <button type="button" onClick={handleExportExcel} className="px-4 py-1 bg-[#15803d] hover:bg-[#166534] active:bg-[#14532d] text-white font-bold text-xs rounded shadow-xs transition-colors">
@@ -133,6 +155,8 @@ export const ProductivityReportPage: React.FC<ProductivityReportPageProps> = ({ 
             <tbody className="divide-y divide-slate-200 font-sans text-xs whitespace-nowrap">
               {loading ? (
                 <tr><td colSpan={11} className="py-14 text-center text-slate-400 font-medium">Loading...</td></tr>
+              ) : !hasSearched ? (
+                <tr><td colSpan={12} className="py-14" /></tr>
               ) : rows.length === 0 ? (
                 <tr><td colSpan={11} className="py-14 text-center text-slate-400 font-medium">No records found for this filter.</td></tr>
               ) : (

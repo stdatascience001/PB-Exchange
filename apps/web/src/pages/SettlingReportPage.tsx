@@ -4,6 +4,7 @@ import { apiRequest } from '../api/client.js';
 import { ArrowLeft } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { PartyPicker } from '../components/PartyPicker.js';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 
 interface SettlingReportPageProps {
   onNavigate?: (page: string) => void;
@@ -188,6 +189,18 @@ export const SettlingReportPage: React.FC<SettlingReportPageProps> = ({ onNaviga
     }
   };
 
+  // Live keyboard flow: the page opens with the cursor on From's day; Enter walks From DD ->
+  // MM -> YYYY -> To DD -> MM -> YYYY -> Party, where typing lists the parties and Enter picks
+  // one and loads its report (the Party box's own behaviour).
+  const focusDatePart = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    el?.select();
+  };
+  useEffect(() => {
+    focusDatePart('settling-fromDate-dd');
+  }, []);
+
   // F2 = Save the payment form, as the button says.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -214,9 +227,9 @@ export const SettlingReportPage: React.FC<SettlingReportPageProps> = ({ onNaviga
 
         <div className="grid grid-cols-[auto_1fr_auto_1fr] items-center gap-x-2.5 gap-y-1.5">
           <span className="text-slate-700 font-bold text-[13px] text-right">From</span>
-          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded-xs text-xs font-semibold text-slate-800" />
+          <DateDMYInput value={fromDate} onChange={setFromDate} idPrefix="settling-fromDate" separator="-" onEnterFromYear={() => focusDatePart('settling-toDate-dd')} />
           <span className="text-slate-700 font-bold text-[13px]">To</span>
-          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded-xs text-xs font-semibold text-slate-800" />
+          <DateDMYInput value={toDate} onChange={setToDate} idPrefix="settling-toDate" separator="-" onEnterFromYear={() => reportPartyRef.current?.focus()} />
           <span className="text-slate-700 font-bold text-[13px] text-right">Party</span>
           <div className="col-span-3">
             <PartyPicker
@@ -329,7 +342,7 @@ export const SettlingReportPage: React.FC<SettlingReportPageProps> = ({ onNaviga
         <form ref={payFormRef} onSubmit={handleSaveSettlement} className="border-t-2 border-[#152847] p-2.5 flex flex-wrap items-end gap-5 bg-white">
           <div>
             <label className="block text-slate-600 mb-1 text-[10px]">Date</label>
-            <input type="date" value={saveDate} onChange={(e) => setSaveDate(e.target.value)} className="px-2 py-1.5 bg-white border border-slate-300 rounded-xs text-xs font-semibold" />
+            <DateDMYInput value={saveDate} onChange={setSaveDate} idPrefix="settling-saveDate" separator="-" />
           </div>
           <div className="w-64">
             <label className="block text-slate-600 mb-1 text-[10px]">

@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { X, Edit2 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { AutoVapsiModal, vapsiYears, VapsiSummaryRow } from '../components/AutoVapsiModal.js';
 import { PartyPicker } from '../components/PartyPicker.js';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 
 const VOUCHER_TYPE = 'VAPSI';
 const PAGE_TITLE = 'Vapsi Voucher';
@@ -110,6 +111,18 @@ export const VapsiVoucherPage: React.FC = () => {
     fetchParties();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromDate, toDate]);
+
+  // Live keyboard flow on the filter bar: the page opens with the cursor on From's day; Enter
+  // walks From DD -> MM -> YYYY -> To DD -> MM -> YYYY -> Party (the list filters as you type).
+  const filterPartyRef = useRef<HTMLInputElement>(null);
+  const focusDatePart = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    el?.select();
+  };
+  useEffect(() => {
+    focusDatePart('vapsiv-fromDate-dd');
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -348,22 +361,12 @@ export const VapsiVoucherPage: React.FC = () => {
 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">From</span>
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800"
-            />
+            <DateDMYInput value={fromDate} onChange={setFromDate} idPrefix="vapsiv-fromDate" separator="-" onEnterFromYear={() => focusDatePart('vapsiv-toDate-dd')} />
           </div>
 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">To</span>
-            <input
-              type="date"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800"
-            />
+            <DateDMYInput value={toDate} onChange={setToDate} idPrefix="vapsiv-toDate" separator="-" onEnterFromYear={() => filterPartyRef.current?.focus()} />
           </div>
 
           <div className="flex items-center gap-1.5">
@@ -375,6 +378,7 @@ export const VapsiVoucherPage: React.FC = () => {
                 onChange={setSearch}
                 onPick={(p) => setSearch(p.partyName)}
                 onInvalid={() => {}}
+                inputRef={filterPartyRef}
                 className="w-full px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:bg-[#fde68a] shadow-xs"
               />
             </div>
@@ -528,7 +532,7 @@ export const VapsiVoucherPage: React.FC = () => {
                   </div>
                   <div>
                     <label className="block mb-1">Voucher Date</label>
-                    <input type="date" required value={voucherDate} onChange={(e) => setVoucherDate(e.target.value)} className={`${VIN} font-bold`} />
+                    <DateDMYInput value={voucherDate} onChange={setVoucherDate} idPrefix="vapsiv-voucherDate" separator="-" />
                   </div>
                 </div>
 

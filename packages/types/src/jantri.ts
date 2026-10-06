@@ -19,6 +19,11 @@ export interface JantriViewDto {
   totalRisk: number;
   grid: JantriCell[]; // 100 items (00-99)
   haruf: HarufCell[]; // 10 items (0-9)
+  // Net view only (Company Calculation's SALE ASC): per Dara number ("00".."99") the raw
+  // sale (Andar / Bahar under "A_d" / "B_d"), and the payout if it wins after each party's
+  // Hissa
+  rawSale?: Record<string, number>;
+  hissaPayout?: Record<string, number>;
 }
 
 // --- Live / Declare Prediction ------------------------------------------------------------

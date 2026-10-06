@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { apiRequest } from '../api/client.js';
 import { X, Edit2, Trash2 } from 'lucide-react';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 
 interface StaffOption {
   id: number;
@@ -164,8 +165,8 @@ export const LeaveManagePage: React.FC = () => {
       <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden flex flex-col flex-1">
         <form onSubmit={handleSearch} className="p-2 sm:p-2.5 flex flex-wrap items-center gap-2.5 border-b border-slate-200 bg-white">
           <span className="font-bold text-sm text-slate-900 tracking-tight mr-1">Leave Manage</span>
-          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800" />
-          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800" />
+          <DateDMYInput value={fromDate} onChange={setFromDate} idPrefix="leave-fromDate" separator="-" />
+          <DateDMYInput value={toDate} onChange={setToDate} idPrefix="leave-toDate" separator="-" />
           <input
             type="text"
             value={search}
@@ -250,23 +251,11 @@ export const LeaveManagePage: React.FC = () => {
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">Leave From</label>
-                  <input
-                    type="date"
-                    required
-                    value={leaveFrom}
-                    onChange={(e) => setLeaveFrom(e.target.value)}
-                    className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500"
-                  />
+                  <DateDMYInput value={leaveFrom} onChange={setLeaveFrom} idPrefix="leave-leaveFrom" separator="-" />
                 </div>
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">Leave To</label>
-                  <input
-                    type="date"
-                    required
-                    value={leaveTo}
-                    onChange={(e) => setLeaveTo(e.target.value)}
-                    className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500"
-                  />
+                  <DateDMYInput value={leaveTo} onChange={setLeaveTo} idPrefix="leave-leaveTo" separator="-" />
                 </div>
                 <div className="relative">
                   <label className="block text-slate-700 font-bold mb-1">Party</label>

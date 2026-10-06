@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { ArrowLeft } from 'lucide-react';
+import { PartyPicker } from '../components/PartyPicker.js';
 
 interface SettlementPageProps {
   onNavigate?: (page: string) => void;
@@ -92,6 +93,19 @@ export const SettlementPage: React.FC<SettlementPageProps> = ({ onNavigate }) =>
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [month, year]);
 
+  // Live keyboard flow: the page opens on Month; Enter walks Month -> Year -> Party, where
+  // typing lists the parties (D -> D DUN, DABWALI …) and Enter / click picks one, reloading
+  // the month with a spinner beside the box and narrowing the table to that party.
+  const partyRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    document.getElementById('settlement-month')?.focus();
+  }, []);
+  const enterTo = (focus: () => void) => (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    focus();
+  };
+
   const filteredRows = useMemo(() => {
     if (!partyFilter.trim()) return rows;
     const term = partyFilter.trim().toLowerCase();
@@ -165,21 +179,29 @@ export const SettlementPage: React.FC<SettlementPageProps> = ({ onNavigate }) =>
         </button>
         <span className="font-bold text-sm text-slate-900 tracking-tight mr-1">Settlement</span>
 
-        <select value={month} onChange={(e) => setMonth(e.target.value)} className="px-2 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900">
+        <span className="font-bold text-sm text-slate-900">Month</span>
+        <select id="settlement-month" value={month} onChange={(e) => setMonth(e.target.value)} onKeyDown={enterTo(() => document.getElementById('settlement-year')?.focus())} className="px-2 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-400">
           {Object.keys(MONTH_INDEX).map(m => <option key={m} value={m}>{m}</option>)}
         </select>
-        <select value={year} onChange={(e) => setYear(parseInt(e.target.value, 10))} className="px-2 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900">
+        <select id="settlement-year" value={year} onChange={(e) => setYear(parseInt(e.target.value, 10))} onKeyDown={enterTo(() => partyRef.current?.focus())} className="px-2 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-400">
           {Array.from({ length: 8 }, (_, i) => now.getFullYear() - i).map(y => <option key={y} value={y}>{y}</option>)}
         </select>
 
         <div className="flex items-center gap-1.5">
           <span className="text-slate-600 font-medium">Party</span>
-          <input
-            type="text"
-            value={partyFilter}
-            onChange={(e) => setPartyFilter(e.target.value)}
-            className="w-48 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
+          <div className="w-60">
+            <PartyPicker
+              parties={ledgers}
+              value={partyFilter}
+              onChange={setPartyFilter}
+              onPick={(p) => { setPartyFilter(p.partyName); fetchRows(); }}
+              onInvalid={() => {}}
+              inputRef={partyRef}
+              className="w-full px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:bg-[#fde68a]"
+            />
+          </div>
+          {/* Spinner beside the box while the picked party's figures load, as on live */}
+          {loading && <span className="inline-block h-3.5 w-3.5 rounded-full border-2 border-slate-500 border-t-transparent animate-spin" />}
         </div>
 
         <button

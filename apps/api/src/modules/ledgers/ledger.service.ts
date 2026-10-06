@@ -404,9 +404,10 @@ export class LedgerService {
     if (!data.partyName || !data.partyName.trim()) {
       throw new AppError('Party name is required', 400);
     }
-    // Choosing the system "HP A/C" as a Hissa Party makes sure that account exists (it's the
-    // opposite ledger Auto Hawa Patti posts to) — created only if missing.
-    if (data.linkType === 'HISSA' && data.partyName.trim().toUpperCase() === 'HP A/C') {
+    // Choosing the system "HP A/C" as a Hissa Party (or 3rd Party Comm / Rebate party) makes
+    // sure that account exists (it's the opposite ledger Auto Hawa Patti posts to) — created
+    // only if missing.
+    if (data.partyName.trim().toUpperCase() === 'HP A/C') {
       const [hp] = await db.select({ id: ledgers.id }).from(ledgers).where(sql`UPPER(TRIM(${ledgers.partyName})) = 'HP A/C'`);
       if (!hp) await db.insert(ledgers).values({ partyName: 'HP A/C', groupName: 'SYSTEM' }).onConflictDoNothing();
     }

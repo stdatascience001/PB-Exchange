@@ -115,6 +115,8 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
   // Staff filter: applied at once (dropdown pick / Up-Down), options from the loaded slips
   const [appliedStaff, setAppliedStaff] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('ALL');
+  // Active / Deleted (bottom-right, as live): Deleted lists the shift's deleted slips instead
+  const [listMode, setListMode] = useState<'ACTIVE' | 'DELETED'>('ACTIVE');
   
   // Selected transaction for right panel
   const [selectedTx, setSelectedTx] = useState<TransactionItem | null>(null);
@@ -165,6 +167,7 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
       if (dateStr) params.append('date', dateStr);
       if (searchParty.trim()) params.append('search', searchParty.trim());
       if (selectedStatus && selectedStatus !== 'ALL') params.append('status', selectedStatus);
+      params.append('listMode', listMode);
 
       const res = await apiRequest<TransactionItem[]>(`/transactions?${params.toString()}`);
       if (res.data) {
@@ -183,7 +186,7 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
   useEffect(() => {
     fetchTransactions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedShiftId, selectedStatus, dateStr, isSelectedShiftDeclared]);
+  }, [selectedShiftId, selectedStatus, dateStr, isSelectedShiftDeclared, listMode]);
 
   // Search Party filters as you type: the list reloads for the typed text a moment after the
   // last keystroke (Enter / Search (F5) still reload straight away)
@@ -496,11 +499,16 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
                           <div className="font-mono text-slate-500 text-[10px]">{formatDateTimePb(tx.createdAt)}</div>
                         </td>
                         <td className="py-1 px-3 border-r border-b border-slate-200 leading-snug">
-                          <div className="font-bold text-slate-900 uppercase text-[11px]">{tx.updatedBy || tx.addedBy || 'B08'}</div>
-                          <div className="font-mono text-slate-500 text-[10px]">{formatDateTimePb(tx.updatedAt || tx.createdAt)}</div>
+                          {/* A deleted slip shows who deleted it and when in red (live) */}
+                          <div className={`font-bold uppercase text-[11px] ${(tx as { status?: string }).status === 'VOIDED' ? 'text-red-600' : 'text-slate-900'}`}>{tx.updatedBy || tx.addedBy || 'B08'}</div>
+                          <div className={`font-mono text-[10px] ${(tx as { status?: string }).status === 'VOIDED' ? 'text-red-500' : 'text-slate-500'}`}>{formatDateTimePb(tx.updatedAt || tx.createdAt)}</div>
                         </td>
                         {/* 4 Action Buttons matching Screenshot 3: Copy, View, Edit, Delete */}
                         <td className="py-1.5 px-2 text-center border-b border-slate-200">
+                          {/* Deleted slips (Deleted mode) carry no actions — just "(Deleted)", as live */}
+                          {(tx as { status?: string }).status === 'VOIDED' ? (
+                            <span className="text-[10px] font-semibold text-red-600">(Deleted)</span>
+                          ) : (
                           <div className="flex items-center justify-center gap-1.5">
                             <button
                               type="button"
@@ -551,6 +559,7 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
                               Delete
                             </button>
                           </div>
+                          )}
                         </td>
                       </tr>
                     );
@@ -655,9 +664,13 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
             >
               Main Jantri (F7)
             </button>
-            <select className="px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 cursor-pointer">
-              <option value="Active">Active</option>
-              <option value="All">All</option>
+            <select
+              value={listMode}
+              onChange={(e) => { setListMode(e.target.value as 'ACTIVE' | 'DELETED'); setSelectedTx(null); }}
+              className="w-24 px-2.5 py-1.5 bg-[#fde68a] border border-amber-300 rounded text-xs font-bold text-slate-900 cursor-pointer focus:outline-none"
+            >
+              <option value="ACTIVE">Active</option>
+              <option value="DELETED">Deleted</option>
             </select>
           </div>
         </div>

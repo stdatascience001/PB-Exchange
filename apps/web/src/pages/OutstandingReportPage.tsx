@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { apiRequest } from '../api/client.js';
 import { toast } from 'react-toastify';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 
 // One agents-master row (GET /agents): `group` is the Group column, `agent` the Agent column.
 interface AgentRow {
@@ -89,6 +90,16 @@ export const OutstandingReportPage: React.FC = () => {
       const params = new URLSearchParams({ date: fromDate, agentIds: ids.join(',') });
       const res = await apiRequest<OutstandingData>(`/transactions/outstanding?${params.toString()}`);
       setData(res.data || null);
+      // Live: a Search that finds nothing says so in a red Error toast
+      if (!res.data || res.data.rows.length === 0) {
+        toast.error(
+          <div>
+            <div className="font-bold text-base">Error</div>
+            <div className="text-sm mt-0.5">Record not avaliable!</div>
+          </div>,
+          { toastId: 'outstanding-empty' }
+        );
+      }
     } catch (err: any) {
       console.warn('Failed to load outstanding report:', err);
       messageToast(err.message || 'Failed to load outstanding report', 'outstanding-load');
@@ -110,8 +121,20 @@ export const OutstandingReportPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromDate, selectedGroupId, groupOptions]);
 
+  // Live keyboard flow: the page opens on Agents; Enter on the date's year goes to Agents, Enter
+  // on Agents to Search, whose Enter loads the report (spinner on the button).
+  useEffect(() => {
+    document.getElementById('outstanding-agent')?.focus();
+  }, []);
+  const enterTo = (id: string) => (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    document.getElementById(id)?.focus();
+  };
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     fetchList();
   };
 
@@ -143,21 +166,26 @@ export const OutstandingReportPage: React.FC = () => {
         <form onSubmit={handleSearch} className="p-2 sm:p-2.5 flex flex-wrap items-center gap-4 border-b border-slate-200 bg-white">
           <span className="font-bold text-sm text-slate-700 tracking-tight mx-3">OutStanding Report</span>
           <span className="text-slate-600 font-semibold text-[11px] ml-4">From</span>
-          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="px-2 py-1.5 bg-white border border-slate-300 rounded-xs text-xs font-semibold text-slate-800" />
+          <DateDMYInput value={fromDate} onChange={setFromDate} idPrefix="outstanding-fromDate" separator="-" onEnterFromYear={() => document.getElementById('outstanding-agent')?.focus()} />
           <span className="text-slate-600 font-semibold text-[11px]">Agents</span>
           <select
+            id="outstanding-agent"
             value={selectedAgent}
             onChange={(e) => { setSelectedAgent(e.target.value); setSelectedGroupId(''); setData(null); }}
+            onKeyDown={enterTo('outstanding-search-btn')}
             className={`${select} min-w-40`}
           >
             {agentNames.map(n => <option key={n} value={n}>{n}</option>)}
           </select>
-          <button type="submit" className="px-10 py-1.5 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded-xs shadow-xs transition-colors">
+          <button id="outstanding-search-btn" type="submit" disabled={loading} className="px-10 py-1.5 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded-xs shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5">
             Search
+            {/* Spinner while the report loads, as on live */}
+            {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
           </button>
           <select
             value={selectedGroupId}
             onChange={(e) => setSelectedGroupId(e.target.value ? parseInt(e.target.value, 10) : '')}
+            onKeyDown={enterTo('outstanding-search-btn')}
             className={`${select} min-w-36`}
           >
             <option value="">-- ALL GROUP --</option>

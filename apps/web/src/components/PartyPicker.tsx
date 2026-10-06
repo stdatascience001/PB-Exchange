@@ -13,7 +13,9 @@ export const PartyPicker: React.FC<{
   onInvalidName?: () => void;
   className: string;
   inputRef?: React.RefObject<HTMLInputElement>;
-}> = ({ parties, value, onChange, onPick, onInvalid, onInvalidName, className, inputRef }) => {
+  // Hint shown in the empty box (e.g. "ENTER SETTLE A/C"); unset = none, as before
+  placeholder?: string;
+}> = ({ parties, value, onChange, onPick, onInvalid, onInvalidName, className, inputRef, placeholder }) => {
   const [open, setOpen] = useState(false);
   const [hi, setHi] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -87,6 +89,7 @@ export const PartyPicker: React.FC<{
       <input
         ref={boxRef}
         type="text"
+        placeholder={placeholder}
         value={value}
         onChange={(e) => { onChange(e.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}

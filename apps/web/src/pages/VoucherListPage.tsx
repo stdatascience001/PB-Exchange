@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiRequest } from '../api/client.js';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 
 const PAGE_TITLE = 'Voucher List';
 const VOUCHER_TYPE_FILTER: string | undefined = undefined; // undefined = all voucher types
@@ -42,7 +43,8 @@ const formatTimestamp = (dateVal?: string) => {
 export const VoucherListPage: React.FC = () => {
   const [list, setList] = useState<VoucherListItem[]>([]);
   const [loading, setLoading] = useState(false);
-  const [fromDate, setFromDate] = useState('');
+  // Live opens with both dates on today
+  const [fromDate, setFromDate] = useState(todayInputDate());
   const [toDate, setToDate] = useState(todayInputDate());
 
   const fetchList = async () => {
@@ -61,13 +63,23 @@ export const VoucherListPage: React.FC = () => {
     }
   };
 
+  // Live flow: the page opens with the cursor on the first date's day and an empty table;
+  // Enter walks From DD -> MM -> YYYY -> To DD -> MM -> YYYY -> Search, and the list loads on
+  // Search (Enter or click) with a spinner on the button — not on every date change.
+  const [hasSearched, setHasSearched] = useState(false);
+  const focusById = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
   useEffect(() => {
-    fetchList();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate]);
+    focusById('voucherlist-fromDate-dd');
+  }, []);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
+    setHasSearched(true);
     fetchList();
   };
 
@@ -94,10 +106,13 @@ export const VoucherListPage: React.FC = () => {
         <form onSubmit={handleSearch} className="p-2 sm:p-2.5 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white">
           <div className="flex flex-wrap items-center gap-2.5">
             <span className="font-bold text-sm text-slate-900 tracking-tight mr-2">{PAGE_TITLE}</span>
-            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800" />
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800" />
-            <button type="submit" className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors">
+            <DateDMYInput value={fromDate} onChange={setFromDate} idPrefix="voucherlist-fromDate" separator="-" onEnterFromYear={() => focusById('voucherlist-toDate-dd')} />
+            <DateDMYInput value={toDate} onChange={setToDate} idPrefix="voucherlist-toDate" separator="-" onEnterFromYear={() => focusById('voucherlist-search-btn')} />
+            {/* Blue Search, as on the live Voucher List */}
+            <button id="voucherlist-search-btn" type="submit" disabled={loading} className="px-10 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] active:bg-[#0f4691] text-white font-bold text-xs rounded-xs shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5">
               Search
+              {/* Spinner while the list loads */}
+              {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
             </button>
           </div>
           <button type="button" onClick={handleExportExcel} className="px-4 py-1 bg-[#15803d] hover:bg-[#166534] active:bg-[#14532d] text-white font-bold text-xs rounded shadow-xs transition-colors">
@@ -124,6 +139,8 @@ export const VoucherListPage: React.FC = () => {
             <tbody className="divide-y divide-slate-200 font-sans text-xs whitespace-nowrap">
               {loading ? (
                 <tr><td colSpan={10} className="py-14 text-center text-slate-400 font-medium">Loading...</td></tr>
+              ) : !hasSearched ? (
+                <tr><td colSpan={10} className="py-14" /></tr>
               ) : list.length === 0 ? (
                 <tr><td colSpan={10} className="py-14 text-center text-slate-400 font-medium">No records found for this filter.</td></tr>
               ) : (

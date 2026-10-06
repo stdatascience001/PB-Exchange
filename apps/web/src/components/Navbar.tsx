@@ -211,7 +211,8 @@ export const Navbar: React.FC<NavbarProps> = ({
       id: 'result',
       label: 'Result',
       items: [
-        { label: 'Declare Shift Result', page: 'declare' },
+        // "Declare Shift Result" is hidden from the menu (the page itself and its /declare
+        // address still work): { label: 'Declare Shift Result', page: 'declare' },
         { label: 'Jantri', page: 'jantri' },
         { label: 'Collection', page: 'collection' },
         { label: 'Live Prediction', page: 'live-prediction' },

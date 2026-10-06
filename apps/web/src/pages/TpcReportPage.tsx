@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ShiftDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { toast } from 'react-toastify';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 
 interface TpcReportPageProps {
   shifts?: ShiftDto[];
@@ -45,7 +46,18 @@ export const TpcReportPage: React.FC<TpcReportPageProps> = () => {
     try {
       const params = new URLSearchParams({ fromDate, toDate });
       const res = await apiRequest<{ rows: TpcRow[] }>(`/transactions/tpc-report?${params.toString()}`);
-      setList(res.data?.rows || []);
+      const rows = res.data?.rows || [];
+      setList(rows);
+      // Live: a Search that finds nothing says so in a red Error toast
+      if (rows.length === 0) {
+        toast.error(
+          <div>
+            <div className="font-bold text-base">Error</div>
+            <div className="text-sm mt-0.5">Record not avaliable!</div>
+          </div>,
+          { toastId: 'tpc-empty' }
+        );
+      }
     } catch (err: any) {
       console.warn('Failed to load TPC report:', err);
       messageToast(err.message || 'Failed to load TPC report', 'tpc-load');
@@ -54,13 +66,21 @@ export const TpcReportPage: React.FC<TpcReportPageProps> = () => {
     }
   };
 
+  // Live flow: the page opens with the cursor on From's day and an empty table; Enter walks
+  // From DD -> MM -> YYYY -> To DD -> MM -> YYYY -> Search, and the report loads on Search
+  // (Enter or click) with a spinner on the button — not on every date change.
+  const focusById = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
   useEffect(() => {
-    fetchList();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate]);
+    focusById('tpc-fromDate-dd');
+  }, []);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     fetchList();
   };
 
@@ -90,11 +110,13 @@ export const TpcReportPage: React.FC<TpcReportPageProps> = () => {
         <form onSubmit={handleSearch} className="p-2 sm:p-2.5 flex flex-wrap items-center gap-3 border-b border-slate-200 bg-white">
           <span className="font-bold text-sm text-slate-700 tracking-tight mx-4">TPC Report</span>
           <span className="text-slate-600 font-semibold text-[11px] ml-10">From</span>
-          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="px-2 py-1.5 bg-white border border-slate-300 rounded-xs text-xs font-semibold text-slate-800" />
+          <DateDMYInput value={fromDate} onChange={setFromDate} idPrefix="tpc-fromDate" separator="-" onEnterFromYear={() => focusById('tpc-toDate-dd')} />
           <span className="text-slate-600 font-semibold text-[11px] mx-3">To</span>
-          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="px-2 py-1.5 bg-white border border-slate-300 rounded-xs text-xs font-semibold text-slate-800" />
-          <button type="submit" className="ml-3 px-10 py-1.5 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded-xs shadow-xs transition-colors">
+          <DateDMYInput value={toDate} onChange={setToDate} idPrefix="tpc-toDate" separator="-" onEnterFromYear={() => focusById('tpc-search-btn')} />
+          <button id="tpc-search-btn" type="submit" disabled={loading} className="ml-3 px-10 py-1.5 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded-xs shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5">
             Search
+            {/* Spinner while the report loads, as on live */}
+            {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
           </button>
           <button type="button" onClick={handleExportExcel} className="ml-auto px-6 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded-xs shadow-xs transition-colors">
             Excel

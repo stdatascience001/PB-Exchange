@@ -1,5 +1,5 @@
 import { db, shifts, transactions, transactionEntries, declarations, vouchers, voucherEntries, auditLogs, shiftCycles, ledgers, ledgerThirdPartyLinks } from '@pb/database';
-import { eq, and, inArray, desc, sql } from 'drizzle-orm';
+import { eq, ne, and, inArray, desc, sql } from 'drizzle-orm';
 import { AppError, NotFoundError, ForbiddenError } from '../../common/errors.js';
 import { publishDashboardUpdate } from '../dashboard/dashboard.events.js';
 import { publishShiftsUpdate } from '../shifts/shift.events.js';
@@ -25,7 +25,7 @@ export class DeclarationService {
 
     const result = await db.transaction(async (tx) => {
       const activeSlips = await tx.select().from(transactions).where(
-        and(eq(transactions.shiftId, shift.id), eq(transactions.status, 'ACTIVE'))
+        and(eq(transactions.shiftId, shift.id), ne(transactions.status, 'VOIDED'))
       );
 
       let totalCollected = 0;
@@ -291,7 +291,7 @@ export class DeclarationService {
 
     const paddedWinning = shift.declaredNumber.padStart(2, '0');
     const activeSlips = await db.select().from(transactions).where(
-      and(eq(transactions.shiftId, shift.id), eq(transactions.status, 'ACTIVE'))
+      and(eq(transactions.shiftId, shift.id), ne(transactions.status, 'VOIDED'))
     );
     const slipIds = activeSlips.map(s => s.id);
 

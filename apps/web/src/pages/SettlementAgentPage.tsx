@@ -1,7 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { ArrowLeft } from 'lucide-react';
+import { PartyPicker } from '../components/PartyPicker.js';
+import { toast } from 'react-toastify';
 
 interface SettlementAgentPageProps {
   onNavigate?: (page: string) => void;
@@ -83,7 +85,22 @@ export const SettlementAgentPage: React.FC<SettlementAgentPageProps> = ({ onNavi
     })();
   }, []);
 
-  const fetchRows = async () => {
+  // Live filter bar: Month | Year | --CHOOSE AGENT-- | Search | Settle Party. The page opens on
+  // Month; Enter walks Month -> Year -> Agent -> Search (Enter there loads, spinner on the
+  // button). Settle Party lists the parties as you type and narrows the table to the pick.
+  const settlePartyRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    document.getElementById('sagent-month')?.focus();
+  }, []);
+  const enterTo = (id: string) => (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    document.getElementById(id)?.focus();
+  };
+
+  // fromSearch: the Search button's own load — an empty / null answer says so in a red toast
+  const fetchRows = async (fromSearch = false) => {
+    if (loading) return;
     setLoading(true);
     try {
       const { fromDate, toDate } = monthRange(month, year);
@@ -91,12 +108,38 @@ export const SettlementAgentPage: React.FC<SettlementAgentPageProps> = ({ onNavi
       if (agentId) params.append('agentId', String(agentId));
       const res = await apiRequest<SettlementRow[]>(`/vouchers/settlement-rows?${params.toString()}`);
       if (res.data) setRows(res.data);
+      if (fromSearch && (!res.data || res.data.length === 0)) {
+        toast.error(
+          <div>
+            <div className="font-bold text-base">Error</div>
+            <div className="text-sm mt-0.5">Record not avaliable!</div>
+          </div>,
+          { toastId: 'sagent-empty' }
+        );
+      }
       setChecked(new Set());
     } catch (err) {
       console.warn('Failed to load settlement rows:', err);
     } finally {
       setLoading(false);
     }
+  };
+
+  // Search needs an agent first — live: "Please enter a valid agent!" with --CHOOSE AGENT--
+  // still selected. (Reloads after a save keep loading as before.)
+  const handleSearch = () => {
+    if (!agentId) {
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Message</div>
+          <div className="text-sm mt-0.5">Please enter a valid agent!</div>
+        </div>,
+        { toastId: 'sagent-no-agent' }
+      );
+      document.getElementById('sagent-agent')?.focus();
+      return;
+    }
+    fetchRows(true);
   };
 
   const filteredRows = useMemo(() => {
@@ -172,39 +215,50 @@ export const SettlementAgentPage: React.FC<SettlementAgentPageProps> = ({ onNavi
         </button>
         <span className="font-bold text-sm text-slate-900 tracking-tight mr-1">Settlement Agent</span>
 
-        <select value={month} onChange={(e) => setMonth(e.target.value)} className="px-2 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900">
+        <span className="font-bold text-sm text-slate-900">Month</span>
+        <select id="sagent-month" value={month} onChange={(e) => setMonth(e.target.value)} onKeyDown={enterTo('sagent-year')} className="px-2 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-400">
           {Object.keys(MONTH_INDEX).map(m => <option key={m} value={m}>{m}</option>)}
         </select>
-        <select value={year} onChange={(e) => setYear(parseInt(e.target.value, 10))} className="px-2 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900">
+        <select id="sagent-year" value={year} onChange={(e) => setYear(parseInt(e.target.value, 10))} onKeyDown={enterTo('sagent-agent')} className="px-2 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-400">
           {Array.from({ length: 8 }, (_, i) => now.getFullYear() - i).map(y => <option key={y} value={y}>{y}</option>)}
         </select>
 
         <select
+          id="sagent-agent"
           value={agentId}
           onChange={(e) => setAgentId(e.target.value ? parseInt(e.target.value, 10) : '')}
-          className="px-2 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 uppercase"
+          onKeyDown={enterTo('sagent-search-btn')}
+          className="px-2 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:ring-2 focus:ring-amber-400"
         >
-          <option value="">-CHOOSE AGENT-</option>
+          <option value="">--CHOOSE AGENT--</option>
           {agents.map(a => <option key={a.id} value={a.id}>{a.agentName}</option>)}
         </select>
 
         <button
+          id="sagent-search-btn"
           type="button"
-          onClick={fetchRows}
-          className="px-4 py-1 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs"
+          onClick={handleSearch}
+          disabled={loading}
+          className="px-10 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5"
         >
           Search
+          {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
         </button>
 
         <div className="flex items-center gap-1.5">
           <span className="text-slate-600 font-medium">Settle Party</span>
-          <input
-            type="text"
-            value={settleFilter}
-            onChange={(e) => setSettleFilter(e.target.value)}
-            placeholder="ENTER SETTLE A/C"
-            className="w-48 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
+          <div className="w-60">
+            <PartyPicker
+              parties={ledgers}
+              value={settleFilter}
+              onChange={setSettleFilter}
+              onPick={(p) => setSettleFilter(p.partyName)}
+              onInvalid={() => {}}
+              inputRef={settlePartyRef}
+              placeholder="ENTER SETTLE A/C"
+              className="w-full px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase placeholder:text-slate-300 focus:outline-none focus:bg-[#fde68a]"
+            />
+          </div>
         </div>
 
         <button

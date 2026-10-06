@@ -1,6 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { ShiftDto } from '@pb/types';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { ShiftDto, LedgerDto } from '@pb/types';
+import { toast } from 'react-toastify';
 import { apiRequest } from '../api/client.js';
+import { DateDMYInput } from '../components/DateDMYInput.js';
+import { PartyPicker } from '../components/PartyPicker.js';
 
 interface TransBeforeAfterDeclarePageProps {
   shifts?: ShiftDto[];
@@ -41,25 +44,40 @@ const formatTimestamp = (val: string) => {
 };
 
 export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePageProps> = ({ shifts = [], onNavigate }) => {
-  const [shiftId, setShiftId] = useState(shifts[0]?.id ? String(shifts[0].id) : '');
+  // Live: the page opens on "-- ALL SHIFT --"; Search then asks for a real shift
+  const [shiftId, setShiftId] = useState('');
   const [date, setDate] = useState(todayInputDate());
   const [mode, setMode] = useState<'BEFORE' | 'AFTER'>('BEFORE');
   const [partySearch, setPartySearch] = useState('');
+  // Party the table is narrowed to — taken from the box on Search (live: typing alone doesn't filter)
+  const [appliedParty, setAppliedParty] = useState('');
   const [rows, setRows] = useState<TransRow[]>([]);
   const [totals, setTotals] = useState({ saleBefore: 0, saleAfter: 0, saleDiff: 0, plBefore: 0, plAfter: 0, plDiff: 0 });
   const [loading, setLoading] = useState(false);
   const [viewingId, setViewingId] = useState<number | null>(null);
   const [viewEntries, setViewEntries] = useState<EntryRow[]>([]);
 
-  useEffect(() => {
-    if (!shiftId && shifts.length > 0) setShiftId(String(shifts[0].id));
-  }, [shifts]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Only active shifts are offered (as on live) — a shift switched off on Shift Manage's
+  // Enable/Disable tab isn't listed. Falls back to the full list if none is active.
+  const activeShifts = useMemo(() => {
+    const active = shifts.filter(s => s.isActive !== false);
+    return active.length > 0 ? active : shifts;
+  }, [shifts]);
 
-  const fetchList = async () => {
-    if (!shiftId) return;
+  // Parties for the Search Party box (lists names starting with the typed text, as on live)
+  const [parties, setParties] = useState<LedgerDto[]>([]);
+  const partyRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    apiRequest<LedgerDto[]>('/ledgers')
+      .then(res => { if (res.data) setParties(res.data); })
+      .catch(err => console.warn('Failed to load parties:', err));
+  }, []);
+
+  const fetchList = async (forShift: string = shiftId) => {
+    if (!forShift) return;
     setLoading(true);
     try {
-      const params = new URLSearchParams({ shiftId, date, mode });
+      const params = new URLSearchParams({ shiftId: forShift, date, mode });
       const res = await apiRequest<{ rows: TransRow[]; totals: typeof totals }>(`/transactions/before-after-declare?${params.toString()}`);
       if (res.data) {
         setRows(res.data.rows);
@@ -72,16 +90,73 @@ export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePagePr
     }
   };
 
+  // Live flow: the page opens on Shift with an empty table; Enter walks Shift -> DD -> MM ->
+  // YYYY -> Before/After -> Search Party -> Search, and the list loads on Search (Enter, click
+  // or F5) with a spinner on the button. "-- ALL SHIFT --" isn't a shift: Search says so.
+  const [hasSearched, setHasSearched] = useState(false);
+  const focusById = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
+  const enterTo = (id: string) => (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    focusById(id);
+  };
   useEffect(() => {
+    focusById('tbad-shift');
+  }, []);
+
+  const handleSearch = () => {
+    if (loading) return;
+    if (!shiftId) {
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Message</div>
+          <div className="text-sm mt-0.5">Please choose a valid shift!</div>
+        </div>,
+        { toastId: 'tbad-no-shift' }
+      );
+      focusById('tbad-shift');
+      return;
+    }
+    setHasSearched(true);
+    setAppliedParty(partySearch);
     fetchList();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shiftId, date, mode]);
+  };
+
+  // Live: picking a shift loads its list straight away (then Enter carries on to the date)
+  const handleShiftChange = (value: string) => {
+    setShiftId(value);
+    if (!value) return;
+    setHasSearched(true);
+    setAppliedParty(partySearch);
+    fetchList(value);
+  };
+  const searchRef = useRef(handleSearch);
+  searchRef.current = handleSearch;
+
+  // F5 = Search (instead of reloading the page), F3 = Jantri View — as the button labels say
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'F5') {
+        e.preventDefault();
+        searchRef.current();
+      } else if (e.key === 'F3') {
+        e.preventDefault();
+        onNavigate && onNavigate('jantri');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onNavigate]);
 
   const filteredRows = useMemo(() => {
-    if (!partySearch.trim()) return rows;
-    const term = partySearch.trim().toLowerCase();
+    if (!appliedParty.trim()) return rows;
+    const term = appliedParty.trim().toLowerCase();
     return rows.filter(r => r.partyName.toLowerCase().includes(term));
-  }, [rows, partySearch]);
+  }, [rows, appliedParty]);
 
   const handleView = async (id: number) => {
     setViewingId(id);
@@ -101,25 +176,32 @@ export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePagePr
       <div className="bg-white rounded-md shadow-sm border border-slate-300 p-2.5 flex flex-wrap items-center gap-2.5">
         <span className="font-bold text-sm text-slate-900 tracking-tight mr-1">Trans Before-After Declare</span>
         <span className="text-slate-600 font-medium">Shift</span>
-        <select value={shiftId} onChange={(e) => setShiftId(e.target.value)} className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 uppercase">
+        <select id="tbad-shift" value={shiftId} onChange={(e) => handleShiftChange(e.target.value)} onKeyDown={enterTo('tbad-date-dd')} className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 min-w-36">
           <option value="">-- ALL SHIFT --</option>
-          {shifts.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          {activeShifts.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
         </select>
         <span className="text-slate-600 font-medium">Date</span>
-        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800" />
-        <select value={mode} onChange={(e) => setMode(e.target.value as 'BEFORE' | 'AFTER')} className="px-3 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900">
+        <DateDMYInput value={date} onChange={setDate} idPrefix="tbad-date" separator="-" onEnterFromYear={() => focusById('tbad-mode')} />
+        <select id="tbad-mode" value={mode} onChange={(e) => setMode(e.target.value as 'BEFORE' | 'AFTER')} onKeyDown={(e) => { if (e.key !== 'Enter') return; e.preventDefault(); partyRef.current?.focus(); partyRef.current?.select(); }} className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300">
           <option value="BEFORE">Before Declare</option>
           <option value="AFTER">After Declare</option>
         </select>
-        <input
-          type="text"
-          value={partySearch}
-          onChange={(e) => setPartySearch(e.target.value)}
-          placeholder="Search party..."
-          className="w-44 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-blue-500"
-        />
-        <button type="button" onClick={fetchList} className="px-4 py-1 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs">
+        <div className="w-56">
+          <PartyPicker
+            parties={parties}
+            value={partySearch}
+            onChange={setPartySearch}
+            onPick={(p) => { setPartySearch(p.partyName); focusById('tbad-search-btn'); }}
+            onInvalid={() => focusById('tbad-search-btn')}
+            inputRef={partyRef}
+            placeholder="SEARCH PARTY..."
+            className="w-full px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase placeholder:text-slate-300 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
+          />
+        </div>
+        <button id="tbad-search-btn" type="button" onClick={handleSearch} disabled={loading} className="px-4 py-1 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5">
           Search (F5)
+          {/* Spinner while the list loads, as on live */}
+          {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
         </button>
       </div>
 
@@ -142,6 +224,8 @@ export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePagePr
               <tbody className="divide-y divide-slate-200 font-sans text-xs whitespace-nowrap">
                 {loading ? (
                   <tr><td colSpan={8} className="py-14 text-center text-slate-400 font-medium">Loading...</td></tr>
+                ) : !hasSearched ? (
+                  null /* live: just the header + 0 total row until a Search */
                 ) : filteredRows.length === 0 ? (
                   <tr><td colSpan={8} className="py-14 text-center text-slate-400 font-medium">No records found for this filter.</td></tr>
                 ) : (
@@ -169,15 +253,20 @@ export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePagePr
                   ))
                 )}
               </tbody>
-              {filteredRows.length > 0 && (
-                <tfoot>
-                  <tr className="bg-[#152847] text-white font-bold text-[11px]">
-                    <td colSpan={4} className="py-2 px-3 border-r border-[#223b63]">Total ({filteredRows.length})</td>
-                    <td className="py-2 px-3 text-right font-mono border-r border-[#223b63]">{fmt(totalAmount)}</td>
-                    <td colSpan={3} className="py-2 px-3"></td>
-                  </tr>
-                </tfoot>
-              )}
+              {/* Live keeps this total row under the header at all times: count, then the amount
+                  total (0 / 0 before a Search or when nothing is found) */}
+              <tfoot className="sticky bottom-0">
+                <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
+                  <td className="py-2 px-3 border-r border-[#223b63] text-center">{filteredRows.length}</td>
+                  <td className="py-2 px-3 border-r border-[#223b63] text-center">D</td>
+                  <td className="py-2 px-3 border-r border-[#223b63]">Party</td>
+                  <td className="py-2 px-3 border-r border-[#223b63]">Rate</td>
+                  <td className="py-2 px-3 text-right font-mono border-r border-[#223b63]">{fmt(totalAmount)}</td>
+                  <td className="py-2 px-3 border-r border-[#223b63]">Added</td>
+                  <td className="py-2 px-3 border-r border-[#223b63]">Updated</td>
+                  <td className="py-2 px-3 text-center">Action</td>
+                </tr>
+              </tfoot>
             </table>
           </div>
 

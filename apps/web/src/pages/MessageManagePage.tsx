@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { toast } from 'react-toastify';
 import { apiRequest } from '../api/client.js';
 
 const PAGE_TITLE = 'Message';
@@ -51,6 +52,14 @@ export const MessageManagePage: React.FC = () => {
         method: 'PATCH',
         body: JSON.stringify({ field: FIELD, value: drafts[roleId] ?? '' }),
       });
+      // Live: a green Success toast confirms the save
+      toast.success(
+        <div>
+          <div className="font-bold text-base">Success</div>
+          <div className="text-sm mt-0.5">Role Message has been updated successfully!</div>
+        </div>,
+        { toastId: `role-msg-updated-${roleId}-${Date.now()}` }
+      );
       fetchList();
     } catch (err: any) {
       alert(err.message || 'Failed to update message');

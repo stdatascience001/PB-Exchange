@@ -172,7 +172,10 @@ export const CompanyCalculationPage: React.FC<CompanyCalculationPageProps> = ({ 
   const fetchJantri = async (shiftId: number, date: string) => {
     setLoading(true);
     try {
-      const res = await apiRequest<JantriViewDto>(`/jantri/${shiftId}?date=${encodeURIComponent(date)}`);
+      // Live MAIN JANTRI - DEFAULT is the book's NET jantri (after each party's Commission /
+      // Hissa / Kat), not the raw sale: DELHI BAZAAR reads 440,400 against a raw 844,195 and a
+      // Dashboard net of 445,265. Same net figures as the Jantri page.
+      const res = await apiRequest<JantriViewDto>(`/jantri/${shiftId}/net?date=${encodeURIComponent(date)}&gate=none`);
       setData(res.data || null);
       setEditValues({});
     } catch (err: any) {
@@ -213,11 +216,21 @@ export const CompanyCalculationPage: React.FC<CompanyCalculationPageProps> = ({ 
     return map;
   }, [data]);
 
-  // DEFAULT: the shift's jantri exactly as booked for that date.
+  // DEFAULT: the shift's net jantri for that date, as the live page shows it — every number
+  // rounded UP to whole 50s (live HYDRABAD NIGHT: Jantri 360 -> 400, 720 -> 750, M-Total
+  // 1,150) and the B / A haruf rows empty (live leaves them blank in all four panels).
+  // Akh (haruf) is spread over its ten numbers first: Andar d over d0..d9 (9999 -> 90..99)
+  // and Bahar d over 0d..9d (888 -> 8, 18 .. 98), a tenth each — live: 2000 net 1,440 on
+  // 888 puts 144 -> 150 on each of 8..98, and 98 with both reads 288 -> 300.
   const getDefault = (key: CellKey): number => {
-    if (typeof key === 'number') return gridByNumber.get(numKey(key)) || 0;
-    const h = harufByDigit.get(key.slice(1));
-    return key[0] === 'A' ? h?.a || 0 : h?.b || 0;
+    if (typeof key === 'number') {
+      const k = numKey(key);
+      const akh = (harufByDigit.get(k[0])?.a || 0) / 10 + (harufByDigit.get(k[1])?.b || 0) / 10;
+      const net = (gridByNumber.get(k) || 0) + akh;
+      // a hair of float noise (e.g. 360.0000001) must not push a whole 50 up a step
+      return net > 0 ? Math.ceil(Math.round(net * 100) / 100 / 50) * 50 : 0;
+    }
+    return 0;
   };
 
   // AMT LESS takes a flat amount off every cell that has a sale, % LESS then trims by percent.
@@ -236,14 +249,21 @@ export const CompanyCalculationPage: React.FC<CompanyCalculationPageProps> = ({ 
 
   const getDifference = (key: CellKey) => getEdit(key) - getDefault(key);
 
-  // Company rates straight from the shift's Company Config tab (Shift Manage).
-  const cfg = {
-    dRate: Number(selectedShift?.companyDRate) || 0,
-    aRate: Number(selectedShift?.companyARate) || 0,
-    dComm: Number(selectedShift?.companyDComm) || 0,
-    aComm: Number(selectedShift?.companyAComm) || 0,
-    share: Number(selectedShift?.companyTax) || 0,
-  };
+  // Company rates straight from the shift's Company Config tab (Shift Manage). A shift with
+  // no Company Config at all uses the live page's own rates: every live shift's P&L reads
+  //   P&L(n) = 0.45 x M-Total - 45 x amount(n)   (JAI LUXMI 0.45x25700 - 45x400 = -6435)
+  // which is D-Rate 90, D-Comm 10% and a 50% share in the formula below.
+  const cfgSet = [selectedShift?.companyDRate, selectedShift?.companyARate, selectedShift?.companyDComm,
+    selectedShift?.companyAComm, selectedShift?.companyTax].some(v => Number(v) > 0);
+  const cfg = cfgSet
+    ? {
+        dRate: Number(selectedShift?.companyDRate) || 0,
+        aRate: Number(selectedShift?.companyARate) || 0,
+        dComm: Number(selectedShift?.companyDComm) || 0,
+        aComm: Number(selectedShift?.companyAComm) || 0,
+        share: Number(selectedShift?.companyTax) || 0,
+      }
+    : { dRate: 90, aRate: 9, dComm: 10, aComm: 10, share: 50 };
 
   // Profit & Loss for every number, computed from the EDIT MODE jantri:
   //   SALE   = DAHI (numbers) + AKH (haruf)
@@ -286,11 +306,30 @@ export const CompanyCalculationPage: React.FC<CompanyCalculationPageProps> = ({ 
 
   const getProfitLoss = (key: CellKey) => (typeof key === 'number' ? pnl[key - 1]?.result || 0 : 0);
 
-  // SALE ASC: numbers that have a sale, with their P&L; the arrow flips the order.
+  // SALE ASC (live): every number with a sale — its RAW sale (as booked, before commission /
+  // hissa) and the book's P&L if it comes: the payout after each party's Hissa less the net
+  // total. Live HYDRABAD NIGHT: 5 -> 1000 / 70,920 and 1 -> 500 / 34,920. Falls back to the
+  // Edit-mode figures for an API that doesn't send these yet. The arrow flips the order.
+  // Akh rows (live): Andar d as "dddd" (9999), Bahar d as "ddd" (888), with their raw sale
+  // and P&L 0.
   const saleRows = useMemo(() => {
-    const rows = pnl.filter(p => p.oDahi > 0).map(p => ({ n: p.n, sale: p.oDahi, pl: p.result }));
-    return rows.sort((a, b) => (saleDesc ? b.sale - a.sale : a.sale - b.sale) || a.n - b.n);
-  }, [pnl, saleDesc]);
+    const rawSale = data?.rawSale;
+    const payout = data?.hissaPayout;
+    type SaleRow = { key: string; label: string; order: number; sale: number; pl: number };
+    let rows: SaleRow[];
+    if (rawSale && payout) {
+      rows = Array.from({ length: 100 }, (_, i) => i + 1)
+        .map(n => ({ key: String(n), label: String(n), order: n, sale: rawSale[numKey(n)] || 0, pl: Math.round((payout[numKey(n)] || 0) - (data?.totalCollected || 0)) }));
+      for (const d of HARUF_DIGITS) {
+        rows.push({ key: `A${d}`, label: String(d).repeat(4), order: -200 + d, sale: rawSale[`A_${d}`] || 0, pl: 0 });
+        rows.push({ key: `B${d}`, label: String(d).repeat(3), order: -100 + d, sale: rawSale[`B_${d}`] || 0, pl: 0 });
+      }
+      rows = rows.filter(r => r.sale > 0);
+    } else {
+      rows = pnl.filter(p => p.oDahi > 0).map(p => ({ key: String(p.n), label: String(p.n), order: p.n, sale: p.oDahi, pl: p.result }));
+    }
+    return rows.sort((a, b) => (saleDesc ? b.sale - a.sale : a.sale - b.sale) || a.order - b.order);
+  }, [pnl, saleDesc, data]);
 
   const tabBtn = (key: 'main' | 'pnl', label: string) => (
     <button
@@ -389,8 +428,8 @@ export const CompanyCalculationPage: React.FC<CompanyCalculationPageProps> = ({ 
                   <div className="py-6 text-center text-slate-400">No data</div>
                 ) : (
                   saleRows.map(r => (
-                    <div key={r.n} className="grid grid-cols-[3rem_1fr] text-[10px]">
-                      <div className="py-1 text-center font-mono font-bold text-slate-800 border-r border-slate-200 self-center">{r.n}</div>
+                    <div key={r.key} className="grid grid-cols-[3rem_1fr] text-[10px]">
+                      <div className="py-1 text-center font-mono font-bold text-slate-800 border-r border-slate-200 self-center">{r.label}</div>
                       <div className="text-right px-1.5">
                         <div className="font-mono font-bold text-slate-900">{fmt(r.sale)}</div>
                         <div className={`font-mono text-[8px] ${r.pl < 0 ? 'text-red-600' : 'text-slate-500'}`}>{fmt(r.pl)}</div>

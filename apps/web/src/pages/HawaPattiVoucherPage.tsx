@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { X, Edit2 } from 'lucide-react';
 import { AutoHawaPattiModal } from '../components/AutoHawaPattiModal.js';
+import { DateDMYInput } from '../components/DateDMYInput.js';
+import { PartyPicker } from '../components/PartyPicker.js';
 
 const VOUCHER_TYPE = 'HAWA_PATTI';
 const PAGE_TITLE = 'Hawa Patti Voucher';
@@ -112,6 +114,18 @@ export const HawaPattiVoucherPage: React.FC = () => {
     fetchParties();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromDate, toDate]);
+
+  // Live keyboard flow on the filter bar: the page opens with the cursor on From's day; Enter
+  // walks From DD -> MM -> YYYY -> To DD -> MM -> YYYY -> Party (the list filters as you type).
+  const focusFilter = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    el?.select();
+  };
+  useEffect(() => {
+    focusFilter('hpv-fromDate-dd');
+  }, []);
+  const filterPartyRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -247,33 +261,30 @@ export const HawaPattiVoucherPage: React.FC = () => {
 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">From</span>
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800"
-            />
+            <DateDMYInput value={fromDate} onChange={setFromDate} idPrefix="hpv-fromDate" separator="-" onEnterFromYear={() => focusFilter('hpv-toDate-dd')} />
           </div>
 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">To</span>
-            <input
-              type="date"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800"
-            />
+            <DateDMYInput value={toDate} onChange={setToDate} idPrefix="hpv-toDate" separator="-" onEnterFromYear={() => filterPartyRef.current?.focus()} />
           </div>
 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">Party</span>
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder=""
-              className="w-40 sm:w-56 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500 shadow-xs"
-            />
+            {/* Typing lists the parties whose name starts with it (live: DK -> DK ROHIT PAYMENT,
+                DK ROHIT 20% …); arrows move, Enter / click picks. The list below filters on
+                whatever is typed, as before. */}
+            <div className="w-40 sm:w-56">
+              <PartyPicker
+                parties={parties}
+                value={search}
+                onChange={setSearch}
+                onPick={(p) => setSearch(p.partyName)}
+                onInvalid={() => {}}
+                inputRef={filterPartyRef}
+                className="w-full px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:bg-[#fde68a] shadow-xs"
+              />
+            </div>
           </div>
 
           <button
@@ -429,13 +440,7 @@ export const HawaPattiVoucherPage: React.FC = () => {
 
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">Voucher Date</label>
-                  <input
-                    type="date"
-                    required
-                    value={voucherDate}
-                    onChange={(e) => setVoucherDate(e.target.value)}
-                    className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500"
-                  />
+                  <DateDMYInput value={voucherDate} onChange={setVoucherDate} idPrefix="hpv-voucherDate" separator="-" />
                 </div>
               </div>
 

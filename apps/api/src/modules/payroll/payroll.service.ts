@@ -19,8 +19,8 @@ function monthRange(month: string): { fromDate: string; toDate: string; tDays: n
 
 export class PayrollService {
   // Derived report — no persistence. "Attendance" = distinct days with >=1 transaction,
-  // "Count" = sum of transactions.totalAmount, both reusing the exact aggregate style
-  // already validated in TransactionService.getProductivityReport. Paid/UnPaid come from
+  // "Count" = number of slips (transactions) the staff entered in the range — live shows
+  // e.g. 133 / 21 for a day, a slip count, not the amount total. Paid/UnPaid come from
   // real staff_leaves rows; Absent is whatever's left over.
   static async getStaffAttendanceReport(filters: { fromDate: string; toDate: string }) {
     const days = daysBetweenInclusive(filters.fromDate, filters.toDate);
@@ -30,7 +30,7 @@ export class PayrollService {
     const txRows = await db.select({
       userId: transactions.createdBy,
       distinctDays: sql<number>`COUNT(DISTINCT ${transactions.createdAt}::date)::int`,
-      tCount: sql<string>`COALESCE(SUM(${transactions.totalAmount}), 0)`,
+      tCount: sql<string>`COUNT(*)`,
     })
       .from(transactions)
       .where(and(

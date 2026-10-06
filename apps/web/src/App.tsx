@@ -150,9 +150,15 @@ const PATH_TO_PAGE: Record<string, string> = {
   '/rpt_outstanding': 'outstanding-report',
   '/rpt_agent_outstanding': 'outstanding-report',
   '/rpt_hawapatti': 'hawapatti-rpt',
+  // Live panel's own address for this report
+  '/rpt_hawa_patti': 'hawapatti-rpt',
   '/rpt_vapsi': 'vapsi-report',
   '/rpt_cash': 'cash-report',
+  // Live panel's own address for this report
+  '/rpt_cash_agent': 'cash-report',
   '/rpt_voucher_list': 'voucher-list-report',
+  // Live panel's own address for this report
+  '/rpt_admin_cash_voucher_list_only': 'voucher-list-report',
   '/rpt_settlement': 'settlement',
   '/process_hvs': 'hvs-process',
   '/rpt_settlement_agent_group': 'settlement-agent-group',
@@ -270,6 +276,13 @@ export const getRouteInfo = (): RouteInfo => {
     return { page: 'transaction-edit', param: txEditMatch[1], param2: txEditMatch[2] };
   }
 
+  // Match /transaction_list/:shiftId — Live Transactions opened on that shift (the slip
+  // entry page's back arrow comes back here on the shift it was entering)
+  const txListMatch = pathname.match(/^\/transaction[-_]list\/([^\/]+)$/);
+  if (txListMatch) {
+    return { page: 'transaction-list', param: txListMatch[1] };
+  }
+
   // Match /transaction_add/:id or /transaction-add/:id
   const txAddMatch = pathname.match(/^\/transaction[-_]add(?:\/([^\/]+))?$/);
   if (txAddMatch) {
@@ -299,6 +312,8 @@ export const App: React.FC = () => {
     if (page === 'transaction-add') {
       targetPath = param ? `/transaction_add/${param}` : '/transaction_add';
     }
+    // transaction-list keeps its plain /transaction_list URL; the shift id (from the slip
+    // entry page's back arrow) rides along in routeInfo.param only, so the list opens on it
     if (window.location.pathname !== targetPath) {
       window.history.pushState({ page, param }, '', targetPath);
     }
@@ -334,6 +349,9 @@ export const App: React.FC = () => {
     let targetPath = PAGE_TO_PATH[initialRoute.page] || '/dashboard';
     if (initialRoute.page === 'transaction-add') {
       targetPath = initialRoute.param ? `/transaction_add/${initialRoute.param}` : '/transaction_add';
+    }
+    if (initialRoute.page === 'transaction-list' && initialRoute.param) {
+      targetPath = `/transaction_list/${initialRoute.param}`;
     }
     if (currentPath === '' || currentPath === '/') {
       window.history.replaceState({ page: initialRoute.page, param: initialRoute.param }, '', targetPath);
@@ -616,9 +634,11 @@ export const App: React.FC = () => {
 
           {currentPage === 'transaction-list' && (
             <TransactionListPage
+              key={routeInfo.param || 'none'}
               shifts={shifts}
               user={user}
               onNavigate={navigateTo}
+              initialShiftId={routeInfo.page === 'transaction-list' ? routeInfo.param : undefined}
             />
           )}
 

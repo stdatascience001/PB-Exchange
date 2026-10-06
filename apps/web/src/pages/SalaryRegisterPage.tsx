@@ -1,5 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
+import { PartyPicker } from '../components/PartyPicker.js';
 
 interface SalaryRow {
   id: number;
@@ -46,13 +48,40 @@ export const SalaryRegisterPage: React.FC = () => {
     }
   };
 
+  // Staff for the Choose Agent box — typing lists the names that start with the text
+  // (arrows + Enter / click pick one), as on live
+  const [staffList, setStaffList] = useState<{ id: number; fullName: string }[]>([]);
   useEffect(() => {
-    fetchList();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromMonth, fromYear, toMonth, toYear]);
+    apiRequest<{ id: number; fullName: string }[]>('/staff')
+      .then(res => { if (res.data) setStaffList(res.data); })
+      .catch(err => console.warn('Failed to load staff:', err));
+  }, []);
+  const agentOptions = useMemo(
+    () => staffList.filter(s => s.fullName).map(s => ({ id: s.id, partyName: s.fullName }) as unknown as LedgerDto),
+    [staffList]
+  );
+  const agentRef = useRef<HTMLInputElement>(null);
 
-  const handleSearch = (e: React.FormEvent) => {
+  // Live flow: the page opens on From's month with an empty table; Enter walks From Month ->
+  // Year -> To Month -> Year -> Choose Agent -> Search, and the list loads on Search (Enter or
+  // click) with a spinner on the button.
+  const [hasSearched, setHasSearched] = useState(false);
+  const focusById = (id: string) => {
+    (document.getElementById(id) as HTMLElement | null)?.focus();
+  };
+  const enterTo = (id: string) => (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
     e.preventDefault();
+    focusById(id);
+  };
+  useEffect(() => {
+    focusById('salreg-fromMonth');
+  }, []);
+
+  const handleSearch = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (loading) return;
+    setHasSearched(true);
     fetchList();
   };
 
@@ -107,28 +136,35 @@ export const SalaryRegisterPage: React.FC = () => {
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-bold text-sm text-slate-900 tracking-tight mr-2">Salary Register</span>
             <span className="text-slate-600 font-medium">From</span>
-            <select value={fromMonth} onChange={(e) => setFromMonth(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800">
+            <select id="salreg-fromMonth" value={fromMonth} onChange={(e) => setFromMonth(e.target.value)} onKeyDown={enterTo('salreg-fromYear')} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300">
               {CALENDAR_MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
-            <select value={fromYear} onChange={(e) => setFromYear(parseInt(e.target.value, 10))} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800">
+            <select id="salreg-fromYear" value={fromYear} onChange={(e) => setFromYear(parseInt(e.target.value, 10))} onKeyDown={enterTo('salreg-toMonth')} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300">
               {Array.from({ length: 8 }, (_, i) => now.getFullYear() - i).map(y => <option key={y} value={y}>{y}</option>)}
             </select>
             <span className="text-slate-600 font-medium">To</span>
-            <select value={toMonth} onChange={(e) => setToMonth(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800">
+            <select id="salreg-toMonth" value={toMonth} onChange={(e) => setToMonth(e.target.value)} onKeyDown={enterTo('salreg-toYear')} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300">
               {CALENDAR_MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
-            <select value={toYear} onChange={(e) => setToYear(parseInt(e.target.value, 10))} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800">
+            <select id="salreg-toYear" value={toYear} onChange={(e) => setToYear(parseInt(e.target.value, 10))} onKeyDown={(e) => { if (e.key !== 'Enter') return; e.preventDefault(); agentRef.current?.focus(); agentRef.current?.select(); }} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300">
               {Array.from({ length: 8 }, (_, i) => now.getFullYear() - i).map(y => <option key={y} value={y}>{y}</option>)}
             </select>
-            <input
-              type="text"
-              value={agentSearch}
-              onChange={(e) => setAgentSearch(e.target.value)}
-              placeholder="Choose Agent"
-              className="w-40 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-            <button type="submit" className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors">
+            <div className="w-44">
+              <PartyPicker
+                parties={agentOptions}
+                value={agentSearch}
+                onChange={setAgentSearch}
+                onPick={(p) => { setAgentSearch(p.partyName); focusById('salreg-search-btn'); }}
+                onInvalid={() => focusById('salreg-search-btn')}
+                inputRef={agentRef}
+                placeholder="Choose Agent"
+                className="w-full px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 uppercase placeholder:normal-case placeholder:text-slate-400 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
+              />
+            </div>
+            <button id="salreg-search-btn" type="submit" disabled={loading} className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5">
               Search
+              {/* Spinner while the list loads, as on live */}
+              {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
             </button>
           </div>
           <button type="button" onClick={handleExportExcel} className="px-4 py-1 bg-[#15803d] hover:bg-[#166534] active:bg-[#14532d] text-white font-bold text-xs rounded shadow-xs transition-colors">
@@ -154,6 +190,8 @@ export const SalaryRegisterPage: React.FC = () => {
             <tbody className="divide-y divide-slate-200 font-sans text-xs whitespace-nowrap">
               {loading ? (
                 <tr><td colSpan={9} className="py-14 text-center text-slate-400 font-medium">Loading...</td></tr>
+              ) : !hasSearched ? (
+                <tr><td colSpan={9} className="py-14" /></tr>
               ) : rows.length === 0 ? (
                 <tr><td colSpan={9} className="py-14 text-center text-slate-400 font-medium">No salary records found for this filter.</td></tr>
               ) : (

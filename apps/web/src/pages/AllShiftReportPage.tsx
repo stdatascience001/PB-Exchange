@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { apiRequest } from '../api/client.js';
 import { ArrowLeft, ListOrdered } from 'lucide-react';
 import { toast } from 'react-toastify';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 
 interface AllShiftReportPageProps {
   onNavigate?: (page: string) => void;
@@ -130,13 +131,28 @@ export const AllShiftReportPage: React.FC<AllShiftReportPageProps> = ({ onNaviga
     }
   };
 
+  // Live flow: the page opens with the cursor on From's day and an empty table; Enter walks
+  // From DD -> MM -> YYYY -> To DD -> MM -> YYYY -> Agents -> Deal -> Search, and the report
+  // loads on Search (Enter or click) with a spinner on the button.
+  const [hasSearched, setHasSearched] = useState(false);
+  const focusById = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
+  const enterTo = (id: string) => (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    focusById(id);
+  };
   useEffect(() => {
-    fetchReport();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    focusById('allshift-fromDate-dd');
   }, []);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
+    setHasSearched(true);
     fetchReport();
   };
 
@@ -240,21 +256,23 @@ export const AllShiftReportPage: React.FC<AllShiftReportPageProps> = ({ onNaviga
           <button type="button" onClick={() => onNavigate && onNavigate('dashboard')} className="p-1 text-slate-800 hover:bg-slate-100 rounded">
             <ArrowLeft className="w-4 h-4" />
           </button>
-          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800" />
-          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800" />
+          <DateDMYInput value={fromDate} onChange={setFromDate} idPrefix="allshift-fromDate" separator="-" onEnterFromYear={() => focusById('allshift-toDate-dd')} />
+          <DateDMYInput value={toDate} onChange={setToDate} idPrefix="allshift-toDate" separator="-" onEnterFromYear={() => focusById('allshift-agent')} />
 
-          <select value={agentId} onChange={(e) => setAgentId(e.target.value)} className={`${select} min-w-40`}>
+          <select id="allshift-agent" value={agentId} onChange={(e) => setAgentId(e.target.value)} onKeyDown={enterTo('allshift-deal')} className={`${select} min-w-40`}>
             <option value="">ALL AGENTS</option>
             {agents.map(a => <option key={a.id} value={a.id}>{a.agentName}</option>)}
           </select>
 
-          <select value={dealing} onChange={(e) => setDealing(e.target.value)} className={`${select} min-w-40`}>
+          <select id="allshift-deal" value={dealing} onChange={(e) => setDealing(e.target.value)} onKeyDown={enterTo('allshift-search-btn')} className={`${select} min-w-40`}>
             <option value="">ALL DEAL</option>
             {dealOptions.map(d => <option key={d} value={d}>{d}</option>)}
           </select>
 
-          <button type="submit" className="px-12 py-1.5 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors">
+          <button id="allshift-search-btn" type="submit" disabled={loading} className="px-12 py-1.5 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5">
             Search
+            {/* Spinner while the report loads, as on live */}
+            {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
           </button>
 
           <select value={partyStatus} onChange={(e) => setPartyStatus(e.target.value as '' | 'ACTIVE' | 'INACTIVE')} className={`${select} min-w-36`}>
@@ -316,6 +334,8 @@ export const AllShiftReportPage: React.FC<AllShiftReportPageProps> = ({ onNaviga
             <tbody className="font-sans text-xs whitespace-nowrap">
               {loading ? (
                 <tr><td colSpan={MONEY_COLS.length + 9} className="py-14 text-center text-slate-400 font-medium">Loading...</td></tr>
+              ) : !hasSearched ? (
+                <tr><td colSpan={MONEY_COLS.length + 9} className="py-14" /></tr>
               ) : sortedRows.length === 0 ? (
                 <tr><td colSpan={MONEY_COLS.length + 9} className="py-14 text-center text-slate-400 font-medium">No records found for this filter.</td></tr>
               ) : (

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiRequest } from '../api/client.js';
 import { toast } from 'react-toastify';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 
 const PAGE_TITLE = 'Trail Balance Report';
 
@@ -107,8 +108,17 @@ export const TrialBalanceReportPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date]);
 
+  // Live keyboard flow: the page opens with the cursor on the date's day; Enter walks DD ->
+  // MM -> YYYY -> Search, whose Enter loads the list (spinner on the button).
+  useEffect(() => {
+    const el = document.getElementById('trial-date-dd') as HTMLInputElement | null;
+    el?.focus();
+    el?.select();
+  }, []);
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     fetchList();
   };
 
@@ -136,11 +146,12 @@ export const TrialBalanceReportPage: React.FC = () => {
         <form onSubmit={handleSearch} className="p-2 sm:p-2.5 flex flex-wrap items-center gap-4 border-b border-slate-200 bg-white">
           <span className="font-bold text-sm text-slate-700 tracking-tight mx-3">{PAGE_TITLE}</span>
           <span className="text-slate-600 font-semibold text-[11px] ml-4">From</span>
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="px-2 py-1.5 bg-white border border-slate-300 rounded-xs text-xs font-semibold text-slate-800" />
+          <DateDMYInput value={date} onChange={setDate} idPrefix="trial-date" separator="-" onEnterFromYear={() => document.getElementById('trial-search-btn')?.focus()} />
           <button
+            id="trial-search-btn"
             type="submit"
             disabled={loading}
-            className="px-10 py-1.5 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded-xs shadow-xs transition-colors inline-flex items-center gap-1.5 disabled:opacity-90"
+            className="px-10 py-1.5 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded-xs shadow-xs transition-colors inline-flex items-center gap-1.5 disabled:opacity-90 focus:outline-none focus:ring-2 focus:ring-amber-400"
           >
             Search
             {loading && <span className="inline-block w-3.5 h-3.5 border-2 border-white border-r-transparent rounded-full animate-spin" />}

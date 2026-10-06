@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiRequest } from '../api/client.js';
+import { toast } from 'react-toastify';
 
 const PAGE_TITLE = 'Vapsi Report';
 const VOUCHER_TYPE_FILTER: string | undefined = 'VAPSI';
@@ -20,6 +21,18 @@ interface VoucherListItem {
 }
 
 const todayInputDate = () => new Date().toISOString().slice(0, 10);
+
+// Live filter: Month + Year. Months are listed from the current one onwards (October,
+// November … September) and years from 2020 to next year; the report covers that month.
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const NOW = new Date();
+const MONTH_OPTIONS = Array.from({ length: 12 }, (_, i) => (NOW.getMonth() + i) % 12 + 1);
+const YEAR_OPTIONS = Array.from({ length: NOW.getFullYear() + 1 - 2020 + 1 }, (_, i) => 2020 + i);
+const monthRange = (month: number, year: number) => {
+  const mm = String(month).padStart(2, '0');
+  const last = new Date(year, month, 0).getDate();
+  return { from: `${year}-${mm}-01`, to: `${year}-${mm}-${String(last).padStart(2, '0')}` };
+};
 
 const formatTimestamp = (dateVal?: string) => {
   if (!dateVal) return '-';
@@ -42,8 +55,11 @@ const formatTimestamp = (dateVal?: string) => {
 export const VapsiReportPage: React.FC = () => {
   const [list, setList] = useState<VoucherListItem[]>([]);
   const [loading, setLoading] = useState(false);
-  const [fromDate, setFromDate] = useState('');
-  const [toDate, setToDate] = useState(todayInputDate());
+  // Month / Year pick the report's date range (the API still gets fromDate / toDate); Year
+  // opens on the list's first year (2020), as the live page does
+  const [month, setMonth] = useState(NOW.getMonth() + 1);
+  const [year, setYear] = useState(YEAR_OPTIONS[0]);
+  const { from: fromDate, to: toDate } = monthRange(month, year);
 
   const fetchList = async () => {
     setLoading(true);
@@ -54,6 +70,16 @@ export const VapsiReportPage: React.FC = () => {
       if (toDate) params.append('toDate', toDate);
       const res = await apiRequest<VoucherListItem[]>(`/vouchers/manual?${params.toString()}`);
       if (res.data) setList(res.data);
+      // Live: a Search that finds nothing says so in a red Error toast
+      if (!res.data || res.data.length === 0) {
+        toast.error(
+          <div>
+            <div className="font-bold text-base">Error</div>
+            <div className="text-sm mt-0.5">Record not avaliable!</div>
+          </div>,
+          { toastId: 'vapsi-empty' }
+        );
+      }
     } catch (err) {
       console.warn('Failed to load vouchers:', err);
     } finally {
@@ -61,13 +87,25 @@ export const VapsiReportPage: React.FC = () => {
     }
   };
 
+  // Live flow: the page opens on Month with an empty table; Enter walks Month -> Year ->
+  // Search, and the report loads on Search (Enter or click) with a spinner on the button.
+  const [hasSearched, setHasSearched] = useState(false);
+  const focusById = (id: string) => {
+    (document.getElementById(id) as HTMLElement | null)?.focus();
+  };
   useEffect(() => {
-    fetchList();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate]);
+    focusById('vapsi-month');
+  }, []);
+  const enterTo = (id: string) => (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    focusById(id);
+  };
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
+    setHasSearched(true);
     fetchList();
   };
 
@@ -94,10 +132,29 @@ export const VapsiReportPage: React.FC = () => {
         <form onSubmit={handleSearch} className="p-2 sm:p-2.5 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white">
           <div className="flex flex-wrap items-center gap-2.5">
             <span className="font-bold text-sm text-slate-900 tracking-tight mr-2">{PAGE_TITLE}</span>
-            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800" />
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800" />
-            <button type="submit" className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors">
+            <span className="text-slate-600 font-semibold text-[11px] ml-4">Month</span>
+            <select
+              id="vapsi-month"
+              value={month}
+              onChange={(e) => setMonth(parseInt(e.target.value, 10))}
+              onKeyDown={enterTo('vapsi-year')}
+              className="w-32 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 cursor-pointer focus:outline-none focus:bg-[#fde68a]"
+            >
+              {MONTH_OPTIONS.map(m => <option key={m} value={m}>{MONTH_NAMES[m - 1]}</option>)}
+            </select>
+            <select
+              id="vapsi-year"
+              value={year}
+              onChange={(e) => setYear(parseInt(e.target.value, 10))}
+              onKeyDown={enterTo('vapsi-search-btn')}
+              className="w-32 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 cursor-pointer focus:outline-none focus:bg-[#fde68a]"
+            >
+              {YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+            <button id="vapsi-search-btn" type="submit" disabled={loading} className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5">
               Search
+              {/* Spinner while the report loads, as on live */}
+              {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
             </button>
           </div>
           <button type="button" onClick={handleExportExcel} className="px-4 py-1 bg-[#15803d] hover:bg-[#166534] active:bg-[#14532d] text-white font-bold text-xs rounded shadow-xs transition-colors">
@@ -124,6 +181,8 @@ export const VapsiReportPage: React.FC = () => {
             <tbody className="divide-y divide-slate-200 font-sans text-xs whitespace-nowrap">
               {loading ? (
                 <tr><td colSpan={10} className="py-14 text-center text-slate-400 font-medium">Loading...</td></tr>
+              ) : !hasSearched ? (
+                <tr><td colSpan={10} className="py-14" /></tr>
               ) : list.length === 0 ? (
                 <tr><td colSpan={10} className="py-14 text-center text-slate-400 font-medium">No records found for this filter.</td></tr>
               ) : (

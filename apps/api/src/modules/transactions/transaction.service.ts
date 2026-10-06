@@ -257,6 +257,8 @@ export class TransactionService {
           eq(transactions.shiftId, shiftId),
           eq(transactions.partyId, partyId),
           ne(transactions.id, transactionId),
+          // a deleted slip is never the "original" of a new one
+          ne(transactions.status, 'VOIDED'),
           gte(transactions.createdAt, fifteenMinAgo)
         )
       ).limit(5);
@@ -796,7 +798,8 @@ export class TransactionService {
   }) {
     const conditions = [
       eq(transactions.shiftId, filters.shiftId),
-      eq(transactions.status, 'ACTIVE'),
+      // every slip that isn't deleted — a duplicate-flagged slip still counts (as on live)
+      ne(transactions.status, 'VOIDED'),
       sql`${transactions.createdAt}::date = ${filters.date}::date`,
     ];
     if (filters.partyIds && filters.partyIds.length > 0) {
@@ -822,23 +825,21 @@ export class TransactionService {
       const partyById = new Map(partyRows.map(p => [p.id, p]));
       const partyByTx = new Map(txRows.map(t => [t.id, t.partyId]));
 
-      // Hissa given to OTHER ledgers through the party's Hissa Party rows (Ledger Update →
-      // Hissa, the O-Hissa of Transaction ASC). Live: DK ROHIT 50% ("50 | HP A/C") reads 200 →
-      // 100 once Hissa is ticked, while DK ROHIT 20% ("20 | DK ROHIT 20%", its own ledger)
-      // keeps its 100 — so a row naming the party itself is not taken off.
-      const otherHissaByParty = new Map<number, number>();
+      // Hissa = every Hissa Party row of the party (Ledger Update → Hissa), each taken off in
+      // turn, the same way the net Jantri does. Live HYDRABAD NIGHT 06-10, Hissa ticked:
+      // DK ROHIT 20% ("20 | DK ROHIT 20%", its own ledger) 1000 -> 800, and DK ROHIT 50%
+      // ("50 | HP A/C") 2000 -> 1000.
+      const hissaLinkFactorByParty = new Map<number, number>();
       if (filters.hissa) {
         const hissaLinks = await db.select({
           ledgerId: ledgerThirdPartyLinks.ledgerId,
-          partyName: ledgerThirdPartyLinks.partyName,
           percent: ledgerThirdPartyLinks.percent,
         })
           .from(ledgerThirdPartyLinks)
           .where(and(eq(ledgerThirdPartyLinks.linkType, 'HISSA'), inArray(ledgerThirdPartyLinks.ledgerId, partyIds)));
         for (const l of hissaLinks) {
-          const ownName = (partyById.get(l.ledgerId)?.partyName || '').trim().toUpperCase();
-          if ((l.partyName || '').trim().toUpperCase() === ownName) continue;
-          otherHissaByParty.set(l.ledgerId, (otherHissaByParty.get(l.ledgerId) || 0) + (parseFloat(l.percent) || 0));
+          const prev = hissaLinkFactorByParty.get(l.ledgerId) ?? 1;
+          hissaLinkFactorByParty.set(l.ledgerId, prev * (1 - (parseFloat(l.percent) || 0) / 100));
         }
       }
 
@@ -856,28 +857,31 @@ export class TransactionService {
         let amt = parseFloat(e.amount);
         const isHaruf = e.entryType === 'HARUF_ANDAR' || e.entryType === 'HARUF_BAHAR';
 
-        // Commission is deliberately NOT deducted from these cells. The live Collection page
-        // leaves the grid at 200 with Commission ticked, and 200 with it clear — and those
-        // parties are NOT on 0% commission: the same shift's dashboard card reads 200 / 117,
-        // which only solves with both of them at 10% commission
-        //   (100 * 0.9 * 1.0 own-hissa * 0.8 HP-link = 72) + (100 * 0.9 * 0.5 own-hissa = 45) = 117
-        // and that same party config is what makes the live grid read 2 -> 50, 3 -> 100 once
-        // Hissa is ticked. So the toggle demonstrably does not touch the collected amounts.
-        // Deducting it here was the one figure that disagreed with the live page (local showed
-        // 180 against the live 200).
-        //
-        // What it does instead is not yet known — every live sample is a Dara-only book, so an
-        // Akhar-side effect can't be ruled out. The flag stays plumbed end to end so the rule
-        // can be dropped in here once a case with Akhar entries pins it down.
-        void filters.commission;
-        if (filters.akhMix && isHaruf && party) {
-          const akharRate = parseFloat(party.akharRate) || 0;
-          const akharComm = 100 - akharRate * 10;
-          amt = amt * (1 - akharComm / 100);
+        // Commission takes the party's own commission % off its amounts. Live HYDRABAD NIGHT
+        // 06-10 (both parties at 10%), Commission ticked: 1000 -> 900, 2000 -> 1800, book
+        // 11,000 -> 9,900. With Hissa as well the two apply one after the other:
+        // 1000 x 0.9 x 0.8 = 720 and 2000 x 0.9 x 0.5 = 900 (cells then rounded, see below).
+        if (filters.commission && party) {
+          const commPct = parseFloat(party.commissionRate) || 0;
+          amt = amt * Math.max(0, 1 - commPct / 100);
         }
         if (filters.hissa && party) {
-          const hissaPct = (parseFloat(party.hissaPercentage) || 0) + (otherHissaByParty.get(party.id) || 0);
-          amt = amt * Math.max(0, 1 - hissaPct / 100);
+          const hissaPct = parseFloat(party.hissaPercentage) || 0;
+          const linkFactor = hissaLinkFactorByParty.get(party.id) ?? 1;
+          amt = amt * Math.max(0, 1 - hissaPct / 100) * linkFactor;
+        }
+
+        // Akh-Mix (live): every Andar / Bahar amount is mixed into its ten numbers, a tenth
+        // each — Andar d over d0..d9, Bahar d over 0d..9d — and the B / A rows read 0.
+        // Live HYDRABAD NIGHT 06-10: B8 2000 -> 200 on 8, 18 .. 98; A9 2000 -> 200 on 90..99
+        // (98 with both = 400); A2 100 -> 10 on 20..29, shown 50 (cells round up, below).
+        if (filters.akhMix && isHaruf) {
+          const digit = String(e.numberValue).trim().slice(-1);
+          for (let o = 0; o < 10; o++) {
+            const numKey = e.entryType === 'HARUF_ANDAR' ? `${digit}${o}` : `${o}${digit}`;
+            hash[numKey] = (hash[numKey] || 0) + amt / 10;
+          }
+          continue;
         }
 
         const key = e.entryType === 'HARUF_ANDAR'
@@ -892,8 +896,13 @@ export class TransactionService {
     // Amt-Less/Less-% apply once per aggregated cell (flat subtract, then percent) — the same
     // order already validated against the live report earlier, now moved server-side so the
     // filtered result comes straight from the database on Submit, not a client recompute.
+    // With Commission and/or Hissa taken off, or Akh mixed in, each cell shows in whole 50s
+    // rounded up, as on live: 720 -> 750 (Commission + Hissa on DK ROHIT 20%), book 6,450;
+    // Akh-Mix 210 -> 250, book 9,100 -> 9,500. An untouched book keeps its exact amounts.
+    const deducted = !!(filters.commission || filters.hissa || filters.akhMix);
+    const roundUp50 = (v: number) => (v > 0 ? Math.ceil(Math.round(v * 100) / 100 / 50) * 50 : 0);
     const applyLess = (raw: number): number => {
-      let amt = raw;
+      let amt = deducted ? roundUp50(raw) : raw;
       if (filters.amtLess && filters.amtLess > 0) amt = Math.max(0, amt - filters.amtLess);
       if (filters.lessPercent && filters.lessPercent > 0) amt = amt * (1 - filters.lessPercent / 100);
       return amt;

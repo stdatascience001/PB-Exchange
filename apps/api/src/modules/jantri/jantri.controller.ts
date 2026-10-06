@@ -30,8 +30,11 @@ export class JantriController {
     try {
       const shiftId = parseInt(req.params.shiftId as string, 10);
       const date = req.query.date as string | undefined;
-      // Jantri page only (the sole caller of /net): closed until the shift's Main Jantri Time
-      await JantriService.assertJantriOpen(shiftId, date, req.user?.roleName);
+      // Jantri page: closed until the shift's Main Jantri Time. Company Calculation reads the
+      // same net figures with ?gate=none and stays open at any time, as it always was.
+      if (req.query.gate !== 'none') {
+        await JantriService.assertJantriOpen(shiftId, date, req.user?.roleName);
+      }
       const data = await JantriService.getNetJantriView(shiftId, date);
       return sendSuccess(res, data, 'Net Jantri view data loaded');
     } catch (err) {

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { toast } from 'react-toastify';
 import { apiRequest } from '../api/client.js';
 
 interface AttendanceRow {
@@ -30,10 +31,24 @@ export const PayrollAttendancePage: React.FC = () => {
 
   const monthKey = () => `${year}-${String(CALENDAR_MONTHS.indexOf(month) + 1).padStart(2, '0')}`;
 
-  const fetchList = async () => {
+  const [hasSearched, setHasSearched] = useState(false);
+  const fetchList = async (fromSearch = false) => {
     setLoading(true);
+    setHasSearched(true);
     try {
       const res = await apiRequest<AttendanceRow[]>(`/payroll/attendance?month=${monthKey()}`);
+      // Live: a Search for a month with no attendance created says so in a red toast
+      if (fromSearch && (!res.data || res.data.length === 0)) {
+        setRows([]);
+        setEdits({});
+        toast.error(
+          <div>
+            <div className="font-bold text-base">Message</div>
+            <div className="text-sm mt-0.5">Attendance not found!</div>
+          </div>,
+          { toastId: 'payatt-not-found' }
+        );
+      }
       if (res.data) {
         setRows(res.data);
         const e: Record<number, { present: number; payLeave: number }> = {};
@@ -47,14 +62,24 @@ export const PayrollAttendancePage: React.FC = () => {
     }
   };
 
+  // Live flow: the page opens on Month with an empty table; Enter walks Month -> Year ->
+  // Search, and the list loads on Search (Enter or click) with a spinner on the button.
+  const focusById = (id: string) => {
+    (document.getElementById(id) as HTMLElement | null)?.focus();
+  };
+  const enterTo = (id: string) => (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    focusById(id);
+  };
   useEffect(() => {
-    fetchList();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [month, year]);
+    focusById('payatt-month');
+  }, []);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    fetchList();
+    if (loading) return;
+    fetchList(true);
   };
 
   const handleCreateAttendance = async () => {
@@ -104,14 +129,16 @@ export const PayrollAttendancePage: React.FC = () => {
       <div className="bg-white rounded-md shadow-sm border border-slate-300 p-2.5 flex flex-wrap items-center gap-2.5">
         <span className="font-bold text-sm text-slate-900 tracking-tight mr-1">Payroll Attendance</span>
         <form onSubmit={handleSearch} className="flex items-center gap-2.5">
-          <select value={month} onChange={(e) => setMonth(e.target.value)} className="px-2 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900">
+          <select id="payatt-month" value={month} onChange={(e) => setMonth(e.target.value)} onKeyDown={enterTo('payatt-year')} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300">
             {CALENDAR_MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
           </select>
-          <select value={year} onChange={(e) => setYear(parseInt(e.target.value, 10))} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900">
+          <select id="payatt-year" value={year} onChange={(e) => setYear(parseInt(e.target.value, 10))} onKeyDown={enterTo('payatt-search-btn')} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300">
             {Array.from({ length: 8 }, (_, i) => now.getFullYear() - i).map(y => <option key={y} value={y}>{y}</option>)}
           </select>
-          <button type="submit" className="px-4 py-1 bg-[#1662c6] hover:bg-[#1354ab] text-white font-bold text-xs rounded shadow-xs">
+          <button id="payatt-search-btn" type="submit" disabled={loading} className="px-4 py-1 bg-[#1662c6] hover:bg-[#1354ab] text-white font-bold text-xs rounded shadow-xs focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5">
             Search
+            {/* Spinner while the list loads, as on live */}
+            {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
           </button>
         </form>
         <button
@@ -142,6 +169,8 @@ export const PayrollAttendancePage: React.FC = () => {
             <tbody className="divide-y divide-slate-200 font-sans text-xs whitespace-nowrap">
               {loading ? (
                 <tr><td colSpan={8} className="py-14 text-center text-slate-400 font-medium">Loading...</td></tr>
+              ) : !hasSearched ? (
+                <tr><td colSpan={8} className="py-14" /></tr>
               ) : rows.length === 0 ? (
                 <tr><td colSpan={8} className="py-14 text-center text-slate-400 font-medium">No attendance for this month yet. Click Create Attendance.</td></tr>
               ) : (

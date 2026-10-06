@@ -54,10 +54,11 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
   const [viewLoading, setViewLoading] = useState(false);
 
   // Report filters, all applied server-side on Submit against each party's own ledger config:
-  // Hissa takes off what each party gives other ledgers through its Hissa Party rows (live: DK
-  // ROHIT 50%, "50 | HP A/C", 200 -> 100), Akh-Mix adjusts the Akhar side, Commission and Dibba
-  // leave the figures as they are (as live shows), and Amt-Less / Less-% take a flat then a
-  // percentage off each cell.
+  // Commission takes each party's commission % off, Hissa each of its Hissa Party rows (one
+  // after the other; live: 1000 -> 900 / 800 / 750 with both), cells then shown in whole 50s
+  // rounded up; Akh-Mix spreads each Andar / Bahar over its ten numbers (a tenth each, B / A
+  // rows then 0), Dibba leaves the figures as they are, and
+  // Amt-Less / Less-% take a flat then a percentage off each cell.
   // Confirmed against the live page: the book reads 200 untouched and with Commission on
   // (both parties sit at 0% commission), and drops to 150 once Hissa is ticked — the 100 on
   // number 2 halving for the 50%-hissa party while the other party's 100 stays put.

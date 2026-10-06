@@ -436,6 +436,24 @@ export const LedgersPage: React.FC = () => {
   const [rcDaraComm, setRcDaraComm] = useState('0');
   const [rcAkharRate, setRcAkharRate] = useState('0');
   const [rcAkharComm, setRcAkharComm] = useState('0');
+  // Re-Config's Commission boxes follow the rates the same way as the New Ledger popup:
+  // Dara Commission = 100 - Dara Rate (90 -> 10), Akhar Commission = 100 - Akhar Rate x 10
+  // (9 -> 10, 10 -> 0). The stored commissionRate is only replaced when Dara Rate is changed.
+  // Re-Config number boxes take digits only (plus one decimal point) — letters / symbols typed
+  // or pasted are dropped as they come in
+  const rcNum = (v: string) => {
+    const cleaned = v.replace(/[^\d.]/g, '');
+    const dot = cleaned.indexOf('.');
+    return dot === -1 ? cleaned : cleaned.slice(0, dot + 1) + cleaned.slice(dot + 1).replace(/\./g, '');
+  };
+  // Rate boxes only take a value in range: Dara Rate 1-100, Akhar Rate 1-10 (so both
+  // Commissions stay within 0-100). A keystroke that would go past the limit, or a leading 0,
+  // is simply not taken — the box keeps what it had.
+  const rcRateOk = (v: string, max: number) =>
+    v === '' || (!/^0/.test(v) && (parseFloat(v) || 0) <= max);
+  const rcCommFromDara = (v: string) => (v.trim() === '' || isNaN(parseFloat(v)) ? '' : String(100 - parseFloat(v)));
+  const rcCommFromAkhar = (v: string) => (v.trim() === '' || isNaN(parseFloat(v)) ? '' : String(100 - parseFloat(v) * 10));
+  const rcLoadedRef = useRef<{ daraRate: string; commissionRate: number }>({ daraRate: '0', commissionRate: 0 });
   const [rcSelfHissa, setRcSelfHissa] = useState('0');
   const [rcCappingAmt, setRcCappingAmt] = useState('0');
   const [rcMasterLedgerConfig, setRcMasterLedgerConfig] = useState(false);
@@ -486,6 +504,7 @@ export const LedgersPage: React.FC = () => {
   const reConfigPartyNames = pickerPartyNames.map(p => p.name);
   // Hissa Party also offers the system "HP A/C" account (Hawa Patti) — it isn't a party in
   // the Ledger list, but a Hissa link to it is what puts a party on Auto Hawa Patti.
+  // 3rd Party Comm and 3rd Party Rebate search the same list, so HP A/C can be picked there too.
   const hissaPartyNames = ['HP A/C', ...reConfigPartyNames.filter(n => n.toUpperCase() !== 'HP A/C')];
 
   const fetchLedgers = async () => {
@@ -713,9 +732,10 @@ export const LedgersPage: React.FC = () => {
         setRenameValue(d.partyName || '');
 
         setRcDaraRate(String(d.daraRate ?? 0));
-        setRcDaraComm(String(d.commissionRate ?? 0));
+        setRcDaraComm(rcCommFromDara(String(d.daraRate ?? 0)));
         setRcAkharRate(String(d.akharRate ?? 0));
-        setRcAkharComm(String(d.commissionRate ?? 0));
+        setRcAkharComm(rcCommFromAkhar(String(d.akharRate ?? 0)));
+        rcLoadedRef.current = { daraRate: String(d.daraRate ?? 0), commissionRate: Number(d.commissionRate ?? 0) };
         setRcSelfHissa(String(d.hissaPercentage ?? 0));
         setRcCappingAmt(String(d.capping ?? 0));
         setRcMasterLedgerConfig(!!d.masterLedgerConfig);
@@ -784,6 +804,7 @@ export const LedgersPage: React.FC = () => {
   // true once saved (the Re-Config Enter flow closes the popup on success)
   const handleSaveReconfig = async (): Promise<boolean> => {
     if (!updateLedgerDetail) return false;
+    if (selfHissaExceeded()) return false;
     setRcSaving(true);
     try {
       await apiRequest(`/ledgers/${updateLedgerDetail.id}`, {
@@ -791,7 +812,11 @@ export const LedgersPage: React.FC = () => {
         body: JSON.stringify({
           daraRate: parseFloat(rcDaraRate) || 0,
           akharRate: parseFloat(rcAkharRate) || 0,
-          commissionRate: parseFloat(rcDaraComm) || 0,
+          // Dara Rate changed here -> its derived commission (as New Ledger saves it);
+          // otherwise the ledger's stored commission stays exactly as it was
+          commissionRate: rcDaraRate.trim() !== rcLoadedRef.current.daraRate
+            ? (parseFloat(rcDaraComm) || 0)
+            : rcLoadedRef.current.commissionRate,
           hissaPercentage: parseFloat(rcSelfHissa) || 0,
           capping: parseFloat(rcCappingAmt) || 0,
         }),
@@ -871,7 +896,57 @@ export const LedgersPage: React.FC = () => {
     el?.focus();
     if (el instanceof HTMLInputElement) el.select();
   };
+  // Hissa Party's Percent tops out at 99. Live: "Transfer hissa has been exceeded max limit: 99",
+  // the row stays as typed and the cursor goes back to Hissa Party (text selected).
+  const HISSA_MAX = 99;
+  const hissaPctExceeded = (): boolean => {
+    const pct = parseFloat(newHissaPercent);
+    if (isNaN(pct) || pct <= HISSA_MAX) return false;
+    toast.error(
+      <div>
+        <div className="font-bold text-base">Message</div>
+        <div className="text-sm mt-0.5">Transfer hissa has been exceeded max limit: {HISSA_MAX}</div>
+      </div>,
+      { toastId: 'reconfig-hissa-max' }
+    );
+    focusRc('rc-hissa-party');
+    return true;
+  };
+  // Self Hissa tops out at 99 too. Live: "Please enter total valid hissa max 99% !" with the
+  // cursor back on Self Hissa (value selected); nothing is saved.
+  const selfHissaExceeded = (): boolean => {
+    const pct = parseFloat(rcSelfHissa);
+    if (isNaN(pct) || pct <= HISSA_MAX) return false;
+    toast.error(
+      <div>
+        <div className="font-bold text-base">Message</div>
+        <div className="text-sm mt-0.5">Please enter total valid hissa max {HISSA_MAX}% !</div>
+      </div>,
+      { toastId: 'reconfig-self-hissa-max' }
+    );
+    focusRc('rc-self-hissa');
+    return true;
+  };
   const addHissaLink = () => handleAddLink('HISSA', { partyName: newHissaParty, percent: parseFloat(newHissaPercent) || 0 });
+  // 3rd Party Comm's D-Comm can't pass this ledger's own Dara Commission (100 - Dara Rate,
+  // e.g. Dara 90 -> max 10, Dara 80 -> max 20). Live: "Transfer Dara Percent has been
+  // exceeded. Max Allow: 10" with the cursor back on D-Comm, the typed value selected.
+  const tpcDCommExceeded = (): boolean => {
+    const daraNum = parseFloat(rcDaraRate);
+    const d = parseFloat(newTpcDComm);
+    if (isNaN(daraNum) || isNaN(d)) return false;
+    const maxAllow = 100 - daraNum;
+    if (d <= maxAllow) return false;
+    toast.error(
+      <div>
+        <div className="font-bold text-base">Message</div>
+        <div className="text-sm mt-0.5">Transfer Dara Percent has been exceeded. Max Allow: {maxAllow}</div>
+      </div>,
+      { toastId: 'reconfig-tpc-dara-max' }
+    );
+    focusRc('rc-tpc-d');
+    return true;
+  };
   const addTpcLink = () => handleAddLink('TPC', { partyName: newTpcParty, dComm: parseFloat(newTpcDComm) || 0, aComm: parseFloat(newTpcAComm) || 0 });
   const addTpvLink = () => handleAddLink('TPV', { partyName: newTpvParty, percent: parseFloat(newTpvPercent) || 0 });
   const handleReconfigKeyDown = async (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -883,16 +958,22 @@ export const LedgersPage: React.FC = () => {
       'rc-akhar': 'rc-akhar-comm',
       'rc-akhar-comm': 'rc-self-hissa',
       // Self Hissa -> Save Reconfig (Capping Amt still steps to Save too)
-      'rc-self-hissa': 'rc-save',
       'rc-capping': 'rc-save',
       'rc-hissa-party': 'rc-hissa-pct',
       'rc-tpc-party': 'rc-tpc-d',
-      'rc-tpc-d': 'rc-tpc-a',
       'rc-tpv-party': 'rc-tpv-pct',
     };
     if (nextOf[id]) {
       e.preventDefault();
       focusRc(nextOf[id]);
+    } else if (id === 'rc-self-hissa') {
+      // Self Hissa -> Save Reconfig, unless it's over 99 (message, cursor stays)
+      e.preventDefault();
+      if (!selfHissaExceeded()) focusRc('rc-save');
+    } else if (id === 'rc-tpc-d') {
+      // D-Comm -> A-Comm, unless it's over the Dara Commission (message, cursor stays)
+      e.preventDefault();
+      if (!tpcDCommExceeded()) focusRc('rc-tpc-a');
     } else if (id === 'rc-save') {
       // Enter on Save Reconfig saves and closes the popup (a mouse click does the same)
       e.preventDefault();
@@ -904,6 +985,7 @@ export const LedgersPage: React.FC = () => {
       // then the row is cleared and the cursor goes back to an empty Hissa Party.
       e.preventDefault();
       const empty = !newHissaParty.trim() && !newHissaPercent.trim();
+      if (hissaPctExceeded()) return;
       const added = await addHissaLink();
       if (added) focusRc('rc-hissa-party');
       else if (empty) focusRc('rc-tpc-party');
@@ -923,6 +1005,7 @@ export const LedgersPage: React.FC = () => {
         focusRc('rc-update-hissa');
         return;
       }
+      if (tpcDCommExceeded()) return;
       const added = await addTpcLink();
       if (added) focusRc('rc-tpc-party');
       else {
@@ -1120,6 +1203,31 @@ export const LedgersPage: React.FC = () => {
     }
   };
 
+  // Info tab keyboard flow, as on live: the popup opens with the cursor in Real Name; Enter goes
+  // Real Name -> Grantor/Rmk -> Mobile -> Address -> Save, and Enter on Save saves (the form's
+  // own submit). Every other Info field keeps its Enter as before.
+  const INFO_ENTER_NEXT: Record<string, string> = {
+    'upd-real-name': 'upd-grantor',
+    'upd-grantor': 'upd-mobile',
+    'upd-mobile': 'upd-address',
+    'upd-address': 'upd-save',
+  };
+  const handleInfoKeyDown = (e: React.KeyboardEvent<HTMLFormElement>) => {
+    if (e.key !== 'Enter') return;
+    const nextId = INFO_ENTER_NEXT[(e.target as HTMLElement).id];
+    if (!nextId) return;
+    e.preventDefault();
+    const el = document.getElementById(nextId) as HTMLInputElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
+  const updateDetailLoadedId = updateLedgerDetail?.id;
+  useEffect(() => {
+    if (!showUpdateModal || updateTab !== 'Info' || !updateDetailLoadedId) return;
+    const id = requestAnimationFrame(() => (document.getElementById('upd-real-name') as HTMLInputElement | null)?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [showUpdateModal, updateTab, updateDetailLoadedId]);
+
   const handleSaveUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!updateLedgerDetail) return;
@@ -1155,6 +1263,13 @@ export const LedgersPage: React.FC = () => {
           address: updAddress.trim(),
         }),
       });
+      toast.success(
+        <div>
+          <div className="font-bold text-base">Success</div>
+          <div className="text-sm mt-0.5">Ledger info (Info) has been updated successfully!</div>
+        </div>,
+        { toastId: 'info-saved' }
+      );
       setShowUpdateModal(false);
       fetchLedgers();
     } catch (err: any) {
@@ -1917,23 +2032,23 @@ export const LedgersPage: React.FC = () => {
                 <div className="grid grid-cols-2 sm:grid-cols-6 gap-2.5 items-end">
                   <div>
                     <label className="block text-slate-700 font-medium mb-1">Dara Rate</label>
-                    <input id="rc-dara" type="text" value={rcDaraRate} onChange={(e) => setRcDaraRate(e.target.value)} className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono text-center focus:outline-none focus:bg-[#fde68a]" />
+                    <input id="rc-dara" type="text" value={rcDaraRate} inputMode="decimal" onChange={(e) => { const v = rcNum(e.target.value); if (!rcRateOk(v, 100)) return; setRcDaraRate(v); setRcDaraComm(rcCommFromDara(v)); }} className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono text-center focus:outline-none focus:bg-[#fde68a]" />
                   </div>
                   <div>
                     <label className="block text-slate-700 font-medium mb-1">Commission</label>
-                    <input id="rc-dara-comm" type="text" value={rcDaraComm} onChange={(e) => setRcDaraComm(e.target.value)} className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono text-center focus:outline-none focus:bg-[#fde68a]" />
+                    <input id="rc-dara-comm" type="text" readOnly value={rcDaraComm} className="w-full px-2 py-1.5 bg-slate-50 border border-slate-300 rounded text-xs font-mono text-center text-slate-600 cursor-not-allowed focus:outline-none focus:bg-[#fde68a]" />
                   </div>
                   <div>
                     <label className="block text-slate-700 font-medium mb-1">Akhar Rate</label>
-                    <input id="rc-akhar" type="text" value={rcAkharRate} onChange={(e) => setRcAkharRate(e.target.value)} className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono text-center focus:outline-none focus:bg-[#fde68a]" />
+                    <input id="rc-akhar" type="text" value={rcAkharRate} inputMode="decimal" onChange={(e) => { const v = rcNum(e.target.value); if (!rcRateOk(v, 10)) return; setRcAkharRate(v); setRcAkharComm(rcCommFromAkhar(v)); }} className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono text-center focus:outline-none focus:bg-[#fde68a]" />
                   </div>
                   <div>
                     <label className="block text-slate-700 font-medium mb-1">Commission</label>
-                    <input id="rc-akhar-comm" type="text" value={rcAkharComm} onChange={(e) => setRcAkharComm(e.target.value)} className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono text-center focus:outline-none focus:bg-[#fde68a]" />
+                    <input id="rc-akhar-comm" type="text" readOnly value={rcAkharComm} className="w-full px-2 py-1.5 bg-slate-50 border border-slate-300 rounded text-xs font-mono text-center text-slate-600 cursor-not-allowed focus:outline-none focus:bg-[#fde68a]" />
                   </div>
                   <div>
                     <label className="block text-slate-700 font-medium mb-1">Self Hissa</label>
-                    <input id="rc-self-hissa" type="text" value={rcSelfHissa} onChange={(e) => setRcSelfHissa(e.target.value)} className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono text-center focus:outline-none focus:bg-[#fde68a]" />
+                    <input id="rc-self-hissa" type="text" value={rcSelfHissa} inputMode="decimal" onChange={(e) => setRcSelfHissa(rcNum(e.target.value))} className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono text-center focus:outline-none focus:bg-[#fde68a]" />
                   </div>
                   <button
                     id="rc-save"
@@ -1947,7 +2062,7 @@ export const LedgersPage: React.FC = () => {
                   </button>
                   <div>
                     <label className="block text-slate-700 font-medium mb-1">Capping Amt</label>
-                    <input id="rc-capping" type="text" value={rcCappingAmt} onChange={(e) => setRcCappingAmt(e.target.value)} className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono text-center focus:outline-none focus:bg-[#fde68a]" />
+                    <input id="rc-capping" type="text" value={rcCappingAmt} inputMode="decimal" onChange={(e) => setRcCappingAmt(rcNum(e.target.value))} className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono text-center focus:outline-none focus:bg-[#fde68a]" />
                   </div>
                 </div>
 
@@ -1962,8 +2077,8 @@ export const LedgersPage: React.FC = () => {
                       </div>
                       <div className="grid grid-cols-[1fr_70px_36px] bg-white p-1 gap-1">
                         <PartyNameInput id="rc-hissa-party" fillOnArrow value={newHissaParty} onChange={setNewHissaParty} names={hissaPartyNames} placeholder="PARTY NAME" className="px-1.5 py-1 text-xs border border-slate-300 rounded uppercase focus:outline-none focus:bg-[#fde68a]" />
-                        <input id="rc-hissa-pct" type="text" value={newHissaPercent} onChange={(e) => setNewHissaPercent(e.target.value)} placeholder="%" className="px-1 py-1 text-xs border border-slate-300 rounded text-center focus:outline-none focus:bg-[#fde68a]" />
-                        <button type="button" onClick={async () => { if (await addHissaLink()) focusRc('rc-hissa-party'); }} className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded text-sm">+</button>
+                        <input id="rc-hissa-pct" type="text" value={newHissaPercent} inputMode="decimal" onChange={(e) => setNewHissaPercent(rcNum(e.target.value))} placeholder="%" className="px-1 py-1 text-xs border border-slate-300 rounded text-center focus:outline-none focus:bg-[#fde68a]" />
+                        <button type="button" onClick={async () => { if (hissaPctExceeded()) return; if (await addHissaLink()) focusRc('rc-hissa-party'); }} className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded text-sm">+</button>
                       </div>
                       {/* Self Hissa shows as a baseline row under the party's own name. It is the
                           ledger's own Self Hissa setting, not a link row — its x sets Self Hissa to 0
@@ -1993,10 +2108,10 @@ export const LedgersPage: React.FC = () => {
                         <div>+</div>
                       </div>
                       <div className="grid grid-cols-[1fr_55px_55px_36px] bg-white p-1 gap-1">
-                        <PartyNameInput id="rc-tpc-party" pickOnEmpty={false} fillOnArrow value={newTpcParty} onChange={setNewTpcParty} names={reConfigPartyNames} placeholder="PARTY NAME" className="px-1.5 py-1 text-xs border border-slate-300 rounded uppercase focus:outline-none focus:bg-[#fde68a]" />
-                        <input id="rc-tpc-d" type="text" value={newTpcDComm} onChange={(e) => setNewTpcDComm(e.target.value)} className="px-1 py-1 text-xs border border-slate-300 rounded text-center focus:outline-none focus:bg-[#fde68a]" />
-                        <input id="rc-tpc-a" type="text" value={newTpcAComm} onChange={(e) => setNewTpcAComm(e.target.value)} className="px-1 py-1 text-xs border border-slate-300 rounded text-center focus:outline-none focus:bg-[#fde68a]" />
-                        <button type="button" onClick={() => { addTpcLink(); }} className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded text-sm">+</button>
+                        <PartyNameInput id="rc-tpc-party" pickOnEmpty={false} fillOnArrow value={newTpcParty} onChange={setNewTpcParty} names={hissaPartyNames} placeholder="PARTY NAME" className="px-1.5 py-1 text-xs border border-slate-300 rounded uppercase focus:outline-none focus:bg-[#fde68a]" />
+                        <input id="rc-tpc-d" type="text" value={newTpcDComm} inputMode="decimal" onChange={(e) => setNewTpcDComm(rcNum(e.target.value))} className="px-1 py-1 text-xs border border-slate-300 rounded text-center focus:outline-none focus:bg-[#fde68a]" />
+                        <input id="rc-tpc-a" type="text" value={newTpcAComm} inputMode="decimal" onChange={(e) => setNewTpcAComm(rcNum(e.target.value))} className="px-1 py-1 text-xs border border-slate-300 rounded text-center focus:outline-none focus:bg-[#fde68a]" />
+                        <button type="button" onClick={() => { if (!tpcDCommExceeded()) addTpcLink(); }} className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded text-sm">+</button>
                       </div>
                       {tpcLinks.map(l => (
                         <div key={l.id} className="grid grid-cols-[1fr_55px_55px_36px] border-t border-slate-100 items-center px-1.5 py-1 text-xs">
@@ -2029,8 +2144,8 @@ export const LedgersPage: React.FC = () => {
                       <div>+</div>
                     </div>
                     <div className="grid grid-cols-[1fr_70px_36px] bg-white p-1 gap-1">
-                      <PartyNameInput id="rc-tpv-party" fillOnArrow value={newTpvParty} onChange={setNewTpvParty} names={reConfigPartyNames} placeholder="PARTY NAME" className="px-1.5 py-1 text-xs border border-slate-300 rounded uppercase focus:outline-none focus:bg-[#fde68a]" />
-                      <input id="rc-tpv-pct" type="text" value={newTpvPercent} onChange={(e) => setNewTpvPercent(e.target.value)} placeholder="%" className="px-1 py-1 text-xs border border-slate-300 rounded text-center focus:outline-none focus:bg-[#fde68a]" />
+                      <PartyNameInput id="rc-tpv-party" fillOnArrow value={newTpvParty} onChange={setNewTpvParty} names={hissaPartyNames} placeholder="PARTY NAME" className="px-1.5 py-1 text-xs border border-slate-300 rounded uppercase focus:outline-none focus:bg-[#fde68a]" />
+                      <input id="rc-tpv-pct" type="text" value={newTpvPercent} inputMode="decimal" onChange={(e) => setNewTpvPercent(rcNum(e.target.value))} placeholder="%" className="px-1 py-1 text-xs border border-slate-300 rounded text-center focus:outline-none focus:bg-[#fde68a]" />
                       <button type="button" onClick={() => { addTpvLink(); }} className="bg-[#00897b] hover:bg-[#00796b] text-white font-bold rounded text-sm">+</button>
                     </div>
                     {tpvLinks.map(l => (
@@ -2199,7 +2314,7 @@ export const LedgersPage: React.FC = () => {
                 </div>
               </div>
             ) : (
-              <form onSubmit={handleSaveUpdate} className="p-4 flex flex-col md:flex-row gap-4 text-xs">
+              <form onSubmit={handleSaveUpdate} onKeyDown={handleInfoKeyDown} className="p-4 flex flex-col md:flex-row gap-4 text-xs">
                 {/* Left column: main inputs */}
                 <div className="w-full md:w-[63%] space-y-3">
                   <div className="grid grid-cols-2 gap-3">
@@ -2344,6 +2459,7 @@ export const LedgersPage: React.FC = () => {
                     <div>
                       <label className="block text-slate-700 font-medium mb-1">Real Name</label>
                       <input
+                        id="upd-real-name"
                         type="text"
                         value={updRealName}
                         onChange={(e) => setUpdRealName(e.target.value)}
@@ -2353,10 +2469,11 @@ export const LedgersPage: React.FC = () => {
                     <div>
                       <label className="block text-slate-700 font-medium mb-1">Grantor/Rmk</label>
                       <input
+                        id="upd-grantor"
                         type="text"
                         value={updGrantor}
                         onChange={(e) => setUpdGrantor(e.target.value)}
-                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 focus:outline-none focus:border-blue-500"
+                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-[#fde68a]"
                       />
                     </div>
                     <div>
@@ -2377,29 +2494,32 @@ export const LedgersPage: React.FC = () => {
                     <div>
                       <label className="block text-slate-700 font-medium mb-1">Mobile</label>
                       <input
+                        id="upd-mobile"
                         type="text"
                         value={updMobile}
                         onChange={(e) => setUpdMobile(e.target.value)}
-                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 focus:outline-none focus:border-blue-500"
+                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-[#fde68a]"
                       />
                     </div>
                     <div>
                       <label className="block text-slate-700 font-medium mb-1">Address</label>
                       <input
+                        id="upd-address"
                         type="text"
                         value={updAddress}
                         onChange={(e) => setUpdAddress(e.target.value)}
                         placeholder="ADDRESSS"
-                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 placeholder:text-slate-300 focus:outline-none focus:border-blue-500 uppercase"
+                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 placeholder:text-slate-300 focus:outline-none focus:border-blue-500 focus:bg-[#fde68a] uppercase"
                       />
                     </div>
                   </div>
 
                   <div className="pt-2">
                     <button
+                      id="upd-save"
                       type="submit"
                       disabled={updateSaving}
-                      className="px-6 py-1.5 bg-[#152847] hover:bg-[#1e3a68] active:bg-[#0f1d33] text-white font-bold rounded text-xs transition-colors shadow-xs disabled:opacity-50"
+                      className="px-6 py-1.5 bg-[#152847] hover:bg-[#1e3a68] active:bg-[#0f1d33] text-white font-bold rounded text-xs transition-colors shadow-xs disabled:opacity-50 outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#00897b]"
                     >
                       {updateSaving ? 'Saving...' : 'Save'}
                     </button>

@@ -60,6 +60,7 @@ export const LimitBalanceReportPage: React.FC = () => {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     fetchList();
   };
 
@@ -110,13 +111,23 @@ export const LimitBalanceReportPage: React.FC = () => {
       <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden flex flex-col flex-1">
         <form onSubmit={handleSearch} className="p-2 sm:p-2.5 flex flex-wrap items-center gap-4 border-b border-slate-200 bg-white">
           <span className="font-bold text-sm text-slate-700 tracking-tight mx-3">{PAGE_TITLE}</span>
-          <button type="submit" className="px-10 py-1.5 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded-xs shadow-xs transition-colors">
+          {/* Live: the page opens with Search focused, so Enter runs it straight away; a spinner
+              shows on it while the list loads */}
+          <button id="limit-search-btn" type="submit" autoFocus disabled={loading} className="px-10 py-1.5 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded-xs shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5">
             Search
+            {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
           </button>
           <span className="text-slate-600 font-semibold text-[11px] ml-4">Filter</span>
           <select
             value={filter}
             onChange={(e) => setFilter(e.target.value as FilterMode)}
+            // Enter on Filter goes back to Search
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                document.getElementById('limit-search-btn')?.focus();
+              }
+            }}
             className="w-32 px-2.5 py-1 bg-[#fde68a] border border-amber-300 rounded-xs text-xs font-bold text-slate-900 cursor-pointer focus:outline-none"
           >
             <option value="ALL">All</option>

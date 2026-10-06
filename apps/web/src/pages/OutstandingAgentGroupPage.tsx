@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiRequest } from '../api/client.js';
+import { DateDMYInput } from '../components/DateDMYInput.js';
+import { toast } from 'react-toastify';
 
 interface AgentDto {
   id: number;
@@ -42,6 +44,17 @@ export const OutstandingAgentGroupPage: React.FC = () => {
       if (agentId) params.append('agentId', String(agentId));
       const res = await apiRequest<AgentGroupRow[]>(`/vouchers/agent-group-balances?${params.toString()}`);
       if (res.data) setRows(res.data);
+      // Live: a Search whose answer is empty / null says so in a red Error toast
+      if (!res.data || res.data.length === 0) {
+        setRows([]);
+        toast.error(
+          <div>
+            <div className="font-bold text-base">Error</div>
+            <div className="text-sm mt-0.5">Record not avaliable!</div>
+          </div>,
+          { toastId: 'agentgroup-empty' }
+        );
+      }
     } catch (err) {
       console.warn('Failed to load agent group outstanding:', err);
     } finally {
@@ -49,13 +62,17 @@ export const OutstandingAgentGroupPage: React.FC = () => {
     }
   };
 
+  // Live flow: the page opens on Agents with an empty table; Enter on Agents goes to Search
+  // (Enter on the date's year to Agents), and the report loads on Search with a spinner.
+  const [hasSearched, setHasSearched] = useState(false);
   useEffect(() => {
-    fetchRows();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    document.getElementById('agentgroup-agent')?.focus();
   }, []);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
+    setHasSearched(true);
     fetchRows();
   };
 
@@ -87,18 +104,28 @@ export const OutstandingAgentGroupPage: React.FC = () => {
             <span className="font-bold text-sm text-slate-900 tracking-tight mr-2">OutStanding Agent-Group</span>
             <div className="flex items-center gap-1.5">
               <span className="text-slate-600 font-medium">From</span>
-              <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800" />
+              <DateDMYInput value={fromDate} onChange={setFromDate} idPrefix="agentgroup-fromDate" separator="-" onEnterFromYear={() => document.getElementById('agentgroup-agent')?.focus()} />
             </div>
+            <span className="text-slate-600 font-medium">Agents</span>
             <select
+              id="agentgroup-agent"
               value={agentId}
               onChange={(e) => setAgentId(e.target.value ? parseInt(e.target.value, 10) : '')}
-              className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-800 uppercase"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  document.getElementById('agentgroup-search-btn')?.focus();
+                }
+              }}
+              className="min-w-40 px-2 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-800 uppercase focus:outline-none focus:bg-[#fde68a]"
             >
-              <option value="">-CHOOSE-</option>
+              <option value="">--CHOOSE--</option>
               {agents.map(a => <option key={a.id} value={a.id}>{a.agentName}</option>)}
             </select>
-            <button type="submit" className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors">
+            <button id="agentgroup-search-btn" type="submit" disabled={loading} className="px-10 py-1.5 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5">
               Search
+              {/* Spinner while the report loads, as on live */}
+              {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
             </button>
           </div>
           <button type="button" onClick={handleExportExcel} className="px-4 py-1 bg-[#15803d] hover:bg-[#166534] active:bg-[#14532d] text-white font-bold text-xs rounded shadow-xs transition-colors">
@@ -120,6 +147,8 @@ export const OutstandingAgentGroupPage: React.FC = () => {
             <tbody className="divide-y divide-slate-200 font-sans text-xs whitespace-nowrap">
               {loading ? (
                 <tr><td colSpan={5} className="py-14 text-center text-slate-400 font-medium">Loading...</td></tr>
+              ) : !hasSearched ? (
+                <tr><td colSpan={5} className="py-14" /></tr>
               ) : rows.length === 0 ? (
                 <tr><td colSpan={5} className="py-14 text-center text-slate-400 font-medium">No records found for this filter.</td></tr>
               ) : (
