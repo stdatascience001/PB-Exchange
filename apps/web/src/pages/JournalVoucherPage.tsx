@@ -73,6 +73,20 @@ export const JournalVoucherPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  // Add / Edit popup Enter flow (as live): Date DD -> MM -> YYYY -> Party (pick from its list)
+  // -> Cr/Dr -> Amount -> Opposite Party (pick from its list) -> Remark -> Save (Enter saves)
+  const [jvPartyHi, setJvPartyHi] = useState(0);
+  const [jvOppHi, setJvOppHi] = useState(0);
+  const focusJv = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
+  useEffect(() => {
+    if (!showModal) return;
+    const id = requestAnimationFrame(() => focusJv('jv-voucher-date-dd'));
+    return () => cancelAnimationFrame(id);
+  }, [showModal]);
 
   const [parties, setParties] = useState<LedgerDto[]>([]);
   const [voucherDate, setVoucherDate] = useState(todayInputDate());
@@ -93,6 +107,18 @@ export const JournalVoucherPage: React.FC = () => {
       const params = new URLSearchParams({ voucherType: VOUCHER_TYPE, fromDate, toDate });
       const res = await apiRequest<ManualVoucherItem[]>(`/vouchers/manual?${params.toString()}`);
       if (res.data) setList(res.data);
+      // Live: no vouchers for the dates (null / empty response) -> red "Error / Record not
+      // avaliable!" toast (one at a time), with the table left empty
+      if (!res.data || res.data.length === 0) {
+        setList([]);
+        toast.error(
+          <div>
+            <div className="font-bold text-base">Error</div>
+            <div className="text-sm mt-0.5">Record not avaliable!</div>
+          </div>,
+          { toastId: 'jv-empty' }
+        );
+      }
     } catch (err) {
       console.warn('Failed to load vouchers:', err);
     } finally {
@@ -125,6 +151,21 @@ export const JournalVoucherPage: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  // Esc (or a click on the dimmed area outside the box) closes the Add / Edit popup, as its
+  // X does. Only a press that starts AND ends on the dimmed area counts, so a drag that
+  // begins inside the box (e.g. selecting text) doesn't close it.
+  useEffect(() => {
+    if (!showModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      setShowModal(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showModal]);
+  const jvBackdropDownRef = React.useRef(false);
 
   const filteredList = useMemo(() => {
     if (!search.trim()) return list;
@@ -379,7 +420,14 @@ export const JournalVoucherPage: React.FC = () => {
       </div>
 
       {showModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
+        <div
+          onMouseDown={(e) => { jvBackdropDownRef.current = e.target === e.currentTarget; }}
+          onClick={(e) => {
+            if (jvBackdropDownRef.current && e.target === e.currentTarget) setShowModal(false);
+            jvBackdropDownRef.current = false;
+          }}
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150"
+        >
           {/* overflow-visible (not hidden) so the Party / Opposite Party lists can drop past the
               modal's bottom edge instead of being cut off inside it */}
           <div className="bg-white rounded-lg shadow-2xl max-w-2xl w-full overflow-visible border border-slate-300">
@@ -395,7 +443,7 @@ export const JournalVoucherPage: React.FC = () => {
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">Date</label>
                   {/* DD / MM / YYYY, same as the filter bar */}
-                  <DateDMYInput value={voucherDate} onChange={setVoucherDate} idPrefix="jv-voucher-date" />
+                  <DateDMYInput value={voucherDate} onChange={setVoucherDate} idPrefix="jv-voucher-date" onEnterFromYear={() => focusJv('jv-m-party')} />
                 </div>
 
                 <div className="relative col-span-2 sm:col-span-1">
@@ -405,22 +453,41 @@ export const JournalVoucherPage: React.FC = () => {
                     <span className="font-normal text-blue-600"> &amp; Limit: {selectedPartyLimit}</span>
                   </label>
                   <input
+                    id="jv-m-party"
                     type="text"
                     required
                     value={partySearch}
-                    onChange={(e) => { setPartySearch(e.target.value); setPartyId(null); setShowPartyDropdown(true); }}
+                    onChange={(e) => { setPartySearch(e.target.value); setPartyId(null); setShowPartyDropdown(true); setJvPartyHi(0); }}
                     onFocus={() => setShowPartyDropdown(true)}
                     onBlur={() => setTimeout(() => setShowPartyDropdown(false), 150)}
+                    onKeyDown={(e) => {
+                      const n = filteredPartyOptions.length;
+                      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && showPartyDropdown && n > 0) {
+                        e.preventDefault();
+                        setJvPartyHi(i => e.key === 'ArrowDown' ? Math.min(i + 1, n - 1) : Math.max(i - 1, 0));
+                      } else if (e.key === 'Enter') {
+                        // Pick the highlighted party (typed text only), then on to Cr/Dr
+                        e.preventDefault();
+                        const p = filteredPartyOptions[jvPartyHi];
+                        if (showPartyDropdown && p && partySearch.trim()) {
+                          setPartyId(p.id); setPartySearch(p.partyName);
+                        }
+                        setShowPartyDropdown(false);
+                        focusJv('jv-m-side');
+                      }
+                    }}
                     placeholder="Search party..."
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:border-blue-500"
+                    autoComplete="off"
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                   />
                   {showPartyDropdown && filteredPartyOptions.length > 0 && (
                     <div className="absolute left-0 right-0 mt-1 bg-white border border-slate-300 shadow-xl rounded z-50 max-h-40 overflow-y-auto">
-                      {filteredPartyOptions.map(p => (
+                      {filteredPartyOptions.map((p, idx) => (
                         <div
                           key={p.id}
+                          ref={idx === jvPartyHi ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
                           onMouseDown={() => { setPartyId(p.id); setPartySearch(p.partyName); setShowPartyDropdown(false); }}
-                          className="px-3 py-1.5 text-xs uppercase cursor-pointer hover:bg-amber-50 font-semibold text-slate-800"
+                          className={`px-3 py-1.5 text-xs uppercase cursor-pointer hover:bg-amber-50 font-semibold text-slate-800 ${idx === jvPartyHi && partySearch.trim() ? 'bg-[#f6c343]' : ''}`}
                         >
                           {p.partyName}
                         </div>
@@ -432,9 +499,11 @@ export const JournalVoucherPage: React.FC = () => {
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">Cr/Dr</label>
                   <select
+                    id="jv-m-side"
                     value={entrySide}
                     onChange={(e) => setEntrySide(e.target.value as 'DR' | 'CR')}
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-bold text-slate-800"
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); focusJv('jv-m-amount'); } }}
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-bold text-slate-800 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                   >
                     <option value="CR">Cr</option>
                     <option value="DR">Dr</option>
@@ -444,11 +513,13 @@ export const JournalVoucherPage: React.FC = () => {
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">Amount</label>
                   <input
+                    id="jv-m-amount"
                     type="number"
                     required
                     value={amount}
                     onChange={(e) => setAmount(e.target.value)}
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-slate-900 text-xs focus:outline-none focus:border-blue-500"
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); focusJv('jv-m-opp'); } }}
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-slate-900 text-xs focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                   />
                 </div>
               </div>
@@ -457,22 +528,41 @@ export const JournalVoucherPage: React.FC = () => {
                 <div className="relative">
                   <label className="block text-slate-700 font-bold mb-1">Opposite Party</label>
                   <input
+                    id="jv-m-opp"
                     type="text"
                     required
                     value={oppositeSearch}
-                    onChange={(e) => { setOppositeSearch(e.target.value); setOppositeId(null); setShowOppositeDropdown(true); }}
+                    onChange={(e) => { setOppositeSearch(e.target.value); setOppositeId(null); setShowOppositeDropdown(true); setJvOppHi(0); }}
                     onFocus={() => setShowOppositeDropdown(true)}
                     onBlur={() => setTimeout(() => setShowOppositeDropdown(false), 150)}
+                    onKeyDown={(e) => {
+                      const n = filteredOppositeOptions.length;
+                      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && showOppositeDropdown && n > 0) {
+                        e.preventDefault();
+                        setJvOppHi(i => e.key === 'ArrowDown' ? Math.min(i + 1, n - 1) : Math.max(i - 1, 0));
+                      } else if (e.key === 'Enter') {
+                        // Pick the highlighted party (typed text only), then on to Remark
+                        e.preventDefault();
+                        const p = filteredOppositeOptions[jvOppHi];
+                        if (showOppositeDropdown && p && oppositeSearch.trim()) {
+                          setOppositeId(p.id); setOppositeSearch(p.partyName);
+                        }
+                        setShowOppositeDropdown(false);
+                        focusJv('jv-m-remark');
+                      }
+                    }}
                     placeholder="Search opposite party..."
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:border-blue-500"
+                    autoComplete="off"
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                   />
                   {showOppositeDropdown && filteredOppositeOptions.length > 0 && (
                     <div className="absolute left-0 right-0 mt-1 bg-white border border-slate-300 shadow-xl rounded z-50 max-h-40 overflow-y-auto">
-                      {filteredOppositeOptions.map(p => (
+                      {filteredOppositeOptions.map((p, idx) => (
                         <div
                           key={p.id}
+                          ref={idx === jvOppHi ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
                           onMouseDown={() => { setOppositeId(p.id); setOppositeSearch(p.partyName); setShowOppositeDropdown(false); }}
-                          className="px-3 py-1.5 text-xs uppercase cursor-pointer hover:bg-amber-50 font-semibold text-slate-800"
+                          className={`px-3 py-1.5 text-xs uppercase cursor-pointer hover:bg-amber-50 font-semibold text-slate-800 ${idx === jvOppHi && oppositeSearch.trim() ? 'bg-[#f6c343]' : ''}`}
                         >
                           {p.partyName}
                         </div>
@@ -484,19 +574,22 @@ export const JournalVoucherPage: React.FC = () => {
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">Remark</label>
                   <input
+                    id="jv-m-remark"
                     type="text"
                     value={remark}
                     onChange={(e) => setRemark(e.target.value)}
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-900 focus:outline-none focus:border-blue-500"
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); document.getElementById('jv-m-save')?.focus(); } }}
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-900 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                   />
                 </div>
               </div>
 
               <div className="flex justify-end pt-3 border-t border-slate-200">
                 <button
+                  id="jv-m-save"
                   type="submit"
                   disabled={saving}
-                  className="px-6 py-1.5 bg-[#1e3a8a] hover:bg-[#172554] active:bg-[#0f172a] text-white font-bold rounded text-xs shadow-xs disabled:opacity-50"
+                  className="px-6 py-1.5 bg-[#1e3a8a] hover:bg-[#172554] active:bg-[#0f172a] text-white font-bold rounded text-xs shadow-xs disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#1e3a8a]"
                 >
                   {saving ? 'Saving...' : 'Save'}
                 </button>

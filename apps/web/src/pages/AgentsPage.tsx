@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { toast } from 'react-toastify';
 import { apiRequest } from '../api/client.js';
 import { X, Edit2, Trash2 } from 'lucide-react';
 
@@ -59,6 +60,15 @@ export const AgentsPage: React.FC = () => {
   const [cashAgentParties, setCashAgentParties] = useState<string[]>([]);
   const [showMainAgentList, setShowMainAgentList] = useState(false);
   const mainAgentBoxRef = useRef<HTMLDivElement>(null);
+  // Highlighted row in the Main Agent Name list (arrow keys move it, Enter picks it); -1 = none
+  const [mainAgentHi, setMainAgentHi] = useState(-1);
+  // Live Enter flow in the Agents popup: Agent Name -> Main Agent Name (pick from its list)
+  // -> Parent Agent Name -> Save (Enter on Save saves)
+  const focusAgentField = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
 
   // Empty input -> whole list; typing narrows it. Matches anywhere in the name so "AKASH"
   // finds "CASH AKASH", same as the reference's type-ahead.
@@ -148,6 +158,18 @@ export const AgentsPage: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showModal]);
 
+  // A click on the dimmed area outside the box closes the Agents popup (as Esc and Close do).
+  // Only a press that starts AND ends there counts, so a drag that begins inside the box
+  // (e.g. selecting text) doesn't close it.
+  const backdropDownRef = useRef(false);
+  const backdropProps = {
+    onMouseDown: (e: React.MouseEvent) => { backdropDownRef.current = e.target === e.currentTarget; },
+    onClick: (e: React.MouseEvent) => {
+      if (backdropDownRef.current && e.target === e.currentTarget) setShowModal(false);
+      backdropDownRef.current = false;
+    },
+  };
+
   const openCreateModal = () => {
     setEditingAgentId(null);
     setAgentName('');
@@ -195,8 +217,17 @@ export const AgentsPage: React.FC = () => {
 
   const handleSaveAgent = async (e: React.FormEvent) => {
     e.preventDefault();
+    // Live: Save with Agent Name blank -> red "Invalid / Please enter all valid fields!" toast,
+    // the popup stays open with the cursor back in Agent Name
     if (!agentName.trim()) {
-      alert('Agent Name is required');
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Invalid</div>
+          <div className="text-sm mt-0.5">Please enter all valid fields!</div>
+        </div>,
+        { toastId: 'agent-invalid-fields' }
+      );
+      focusAgentField('agent-name');
       return;
     }
 
@@ -414,7 +445,7 @@ export const AgentsPage: React.FC = () => {
 
       {/* Agents Add/Edit Modal matching Image 3 */}
       {showModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 overflow-y-auto">
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 overflow-y-auto">
           {/* No overflow-hidden here: it used to clip the Main Agent Name suggestion list at
               the card's bottom edge (the list rendered half-cut). The header carries rounded-t
               instead, so the corners still look the same. */}
@@ -442,13 +473,18 @@ export const AgentsPage: React.FC = () => {
                       Agent Name
                     </label>
                     <input
+                      id="agent-name"
                       type="text"
-                      required
                       autoFocus
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter') return;
+                        e.preventDefault();
+                        focusAgentField('agent-main');
+                      }}
                       placeholder=""
-                      className="w-full px-2.5 py-1.5 bg-[#fef08a] border border-amber-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-amber-500"
+                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                     />
                   </div>
 
@@ -457,24 +493,51 @@ export const AgentsPage: React.FC = () => {
                       Main Agent Name
                     </label>
                     <input
+                      id="agent-main"
                       type="text"
                       value={mainAgentName}
                       onChange={(e) => {
                         setMainAgentName(e.target.value);
                         setShowMainAgentList(true);
+                        // Typing highlights the first match, so Enter picks it
+                        setMainAgentHi(e.target.value.trim() ? 0 : -1);
                       }}
-                      onFocus={() => setShowMainAgentList(true)}
+                      onFocus={() => { setShowMainAgentList(true); setMainAgentHi(-1); }}
+                      onKeyDown={(e) => {
+                        const n = mainAgentSuggestions.length;
+                        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                          if (n === 0) return;
+                          e.preventDefault();
+                          setShowMainAgentList(true);
+                          setMainAgentHi(i => e.key === 'ArrowDown' ? (i + 1) % n : (i <= 0 ? n - 1 : i - 1));
+                        } else if (e.key === 'Enter') {
+                          // Pick the highlighted name (if any), then on to Parent Agent Name
+                          e.preventDefault();
+                          if (showMainAgentList && mainAgentHi >= 0 && mainAgentSuggestions[mainAgentHi]) {
+                            setMainAgentName(mainAgentSuggestions[mainAgentHi]);
+                          }
+                          setShowMainAgentList(false);
+                          setMainAgentHi(-1);
+                          focusAgentField('agent-parent');
+                        } else if (e.key === 'Escape' && showMainAgentList) {
+                          // An open list takes the first Esc; the popup stays open
+                          e.stopPropagation();
+                          e.nativeEvent.stopImmediatePropagation();
+                          setShowMainAgentList(false);
+                        }
+                      }}
                       placeholder=""
                       autoComplete="off"
-                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 uppercase focus:outline-none focus:border-blue-500"
+                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                     />
                     {/* Cash Agent parties, filtered as you type — an empty field shows the
                         whole list, the way the live reference opens it. */}
                     {showMainAgentList && mainAgentSuggestions.length > 0 && (
                       <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-400 shadow-lg rounded-xs z-50 max-h-48 overflow-y-auto pbmax-table-scrollbar">
-                        {mainAgentSuggestions.map((name) => (
+                        {mainAgentSuggestions.map((name, idx) => (
                           <button
                             key={name}
+                            ref={idx === mainAgentHi ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
                             type="button"
                             onMouseDown={(e) => e.preventDefault()}
                             onClick={() => {
@@ -482,7 +545,7 @@ export const AgentsPage: React.FC = () => {
                               setShowMainAgentList(false);
                             }}
                             className={`w-full text-left px-2.5 py-1 text-xs uppercase whitespace-nowrap overflow-hidden text-ellipsis border-b border-slate-100 last:border-b-0 focus:outline-none ${
-                              name.toUpperCase() === mainAgentName.trim().toUpperCase()
+                              idx === mainAgentHi || name.toUpperCase() === mainAgentName.trim().toUpperCase()
                                 ? 'bg-[#fef08a] text-slate-900 font-bold'
                                 : 'text-slate-800 hover:bg-[#fef08a] focus:bg-[#fef08a]'
                             }`}
@@ -499,11 +562,17 @@ export const AgentsPage: React.FC = () => {
                       Parent Agent Name
                     </label>
                     <input
+                      id="agent-parent"
                       type="text"
                       value={parentAgentName}
                       onChange={(e) => setParentAgentName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter') return;
+                        e.preventDefault();
+                        document.getElementById('agent-save-btn')?.focus();
+                      }}
                       placeholder=""
-                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 uppercase focus:outline-none focus:border-blue-500"
+                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                     />
                   </div>
                 </div>
@@ -512,8 +581,9 @@ export const AgentsPage: React.FC = () => {
               {/* Modal Footer matching Image 3 */}
               <div className="p-3 bg-white border-t border-slate-200 flex justify-end items-center gap-3">
                 <button
+                  id="agent-save-btn"
                   type="submit"
-                  className="px-6 py-1.5 bg-[#152847] hover:bg-[#1e3a68] active:bg-[#0f1d33] text-white font-bold rounded text-xs transition-colors shadow-xs"
+                  className="px-6 py-1.5 bg-[#152847] hover:bg-[#1e3a68] active:bg-[#0f1d33] text-white font-bold rounded text-xs transition-colors shadow-xs focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#152847]"
                 >
                   Save
                 </button>

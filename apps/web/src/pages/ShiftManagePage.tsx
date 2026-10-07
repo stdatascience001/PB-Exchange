@@ -86,6 +86,39 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
   const [searchTerm, setSearchTerm] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingShift, setEditingShift] = useState<ShiftDto | null>(null);
+
+  // Esc (or a click on the dimmed area outside the box) closes the Add / Edit Shift popup and
+  // the Delete confirmation, the same as their Close / X / No buttons
+  const closeShiftPopup = () => {
+    if (showModal) {
+      setShowModal(false);
+      setEditingShift(null);
+    }
+    if (deleteTarget && !deletingShift) setDeleteTarget(null);
+  };
+  const shiftPopupOpen = showModal || !!deleteTarget;
+  const closeShiftPopupRef = useRef(closeShiftPopup);
+  closeShiftPopupRef.current = closeShiftPopup;
+  useEffect(() => {
+    if (!shiftPopupOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      closeShiftPopupRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [shiftPopupOpen]);
+  // Only a press that starts AND ends on the dimmed area closes it, so a drag that begins
+  // inside the box (e.g. selecting text) doesn't
+  const backdropDownRef = useRef(false);
+  const backdropProps = {
+    onMouseDown: (e: React.MouseEvent) => { backdropDownRef.current = e.target === e.currentTarget; },
+    onClick: (e: React.MouseEvent) => {
+      if (backdropDownRef.current && e.target === e.currentTarget) closeShiftPopup();
+      backdropDownRef.current = false;
+    },
+  };
   const [activeActionDropdownId, setActiveActionDropdownId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -331,7 +364,20 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
 
   const handleSaveShift = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!shiftName.trim()) return;
+    // Live: Save with Shift Name blank -> red "Invalid / Please enter all valid fields!" toast,
+    // the popup stays open with the cursor back in Shift Name
+    if (!shiftName.trim()) {
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Invalid</div>
+          <div className="text-sm mt-0.5">Please enter all valid fields!</div>
+        </div>,
+        { toastId: 'shift-invalid-fields' }
+      );
+      const el = (e.currentTarget as HTMLFormElement | null)?.querySelector<HTMLInputElement>('[data-shift-enter]');
+      el?.focus();
+      return;
+    }
 
     setLoading(true);
     try {
@@ -686,7 +732,7 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
 
       {/* Delete confirmation — Yes deletes, No just closes */}
       {deleteTarget && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
+        <div {...backdropProps} className="fixed inset-0 bg-black/50 flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
           <div className="bg-white rounded shadow-2xl w-full max-w-[380px] border border-slate-300">
             <div className="bg-[#152847] text-white px-4 py-2.5 rounded-t flex items-center justify-between">
               <h3 className="text-sm font-bold tracking-wide">Delete Shift</h3>
@@ -727,7 +773,7 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
 
       {/* Add / Edit Shift Modal matching Image 4 */}
       {showModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg shadow-2xl max-w-2xl w-full overflow-hidden border border-slate-300">
             {/* Modal Header matching Image 4 */}
             <div className="bg-[#1b2b48] text-white px-5 py-3 flex items-center justify-between">
@@ -749,19 +795,35 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
             {/* Modal Body — Add Shift keeps its existing single-page form; Edit Shift gets the
                 5-tab layout (Info/Time/Config/Company Config/Enable-Disable) below. */}
             {!editingShift ? (
-            <form onSubmit={handleSaveShift} className="p-5 space-y-4 text-xs">
+            <form
+              onSubmit={handleSaveShift}
+              // Live Enter flow: Shift Name -> Open Date -> Next Day -> Shift Working For -> each
+              // role's time (left to right, row by row) -> Save; Enter on Save saves
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return;
+                const target = e.target as HTMLElement;
+                if (target.tagName === 'BUTTON') return;
+                e.preventDefault();
+                const order = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[data-shift-enter]'));
+                const next = order[order.indexOf(target) + 1];
+                next?.focus();
+                if (next instanceof HTMLInputElement && next.type === 'text') next.select();
+              }}
+              className="p-5 space-y-4 text-xs"
+            >
               {/* Top Row: 4 Input Fields */}
               <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                 {/* Shift Name */}
                 <div>
                   <label className="block text-slate-700 font-semibold mb-1">Shift Name</label>
                   <input
+                    data-shift-enter
+                    autoFocus
                     type="text"
-                    required
                     value={shiftName}
                     onChange={(e) => setShiftName(e.target.value)}
                     placeholder=""
-                    className="w-full px-3 py-1.5 bg-[#fef08a] border border-amber-300 rounded text-slate-900 font-bold focus:outline-none focus:ring-1 focus:ring-amber-500 text-xs uppercase"
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-slate-900 font-bold focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 text-xs uppercase"
                   />
                 </div>
 
@@ -769,11 +831,12 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
                 <div>
                   <label className="block text-slate-700 font-semibold mb-1">Open Date</label>
                   <input
+                    data-shift-enter
                     type="text"
                     value={openDate}
                     onChange={(e) => setOpenDate(e.target.value)}
                     placeholder="08-09-2026"
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-slate-800 text-xs focus:outline-none focus:border-blue-500"
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-slate-800 text-xs focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                   />
                 </div>
 
@@ -781,9 +844,10 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
                 <div>
                   <label className="block text-slate-700 font-semibold mb-1">Next Day</label>
                   <select
+                    data-shift-enter
                     value={nextDay}
                     onChange={(e) => setNextDay(e.target.value)}
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-slate-800 text-xs focus:outline-none focus:border-blue-500"
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-slate-800 text-xs focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                   >
                     <option value="NO">NO</option>
                     <option value="YES">YES</option>
@@ -794,9 +858,10 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
                 <div>
                   <label className="block text-slate-700 font-semibold mb-1">Shift Working For</label>
                   <select
+                    data-shift-enter
                     value={shiftFor}
                     onChange={(e) => setShiftFor(e.target.value)}
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-slate-800 text-xs focus:outline-none focus:border-blue-500"
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-slate-800 text-xs focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                   >
                     <option value="Both">Both</option>
                     <option value="Manual">Manual</option>
@@ -817,10 +882,11 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
                         page does ("05:05 PM"). The underlying value stays 24-hour "HH:mm",
                         so every save path below is unaffected. */}
                     <input
+                      data-shift-enter
                       type="time"
                       value={roleTimings[role.name] || '20:44'}
                       onChange={(e) => handleTimeChange(role.name, e.target.value)}
-                      className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-slate-800 font-mono text-xs focus:outline-none focus:border-blue-500 text-center"
+                      className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-slate-800 font-mono text-xs focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 text-center"
                     />
                   </div>
                 ))}
@@ -829,9 +895,10 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
               {/* Modal Footer Buttons matching Image 4 */}
               <div className="flex justify-end items-center gap-3 pt-4 border-t border-slate-100">
                 <button
+                  data-shift-enter
                   type="submit"
                   disabled={loading}
-                  className="px-6 py-2 bg-[#1b3a6d] hover:bg-[#152e57] text-white font-bold rounded text-xs transition-colors shadow-sm cursor-pointer"
+                  className="px-6 py-2 bg-[#1b3a6d] hover:bg-[#152e57] text-white font-bold rounded text-xs transition-colors shadow-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#1b3a6d]"
                 >
                   {loading ? (editingShift ? 'Updating...' : 'Saving...') : (editingShift ? 'Update Shift' : 'Save')}
                 </button>

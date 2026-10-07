@@ -164,7 +164,11 @@ export const JantriViewModal: React.FC<JantriViewModalProps> = ({ open, onClose,
   );
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 z-50 animate-in fade-in duration-150">
+    <div
+      // A click on the dimmed area outside the box closes it (as Esc / X do)
+      onMouseDown={(e) => { (e.currentTarget as HTMLElement).dataset.downOnBackdrop = e.target === e.currentTarget ? '1' : ''; }}
+      onClick={(e) => { if (e.target === e.currentTarget && (e.currentTarget as HTMLElement).dataset.downOnBackdrop === '1') onClose(); }}
+      className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 z-50 animate-in fade-in duration-150">
       <div className="bg-[#1b3258] rounded-lg shadow-2xl w-full max-w-5xl overflow-hidden border border-slate-500">
         {/* Header: party name + Consolidate toggles + close */}
         <div className="bg-[#1b3258] px-4 py-2.5 flex items-center justify-between border-b border-[#2a4a7a]">

@@ -90,6 +90,18 @@ export const VapsiVoucherPage: React.FC = () => {
       const params = new URLSearchParams({ voucherType: VOUCHER_TYPE, fromDate, toDate });
       const res = await apiRequest<ManualVoucherItem[]>(`/vouchers/manual?${params.toString()}`);
       if (res.data) setList(res.data);
+      // Live: no vouchers for the dates (null / empty response) -> red "Error / Record not
+      // avaliable!" toast (one at a time), with the table left empty
+      if (!res.data || res.data.length === 0) {
+        setList([]);
+        toast.error(
+          <div>
+            <div className="font-bold text-base">Error</div>
+            <div className="text-sm mt-0.5">Record not avaliable!</div>
+          </div>,
+          { toastId: 'vapsiv-empty' }
+        );
+      }
     } catch (err) {
       console.warn('Failed to load vouchers:', err);
     } finally {
@@ -123,6 +135,38 @@ export const VapsiVoucherPage: React.FC = () => {
   useEffect(() => {
     focusDatePart('vapsiv-fromDate-dd');
   }, []);
+
+  // Create / Edit Vapsi popup Enter flow (as live): From Month -> From Year -> Party Name
+  // (pick from its list) -> Voucher Date DD -> MM -> YYYY -> P&L -> Payment -> Vapsi % ->
+  // Vapsi On -> Final Vapsi -> Save (Enter saves)
+  const modalPartyRef = useRef<HTMLInputElement>(null);
+  const focusVm = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
+  const vmEnterTo = (id: string) => (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    focusVm(id);
+  };
+  useEffect(() => {
+    if (!showModal) return;
+    const id = requestAnimationFrame(() => focusVm('vm-from-month'));
+    return () => cancelAnimationFrame(id);
+  }, [showModal]);
+  // Esc (or a click on the dimmed area outside the box) closes the popup, as its X does
+  useEffect(() => {
+    if (!showModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      setShowModal(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showModal]);
+  const vmBackdropDownRef = useRef(false);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -485,7 +529,14 @@ export const VapsiVoucherPage: React.FC = () => {
       <AutoVapsiModal open={showAutoVapsi} onClose={() => setShowAutoVapsi(false)} onProcessed={fetchList} />
 
       {showModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-start justify-center p-3 pt-5 z-50 animate-in fade-in duration-150">
+        <div
+          onMouseDown={(e) => { vmBackdropDownRef.current = e.target === e.currentTarget; }}
+          onClick={(e) => {
+            if (vmBackdropDownRef.current && e.target === e.currentTarget) setShowModal(false);
+            vmBackdropDownRef.current = false;
+          }}
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-start justify-center p-3 pt-5 z-50 animate-in fade-in duration-150"
+        >
           {/* Live "Create Vapsi Voucher" layout: 115 | 115 | wide Party | Voucher Date, then
               P&L | Payment | narrow Vapsi % | Vapsi On | Final Vapsi, then the 3rd Party table. */}
           <div className="bg-white rounded-lg shadow-2xl w-full max-w-[800px] overflow-visible border border-slate-300">
@@ -502,6 +553,8 @@ export const VapsiVoucherPage: React.FC = () => {
                   <div>
                     <label className="block mb-1">From Month</label>
                     <select
+                      id="vm-from-month"
+                      onKeyDown={vmEnterTo('vm-from-year')}
                       value={fromMonth}
                       onChange={(e) => setFromMonth(e.target.value)}
                       className={`${VIN} font-bold cursor-pointer`}
@@ -512,6 +565,8 @@ export const VapsiVoucherPage: React.FC = () => {
                   <div>
                     <label className="block mb-1">From Year</label>
                     <select
+                      id="vm-from-year"
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); modalPartyRef.current?.focus(); modalPartyRef.current?.select(); } }}
                       value={fromYear}
                       onChange={(e) => setFromYear(parseInt(e.target.value, 10) || fromYear)}
                       className={`${VIN} font-bold cursor-pointer`}
@@ -525,33 +580,34 @@ export const VapsiVoucherPage: React.FC = () => {
                       parties={parties}
                       value={partySearch}
                       onChange={(t) => { setPartySearch(t); setPartyId(null); }}
-                      onPick={(p) => { setPartyId(p.id); setPartySearch(p.partyName); }}
+                      onPick={(p) => { setPartyId(p.id); setPartySearch(p.partyName); focusVm('vapsiv-voucherDate-dd'); }}
                       onInvalid={() => notify('error', 'Please select Party Name from the list!', 'vapsi-party')}
+                      inputRef={modalPartyRef}
                       className={`${VIN} font-bold uppercase`}
                     />
                   </div>
                   <div>
                     <label className="block mb-1">Voucher Date</label>
-                    <DateDMYInput value={voucherDate} onChange={setVoucherDate} idPrefix="vapsiv-voucherDate" separator="-" />
+                    <DateDMYInput value={voucherDate} onChange={setVoucherDate} idPrefix="vapsiv-voucherDate" separator="-" onEnterFromYear={() => focusVm('vm-pnl')} />
                   </div>
                 </div>
 
                 <div className="grid grid-cols-[180px_180px_50px_115px_180px] gap-4">
                   <div>
                     <label className="block mb-1">P&amp;L</label>
-                    <input type="number" value={pnl} onChange={(e) => setPnl(e.target.value)} className={VIN} />
+                    <input id="vm-pnl" onKeyDown={vmEnterTo('vm-payment')} type="number" value={pnl} onChange={(e) => setPnl(e.target.value)} className={VIN} />
                   </div>
                   <div>
                     <label className="block mb-1">Payment</label>
-                    <input type="number" value={payment} onChange={(e) => setPayment(e.target.value)} className={VIN} />
+                    <input id="vm-payment" onKeyDown={vmEnterTo('vm-vapsi-pct')} type="number" value={payment} onChange={(e) => setPayment(e.target.value)} className={VIN} />
                   </div>
                   <div>
                     <label className="block mb-1 whitespace-nowrap">Vapsi %</label>
-                    <input type="number" value={vapsiPercent} onChange={(e) => setVapsiPercent(e.target.value)} className={`${VIN} !px-1 text-center`} />
+                    <input id="vm-vapsi-pct" onKeyDown={vmEnterTo('vm-vapsi-on')} type="number" value={vapsiPercent} onChange={(e) => setVapsiPercent(e.target.value)} className={`${VIN} !px-1 text-center`} />
                   </div>
                   <div>
                     <label className="block mb-1">Vapsi On</label>
-                    <select value={vapsiOn} onChange={(e) => setVapsiOn(e.target.value as 'PL' | 'PAYMENT')} className={`${VIN} font-bold cursor-pointer`}>
+                    <select id="vm-vapsi-on" onKeyDown={vmEnterTo('vm-final')} value={vapsiOn} onChange={(e) => setVapsiOn(e.target.value as 'PL' | 'PAYMENT')} className={`${VIN} font-bold cursor-pointer`}>
                       <option value="PL">PL</option>
                       <option value="PAYMENT">PAYMENT</option>
                     </select>
@@ -559,6 +615,8 @@ export const VapsiVoucherPage: React.FC = () => {
                   <div>
                     <label className="block mb-1">Final Vapsi</label>
                     <input
+                      id="vm-final"
+                      onKeyDown={vmEnterTo('vm-save')}
                       type="number"
                       required
                       value={finalVapsi}
@@ -638,9 +696,10 @@ export const VapsiVoucherPage: React.FC = () => {
 
               <div className="flex justify-end px-4 py-3.5 border-t border-slate-200">
                 <button
+                  id="vm-save"
                   type="submit"
                   disabled={saving}
-                  className="px-4 py-2 bg-[#1f3f7a] hover:bg-[#172f5c] text-white font-bold rounded-xs text-[13px] shadow-xs disabled:opacity-50"
+                  className="px-4 py-2 bg-[#1f3f7a] hover:bg-[#172f5c] text-white font-bold rounded-xs text-[13px] shadow-xs disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#1f3f7a]"
                 >
                   {saving ? 'Saving...' : 'Save'}
                 </button>

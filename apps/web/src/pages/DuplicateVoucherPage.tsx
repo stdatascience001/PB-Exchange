@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiRequest } from '../api/client.js';
 import { toast } from 'react-toastify';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 
 interface DuplicateVoucherGroup {
   partyLedgerId: number;
@@ -104,8 +105,21 @@ export const DuplicateVoucherPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voucherType]);
 
+  // Live Enter flow: the page opens on the voucher type; Enter walks Type -> From DD -> MM ->
+  // YYYY -> To DD -> MM -> YYYY -> Search, and Enter on Search searches (spinner while it runs)
+  const focusDv = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
+  useEffect(() => {
+    const id = requestAnimationFrame(() => focusDv('dv-type'));
+    return () => cancelAnimationFrame(id);
+  }, []);
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     fetchDuplicates(true);
   };
 
@@ -134,33 +148,30 @@ export const DuplicateVoucherPage: React.FC = () => {
             <span className="font-bold text-sm text-slate-900 tracking-tight mr-2">Duplicate Voucher</span>
 
             <select
+              id="dv-type"
               value={voucherType}
               onChange={(e) => setVoucherType(e.target.value)}
-              className="px-3 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer min-w-28 shadow-xs"
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); focusDv('dv-from-dd'); } }}
+              className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 cursor-pointer min-w-28 shadow-xs"
             >
               {VOUCHER_TYPES.map(t => (
                 <option key={t.value} value={t.value}>{t.label}</option>
               ))}
             </select>
 
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800"
-            />
-            <input
-              type="date"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800"
-            />
+            {/* DD / MM / YYYY as live */}
+            <DateDMYInput value={fromDate} onChange={setFromDate} idPrefix="dv-from" onEnterFromYear={() => focusDv('dv-to-dd')} />
+            <DateDMYInput value={toDate} onChange={setToDate} idPrefix="dv-to" onEnterFromYear={() => focusDv('dv-search-btn')} />
 
             <button
+              id="dv-search-btn"
               type="submit"
-              className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors"
+              disabled={loading}
+              className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5"
             >
               Search
+              {/* Spinner while the list loads, as on live */}
+              {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
             </button>
           </div>
 

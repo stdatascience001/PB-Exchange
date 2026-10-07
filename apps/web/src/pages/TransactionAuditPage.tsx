@@ -298,6 +298,75 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
 
   const totalSum = list.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0);
 
+  // Party Wise -> "Party Trans Count" popup (live): opens empty; its own Search loads every
+  // slip of the chosen shift (all shifts on "-- ALL SHIFT --") for the day — whatever the
+  // audit Status / Search Party filters say — and lists each party's slip COUNT and TOTAL-AMT.
+  const [ptcRows, setPtcRows] = useState<{ party: string; count: number; total: number }[] | null>(null);
+  const [ptcLoading, setPtcLoading] = useState(false);
+  const openPartyWise = () => {
+    setPtcRows(null);
+    setShowPartyWiseModal(true);
+    requestAnimationFrame(() => document.getElementById('ptc-search-btn')?.focus());
+  };
+  const handlePartyTransCountSearch = async () => {
+    if (ptcLoading) return;
+    setPtcLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (selectedShiftId) params.append('shiftId', selectedShiftId);
+      if (!isDeclareMode) params.append('date', currentDateStr());
+      const res = await apiRequest<TransactionItem[]>(`/transactions?${params.toString()}`);
+      const map = new Map<string, { party: string; count: number; total: number }>();
+      for (const tx of res.data || []) {
+        const name = tx.partyName || 'UNKNOWN';
+        const row = map.get(name) || { party: name, count: 0, total: 0 };
+        row.count += 1;
+        row.total += tx.totalAmount || 0;
+        map.set(name, row);
+      }
+      setPtcRows(Array.from(map.values()).sort((a, b) => a.party.localeCompare(b.party)));
+    } catch (err) {
+      console.warn('Failed to load party trans count:', err);
+      setPtcRows([]);
+    } finally {
+      setPtcLoading(false);
+    }
+  };
+  const handlePartyTransCountExcel = () => {
+    if (!ptcRows || ptcRows.length === 0) {
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Error</div>
+          <div className="text-sm mt-0.5">Record not avaliable!</div>
+        </div>,
+        { toastId: 'ptc-excel-empty' }
+      );
+      return;
+    }
+    const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const lines = ['SR,PARTY,COUNT,TOTAL-AMT'].concat(
+      ptcRows.map((r, i) => [i + 1, esc(r.party), r.count, Math.round(r.total)].join(','))
+    );
+    const link = document.createElement('a');
+    link.setAttribute('href', 'data:text/csv;charset=utf-8,' + encodeURIComponent(lines.join('\n')));
+    link.setAttribute('download', 'party_trans_count.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+  // Esc (or a click on the dimmed area outside the box) closes the popup, as its X does
+  useEffect(() => {
+    if (!showPartyWiseModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      setShowPartyWiseModal(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showPartyWiseModal]);
+  const ptcBackdropDownRef = useRef(false);
+
   // Party Wise summary aggregation
   const partyWiseSummary = useMemo(() => {
     const map = new Map<string, { partyName: string; count: number; totalAmount: number }>();
@@ -337,7 +406,7 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
                   focusAuditField('audit-search-party');
                 }
               }}
-              className="px-2.5 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer min-w-36 shadow-xs"
+              className="px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 cursor-pointer min-w-36 shadow-xs"
             >
               <option value="">-- ALL SHIFT --</option>
               {availableShifts.map(s => (
@@ -418,7 +487,7 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
                   focusAuditField('audit-search-btn');
                 }
               }}
-              className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500 cursor-pointer"
+              className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 cursor-pointer"
             >
               {/* Live Trans-Audit offers exactly NOT-AUDIT / AUDITED / ALL (AUDITED = marked
                   Valid or Mistake); Declare Trans-Audit keeps its existing options. */}
@@ -636,7 +705,7 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
         <div className="p-2 sm:p-2.5 bg-[#eaedf2] flex flex-wrap items-center justify-end gap-2 border-t border-slate-300">
           <button
             type="button"
-            onClick={() => setShowPartyWiseModal(true)}
+            onClick={openPartyWise}
             className="px-4 py-1.5 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
           >
             Party Wise
@@ -754,12 +823,20 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
         list={list}
       />
 
-      {/* Party Wise Summary Modal */}
+      {/* Party Wise -> "Party Trans Count" popup (live): Search | Excel, then SR / PARTY /
+          COUNT / TOTAL-AMT. Opens empty; Search (focused, Enter runs it) fills it. */}
       {showPartyWiseModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
-          <div className="bg-white rounded-lg shadow-2xl max-w-lg w-full overflow-hidden border border-slate-300">
-            <div className="bg-[#1f4277] text-white px-4 py-2.5 flex items-center justify-between">
-              <h2 className="text-sm font-bold tracking-tight">Party-Wise Audit Summary</h2>
+        <div
+          onMouseDown={(e) => { ptcBackdropDownRef.current = e.target === e.currentTarget; }}
+          onClick={(e) => {
+            if (ptcBackdropDownRef.current && e.target === e.currentTarget) setShowPartyWiseModal(false);
+            ptcBackdropDownRef.current = false;
+          }}
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-lg shadow-2xl max-w-5xl w-full overflow-hidden border border-slate-300 flex flex-col h-[80vh]">
+            <div className="bg-[#24497e] text-white px-4 py-3 flex items-center justify-between">
+              <h2 className="text-sm font-bold tracking-tight">Party Trans Count</h2>
               <button
                 type="button"
                 onClick={() => setShowPartyWiseModal(false)}
@@ -768,49 +845,65 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="p-4 space-y-3">
-              <div className="border border-slate-200 rounded overflow-hidden max-h-72 overflow-y-auto">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-[#152847] text-white font-bold text-[11px] sticky top-0">
-                    <tr>
-                      <th className="py-2 px-3">Party Name</th>
-                      <th className="py-2 px-3 text-center w-20">Slips</th>
-                      <th className="py-2 px-3 text-right">Total Amount</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 font-sans">
-                    {partyWiseSummary.length === 0 ? (
-                      <tr>
-                        <td colSpan={3} className="py-6 text-center text-slate-400">No parties found</td>
+            <div className="px-3 py-2.5 flex items-center justify-between gap-2">
+              <button
+                id="ptc-search-btn"
+                type="button"
+                onClick={handlePartyTransCountSearch}
+                disabled={ptcLoading}
+                className="px-10 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs cursor-pointer outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#00897b] disabled:opacity-80 inline-flex items-center gap-1.5"
+              >
+                Search
+                {ptcLoading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
+              </button>
+              <button
+                type="button"
+                onClick={handlePartyTransCountExcel}
+                className="px-6 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs cursor-pointer"
+              >
+                Excel
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto px-1 pb-1 pbmax-table-scrollbar">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="sticky top-0">
+                  <tr className="bg-[#152847] text-white font-bold text-[11px] uppercase">
+                    <th className="py-2.5 px-3 w-12 border-r border-[#223b63]">Sr</th>
+                    <th className="py-2.5 px-3 w-96 border-r border-[#223b63]">Party</th>
+                    <th className="py-2.5 px-3 w-24 text-center border-r border-[#223b63]">Count</th>
+                    <th className="py-2.5 px-3 w-44 text-center border-r border-[#223b63]">Total-Amt</th>
+                    <th className="py-2.5 px-3"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-sans">
+                  {ptcLoading ? (
+                    <tr><td colSpan={5} className="py-8 text-center text-slate-400">Loading...</td></tr>
+                  ) : ptcRows === null ? null : ptcRows.length === 0 ? (
+                    <tr><td colSpan={5} className="py-8 text-center text-slate-400">No transactions found.</td></tr>
+                  ) : (
+                    ptcRows.map((r, i) => (
+                      <tr key={r.party} className="hover:bg-slate-50">
+                        <td className="py-1.5 px-3 font-mono text-slate-500 border-r border-slate-100">{i + 1}</td>
+                        <td className="py-1.5 px-3 font-bold text-slate-900 uppercase border-r border-slate-100">{r.party}</td>
+                        <td className="py-1.5 px-3 text-center font-mono text-slate-700 border-r border-slate-100">{r.count}</td>
+                        <td className="py-1.5 px-3 text-center font-mono font-bold text-slate-900 border-r border-slate-100">{Math.round(r.total)}</td>
+                        <td />
                       </tr>
-                    ) : (
-                      partyWiseSummary.map((p, i) => (
-                        <tr key={i} className="hover:bg-slate-50">
-                          <td className="py-1.5 px-3 font-bold text-slate-900 uppercase">{p.partyName}</td>
-                          <td className="py-1.5 px-3 text-center font-mono text-slate-600">{p.count}</td>
-                          <td className="py-1.5 px-3 text-right font-mono font-bold text-slate-900">₹{p.totalAmount.toLocaleString('en-IN')}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                  <tfoot className="bg-slate-100 font-bold border-t border-slate-300">
-                    <tr>
-                      <td className="py-2 px-3 text-slate-800">Total</td>
-                      <td className="py-2 px-3 text-center font-mono text-slate-800">{list.length}</td>
-                      <td className="py-2 px-3 text-right font-mono text-slate-900">₹{totalSum.toLocaleString('en-IN')}</td>
+                    ))
+                  )}
+                </tbody>
+                {ptcRows && ptcRows.length > 0 && (
+                  <tfoot className="sticky bottom-0">
+                    <tr className="bg-[#152847] text-white font-bold text-[11px]">
+                      <td className="py-2 px-3 border-r border-[#223b63]">{ptcRows.length}</td>
+                      <td className="py-2 px-3 border-r border-[#223b63]">PARTY</td>
+                      <td className="py-2 px-3 text-center border-r border-[#223b63]">{ptcRows.reduce((t, r) => t + r.count, 0)}</td>
+                      <td className="py-2 px-3 text-center border-r border-[#223b63]">{Math.round(ptcRows.reduce((t, r) => t + r.total, 0))}</td>
+                      <td />
                     </tr>
                   </tfoot>
-                </table>
-              </div>
-              <div className="flex justify-end pt-2 border-t border-slate-200">
-                <button
-                  type="button"
-                  onClick={() => setShowPartyWiseModal(false)}
-                  className="px-5 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded cursor-pointer"
-                >
-                  Close
-                </button>
-              </div>
+                )}
+              </table>
             </div>
           </div>
         </div>

@@ -178,6 +178,18 @@ export const StaffPage: React.FC<StaffPageProps> = ({ user }) => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showModal]);
 
+  // A click on the dimmed area outside the box closes the Staff / Staff Update popup (as Esc
+  // and Close do). Only a press that starts AND ends there counts, so a drag that begins
+  // inside the box (e.g. selecting text) doesn't close it.
+  const backdropDownRef = useRef(false);
+  const backdropProps = {
+    onMouseDown: (e: React.MouseEvent) => { backdropDownRef.current = e.target === e.currentTarget; },
+    onClick: (e: React.MouseEvent) => {
+      if (backdropDownRef.current && e.target === e.currentTarget) setShowModal(false);
+      backdropDownRef.current = false;
+    },
+  };
+
   // Close action menu on outside click
   useEffect(() => {
     const handleClickOutside = () => {
@@ -593,7 +605,7 @@ export const StaffPage: React.FC<StaffPageProps> = ({ user }) => {
 
       {/* Staff Update popup (Action -> Edit), as live: "Staff Update | NAME" with Info / Password */}
       {showModal && editingStaffId !== null && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 overflow-y-auto">
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 overflow-y-auto">
           <div className="bg-white rounded shadow-2xl max-w-2xl w-full overflow-hidden border border-slate-300 my-auto animate-in fade-in zoom-in-95 duration-150">
             <div className="bg-[#152847] text-white px-4 py-2.5 flex items-center justify-between">
               <h2 className="text-sm font-bold tracking-wide">Staff Update | {staffName}</h2>
@@ -722,7 +734,7 @@ export const StaffPage: React.FC<StaffPageProps> = ({ user }) => {
 
       {/* Staff Add Modal matching Image 3 */}
       {showModal && editingStaffId === null && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 overflow-y-auto">
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 overflow-y-auto">
           <div className="bg-white rounded shadow-2xl max-w-2xl w-full overflow-hidden border border-slate-300 my-auto animate-in fade-in zoom-in-95 duration-150">
             {/* Modal Header matching Image 3 */}
             <div className="bg-[#152847] text-white px-4 py-2.5 flex items-center justify-between">

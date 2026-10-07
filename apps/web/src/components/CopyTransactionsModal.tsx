@@ -98,6 +98,9 @@ export const CopyTransactionsModal: React.FC<CopyTransactionsModalProps> = ({ tx
     <div
       className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150"
       onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } }}
+      // A click on the dimmed area outside the box closes it (as Esc / X do)
+      onMouseDown={(e) => { (e.currentTarget as HTMLElement).dataset.downOnBackdrop = e.target === e.currentTarget ? '1' : ''; }}
+      onClick={(e) => { if (e.target === e.currentTarget && (e.currentTarget as HTMLElement).dataset.downOnBackdrop === '1') onClose(); }}
     >
       <div className="bg-white rounded-md shadow-2xl w-full max-w-lg overflow-hidden border border-slate-300 flex flex-col max-h-[90vh]">
         <div className="bg-[#1e3a6e] text-white px-4 py-3 flex items-center justify-between">

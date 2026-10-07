@@ -4,6 +4,8 @@ import { toast } from 'react-toastify';
 import { apiRequest } from '../api/client.js';
 import { DateDMYInput } from '../components/DateDMYInput.js';
 import { PartyPicker } from '../components/PartyPicker.js';
+import { JantriViewModal } from '../components/JantriViewModal.js';
+import type { TransactionItem } from './TransactionListPage.js';
 
 interface TransBeforeAfterDeclarePageProps {
   shifts?: ShiftDto[];
@@ -56,6 +58,11 @@ export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePagePr
   const [loading, setLoading] = useState(false);
   const [viewingId, setViewingId] = useState<number | null>(null);
   const [viewEntries, setViewEntries] = useState<EntryRow[]>([]);
+  // Jantri View (F3) popup — the viewed slip's numbers in the 10x10 Jantri grid (as live),
+  // with Consolidate Jantri summing every listed slip of the same party
+  const [showJantri, setShowJantri] = useState(false);
+  const [jantriSlips, setJantriSlips] = useState<TransactionItem[]>([]);
+  const [jantriSelected, setJantriSelected] = useState<TransactionItem | null>(null);
 
   // Only active shifts are offered (as on live) — a shift switched off on Shift Manage's
   // Enable/Disable tab isn't listed. Falls back to the full list if none is active.
@@ -145,7 +152,7 @@ export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePagePr
         searchRef.current();
       } else if (e.key === 'F3') {
         e.preventDefault();
-        onNavigate && onNavigate('jantri');
+        openJantriRef.current();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -157,6 +164,40 @@ export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePagePr
     const term = appliedParty.trim().toLowerCase();
     return rows.filter(r => r.partyName.toLowerCase().includes(term));
   }, [rows, appliedParty]);
+
+  // Opens the Jantri View popup for the viewed slip (the first listed one if none is viewed
+  // yet). Its entries plus those of the party's other listed slips are fetched so the popup's
+  // Consolidate Jantri toggle has them too.
+  const openJantriView = async () => {
+    const target = filteredRows.find(r => r.id === viewingId) || filteredRows[0];
+    if (!target) {
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Error</div>
+          <div className="text-sm mt-0.5">Record not avaliable!</div>
+        </div>,
+        { toastId: 'tbad-jantri-none' }
+      );
+      return;
+    }
+    if (target.id !== viewingId) handleView(target.id);
+    const sameParty = filteredRows.filter(r => r.partyName.toLowerCase() === target.partyName.toLowerCase());
+    const toSlip = (r: TransRow, entries: EntryRow[]) =>
+      ({ id: r.id, partyName: r.partyName, totalAmount: r.amount, entries } as unknown as TransactionItem);
+    const loaded = await Promise.all(sameParty.map(async r => {
+      try {
+        const res = await apiRequest<EntryRow[]>(`/transactions/${r.id}/entries`);
+        return toSlip(r, res.data || []);
+      } catch {
+        return toSlip(r, []);
+      }
+    }));
+    setJantriSlips(loaded);
+    setJantriSelected(loaded.find(t => t.id === target.id) || null);
+    setShowJantri(true);
+  };
+  const openJantriRef = useRef(openJantriView);
+  openJantriRef.current = openJantriView;
 
   const handleView = async (id: number) => {
     setViewingId(id);
@@ -301,6 +342,11 @@ export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePagePr
         <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden w-full md:w-64 flex-shrink-0 flex flex-col">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
+              <tr className="bg-[#152847] text-white font-bold text-[11px] border-b border-[#223b63]">
+                <th colSpan={2} className="py-2 px-3 uppercase">
+                  {rows.find(r => r.id === viewingId)?.partyName || 'Party'}
+                </th>
+              </tr>
               <tr className="bg-[#152847] text-white font-bold text-[11px]">
                 <th className="py-2 px-3 border-r border-[#223b63]">Number</th>
                 <th className="py-2 px-3">Amount</th>
@@ -324,7 +370,7 @@ export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePagePr
           <div className="mt-auto p-2.5 flex justify-end border-t border-slate-200">
             <button
               type="button"
-              onClick={() => onNavigate && onNavigate('jantri')}
+              onClick={() => openJantriView()}
               className="px-4 py-2 bg-[#eab308] hover:bg-[#ca8a04] text-white font-bold text-xs rounded shadow-xs"
             >
               Jantri View (F3)
@@ -332,6 +378,13 @@ export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePagePr
           </div>
         </div>
       </div>
+
+      <JantriViewModal
+        open={showJantri}
+        onClose={() => setShowJantri(false)}
+        selectedTx={jantriSelected}
+        list={jantriSlips}
+      />
     </div>
   );
 };

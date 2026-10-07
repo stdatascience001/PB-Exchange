@@ -570,11 +570,27 @@ export const LedgersPage: React.FC = () => {
       if (e.key === 'Escape' && showModal) {
         e.preventDefault();
         setShowModal(false);
+      } else if (e.key === 'Escape' && showUpdateModal) {
+        // Ledger Update popup: Esc closes it too (as its X does)
+        e.preventDefault();
+        setShowUpdateModal(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showModal]);
+  }, [showModal, showUpdateModal]);
+
+  // A click on the dimmed area outside the box closes the New Ledger / Ledger Update popup
+  // (as Esc / X do). Only a press that starts AND ends there counts, so a drag that begins
+  // inside the box (e.g. selecting text) doesn't close it.
+  const backdropDownRef = useRef(false);
+  const backdropProps = (close: () => void) => ({
+    onMouseDown: (e: React.MouseEvent) => { backdropDownRef.current = e.target === e.currentTarget; },
+    onClick: (e: React.MouseEvent) => {
+      if (backdropDownRef.current && e.target === e.currentTarget) close();
+      backdropDownRef.current = false;
+    },
+  });
 
   const resetForm = () => {
     setPartyName('');
@@ -1554,7 +1570,7 @@ export const LedgersPage: React.FC = () => {
 
       {/* Add "New User Ledger" Modal matching Screenshots 3, 4, 5 */}
       {showModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 overflow-y-auto">
+        <div {...backdropProps(() => setShowModal(false))} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 overflow-y-auto">
           {/* Validation banner — matches the live site's "Invalid"/"Message" error popups exactly */}
           {addFormError && (
             <div className="fixed top-3 right-3 z-[60] w-full max-w-sm rounded shadow-2xl border border-red-800 bg-red-600 text-white animate-in fade-in slide-in-from-top-2 duration-150">
@@ -1972,7 +1988,7 @@ export const LedgersPage: React.FC = () => {
 
       {/* Ledger Update Modal (Action button) matching the pbmax1.com "Ledger Update" popup */}
       {showUpdateModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 overflow-y-auto">
+        <div {...backdropProps(() => setShowUpdateModal(false))} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 overflow-y-auto">
           <div className="bg-white rounded shadow-2xl max-w-3xl w-full overflow-hidden border border-slate-300 my-auto animate-in fade-in zoom-in-95 duration-150">
             {/* Modal Header */}
             <div className="bg-[#1f4277] text-white px-4 py-2.5 flex items-center justify-between">

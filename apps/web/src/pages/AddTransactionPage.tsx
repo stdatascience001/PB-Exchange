@@ -162,7 +162,9 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   const [activePartyIndex, setActivePartyIndex] = useState(0);
 
   // Active shift resolution based on transactionId or props
-  const [resolvedShift, setResolvedShift] = useState<ShiftDto | null>(activeShift || null);
+  // Edit mode (/transaction_edit/:shiftId/:txId) never starts on the app's active shift — the
+  // slip's own shift is resolved from the URL instead (see the sync effect below)
+  const [resolvedShift, setResolvedShift] = useState<ShiftDto | null>(editShiftId ? null : (activeShift || null));
   const [allShifts, setAllShifts] = useState<ShiftDto[]>(shifts);
 
   // Slips / Entries
@@ -208,6 +210,9 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   const [r8BaharAmt, setR8BaharAmt] = useState('');
   const [r8Andar, setR8Andar] = useState('');
   const [r8AndarAmt, setR8AndarAmt] = useState('');
+  // Number-Amount list section: a pasted list where each Dara number carries its own amount
+  const [r8Paste, setR8Paste] = useState('');
+  const [r8PasteAmt, setR8PasteAmt] = useState('');
   // Random (F8) validation toasts go through the app's react-toastify container (top-right,
   // red, X to close, auto-hides) — every error shows each time it happens; null clears them.
   const setR8Toast = (t: { title: string; body: string } | null) => {
@@ -384,11 +389,14 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   }, [transactionId, editShiftId, editTransactionId]);
 
   // Sync activeShift prop if provided and no specific route ID was given
+  // Not in edit mode: there the slip's own shift (editShiftId) is loaded a moment later, and
+  // borrowing the app's active shift meanwhile (in a new tab that's the list's first shift,
+  // e.g. an already-declared DELHI BAZAAR) tripped the entry-closed redirect to Dashboard.
   useEffect(() => {
-    if (!transactionId && activeShift && !resolvedShift) {
+    if (!transactionId && !editShiftId && activeShift && !resolvedShift) {
       setResolvedShift(activeShift);
     }
-  }, [activeShift, transactionId, resolvedShift]);
+  }, [activeShift, transactionId, editShiftId, resolvedShift]);
 
   // Re-seed whenever the resolved shift changes, and again each time the shifts list refreshes
   // with a new figure — that keeps the badge honest instead of letting a purely local tick
@@ -622,11 +630,14 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   // closed shouldn't leave the user stranded on a page they can't do anything on — send them
   // back to the dashboard. The "[ENTRY CLOSED]" banner/disabled Save button above are left
   // exactly as they were; this just adds a redirect on top once that same state is detected.
+  // In edit mode only the slip's own shift counts — never a shift that happened to be set
+  // before it finished loading.
+  const cutoffShiftIsOwn = !editShiftId || String(resolvedShift?.id ?? '') === String(editShiftId);
   useEffect(() => {
-    if (isCutoffBlocked && onNavigate) {
+    if (isCutoffBlocked && cutoffShiftIsOwn && onNavigate) {
       onNavigate('dashboard');
     }
-  }, [isCutoffBlocked, onNavigate]);
+  }, [isCutoffBlocked, cutoffShiftIsOwn, onNavigate]);
 
   // Copy shift toggling - only non-declared shifts can be copied to
   const currentShiftName = resolvedShift?.name || activeShift?.name || 'GHAZIABAD';
@@ -934,11 +945,47 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   // "Invalid No." beside the Amount, but it holds TOTAL AMOUNT at 0 like the other errors
   const r8NeedsAmount = (raw: string, amountStr: string) =>
     raw.replace(/\D/g, '').length > 0 && !((parseFloat(amountStr) || 0) > 0);
-  const r8HasError = !!(r8DaraState.error || r8BaharState.error || r8AndarState.error)
+  // Number-Amount list: every Dara number with its own amount, in any of these formats
+  //   04=35#05=30#06=30#          (number=amount, '#' between pairs, trailing '#' optional)
+  //   16(5)19(95)20(95)           (number(amount), back to back, across lines)
+  //   12 34 56                    (plain numbers -> the section's Amount box)
+  // Separators (#  ,  ;  spaces  new lines) are all accepted, and the formats can be mixed.
+  // 1-99 -> 01-99, 00 / 100 -> 100 (same as the main NUMBER box). An explicit amount wins
+  // over the Amount box; the Amount box only fills plain numbers.
+  const parseR8Paste = (raw: string, defaultAmtStr: string) => {
+    const rows: { num: string; amt: number }[] = [];
+    const defaultAmt = parseFloat(defaultAmtStr) || 0;
+    const text = raw.trim();
+    if (!text) return { rows, error: null as null | 'NUMBER' | 'AMOUNT', total: 0 };
+    // Any character outside digits, = ( ) . and the separators -> not a valid list
+    if (/[^\d\s#,;=().]/.test(text)) return { rows: [], error: 'NUMBER' as const, total: 0 };
+    const sep = /[\s#,;]+/y;
+    const item = /(\d+)(?:\s*=\s*(\d+(?:\.\d+)?)|\s*\(\s*(\d+(?:\.\d+)?)\s*\))?/y;
+    let pos = 0;
+    while (pos < text.length) {
+      sep.lastIndex = pos;
+      if (sep.exec(text)) pos = sep.lastIndex;
+      if (pos >= text.length) break;
+      item.lastIndex = pos;
+      const m = item.exec(text);
+      if (!m) return { rows: [], error: 'NUMBER' as const, total: 0 };
+      pos = item.lastIndex;
+      const num = m[1].length <= 2 || m[1] === '100' ? normalizeTypedNumber(m[1]) : null;
+      if (!num) return { rows: [], error: 'NUMBER' as const, total: 0 };
+      const own = m[2] ?? m[3];
+      const amt = own !== undefined ? parseFloat(own) : defaultAmt;
+      if (!(amt > 0)) return { rows: [], error: 'AMOUNT' as const, total: 0 };
+      rows.push({ num, amt });
+    }
+    return { rows, error: null, total: rows.reduce((t, r) => t + r.amt, 0) };
+  };
+  const r8PasteState = parseR8Paste(r8Paste, r8PasteAmt);
+
+  const r8HasError = !!(r8DaraState.error || r8BaharState.error || r8AndarState.error || r8PasteState.error)
     || r8NeedsAmount(r8Dara, r8DaraAmt) || r8NeedsAmount(r8Bahar, r8BaharAmt) || r8NeedsAmount(r8Andar, r8AndarAmt);
   // Live screenshots 2 and 3 both read TOTAL AMOUNT : 0 while one section is flagged, even
   // though the other two sections show their own figures — so any error zeroes the total.
-  const r8TotalAmount = r8HasError ? 0 : r8DaraState.total + r8BaharState.total + r8AndarState.total;
+  const r8TotalAmount = r8HasError ? 0 : r8DaraState.total + r8BaharState.total + r8AndarState.total + r8PasteState.total;
 
   const r8ErrorToast = (error: 'PAIR' | 'EMPTY') =>
     error === 'PAIR'
@@ -952,6 +999,11 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   const buildRandom8Entries = (): EntryRow[] => {
     if (r8HasError) return [];
     const out: EntryRow[] = [];
+    // Number-Amount list first, in the order it was pasted (it ends up below the other
+    // sections' rows once the whole batch is reversed, still reading bottom-up as pasted)
+    for (const r of r8PasteState.rows) {
+      out.push({ numberValue: r.num, amount: r.amt, entryType: 'DARA' });
+    }
     if (r8DaraState.amt > 0) {
       for (const n of r8DaraState.chunks) {
         out.push({ numberValue: n, amount: r8DaraState.amt, entryType: 'DARA' });
@@ -976,6 +1028,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
     setR8Dara(''); setR8DaraAmt('');
     setR8Bahar(''); setR8BaharAmt('');
     setR8Andar(''); setR8AndarAmt('');
+    setR8Paste(''); setR8PasteAmt('');
     setR8Toast(null);
   };
 
@@ -994,12 +1047,23 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
   // Live flow: the popup opens with the cursor in Dara; Enter walks Dara -> Amount ->
   // Akhar Bahar -> Amount -> Akhar Andar -> Amount -> Save (Enter on Save saves).
-  const R8_ENTER_ORDER = ['r8-dara', 'r8-dara-amt', 'r8-bahar', 'r8-bahar-amt', 'r8-andar', 'r8-andar-amt', 'r8-save-btn'];
+  const R8_ENTER_ORDER = ['r8-dara', 'r8-dara-amt', 'r8-bahar', 'r8-bahar-amt', 'r8-andar', 'r8-andar-amt', 'r8-paste', 'r8-paste-amt', 'r8-save-btn'];
   // Live checks, in this order, for one section:
   //   number typed, Amount blank/0   -> "Invalid Amount" (cursor stays on that Amount)
   //   Dara digits not in pairs       -> "Invalid Number Pair" (cursor back on the number, selected)
   //   Amount given, number blank     -> "Invalid Number" (cursor back on the number)
-  const r8CheckSection = (key: 'dara' | 'bahar' | 'andar'): boolean => {
+  const r8CheckSection = (key: 'dara' | 'bahar' | 'andar' | 'paste'): boolean => {
+    if (key === 'paste') {
+      if (!r8PasteState.error) return true;
+      setR8Toast(r8PasteState.error === 'AMOUNT'
+        ? { title: 'Invalid Amount', body: 'Please enter a valid amount!' }
+        : { title: 'Invalid Number', body: 'Please enter a valid number!' });
+      // A plain number missing its amount -> the Amount box; anything else -> the list
+      const el = document.getElementById(r8PasteState.error === 'AMOUNT' ? 'r8-paste-amt' : 'r8-paste') as HTMLInputElement | HTMLTextAreaElement | null;
+      el?.focus();
+      el?.select();
+      return false;
+    }
     const raw = key === 'dara' ? r8Dara : key === 'bahar' ? r8Bahar : r8Andar;
     const amt = key === 'dara' ? r8DaraAmt : key === 'bahar' ? r8BaharAmt : r8AndarAmt;
     const state = key === 'dara' ? r8DaraState : key === 'bahar' ? r8BaharState : r8AndarState;
@@ -1025,8 +1089,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
     if (e.key !== 'Enter') return;
     e.preventDefault();
     // Enter on an Amount box checks its section first; a problem keeps the cursor there
-    const amtMatch = id.match(/^r8-(dara|bahar|andar)-amt$/);
-    if (amtMatch && !r8CheckSection(amtMatch[1] as 'dara' | 'bahar' | 'andar')) return;
+    const amtMatch = id.match(/^r8-(dara|bahar|andar|paste)-amt$/);
+    if (amtMatch && !r8CheckSection(amtMatch[1] as 'dara' | 'bahar' | 'andar' | 'paste')) return;
     // Enter in Dara with an odd digit run (e.g. "45 65 6") says so straight away and keeps
     // the cursor in Dara with the text selected — Amount or not
     if (id === 'r8-dara' && r8Dara.replace(/\D/g, '').length % 2 !== 0) {
@@ -1051,7 +1115,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   const handleSaveRandom8 = () => {
     // Same checks as Enter, Dara -> Bahar -> Andar; the first problem keeps the popup open
     // with the cursor on the box to fix
-    for (const key of ['dara', 'bahar', 'andar'] as const) {
+    for (const key of ['dara', 'bahar', 'andar', 'paste'] as const) {
       if (!r8CheckSection(key)) return;
     }
     const entries = buildRandom8Entries();
@@ -2273,6 +2337,41 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
                   </div>
                 </div>
               ))}
+
+              {/* Number-Amount list: paste "04=35#05=30#" or "16(5)19(95)" (formats can be mixed);
+                  the Amount box fills any plain number that has no amount of its own */}
+              <div className="flex gap-4 mb-3">
+                <div className="flex-1 min-w-0">
+                  <label className="block text-xs text-slate-700 mb-1">Number = Amount</label>
+                  <textarea
+                    id="r8-paste"
+                    onKeyDown={r8EnterNext('r8-paste')}
+                    value={r8Paste}
+                    onChange={(e) => setR8Paste(e.target.value)}
+                    onBlur={() => { if (r8PasteState.error === 'NUMBER') setR8Toast({ title: 'Invalid Number', body: 'Please enter a valid number!' }); }}
+                    placeholder="EG: 04=35#05=30#  OR  16(5)19(95)"
+                    rows={3}
+                    className="w-full px-2 py-1.5 border border-slate-300 rounded-xs text-sm font-bold font-mono outline-none resize-y bg-white focus:bg-[#fde68a] placeholder:text-slate-300 placeholder:font-normal placeholder:text-xs"
+                  />
+                </div>
+                <div className="w-36 flex-shrink-0">
+                  <div className="flex items-baseline justify-between mb-1">
+                    <span className="text-xs text-slate-700">Amount</span>
+                    <span className="text-xs font-bold text-emerald-700">
+                      {r8PasteState.error ? 'Invalid No.' : (r8PasteState.total > 0 ? r8PasteState.total : '')}
+                    </span>
+                  </div>
+                  <input
+                    id="r8-paste-amt"
+                    onKeyDown={r8EnterNext('r8-paste-amt')}
+                    type="number"
+                    value={r8PasteAmt}
+                    onChange={(e) => setR8PasteAmt(e.target.value)}
+                    placeholder="AMOUNT"
+                    className="w-full h-9 px-2 text-center border border-slate-300 rounded-xs text-sm font-bold font-mono outline-none bg-white focus:bg-[#fde68a] placeholder:text-slate-300 placeholder:font-normal placeholder:text-xs"
+                  />
+                </div>
+              </div>
 
               <div className="text-center font-bold text-sm text-slate-900 my-3">
                 TOTAL AMOUNT : {r8TotalAmount}

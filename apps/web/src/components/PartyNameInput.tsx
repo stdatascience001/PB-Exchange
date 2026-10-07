@@ -100,6 +100,8 @@ export const PartyNameInput: React.FC<PartyNameInputProps> = ({ value, onChange,
       e.preventDefault();
       pick(options[hi]);
     } else if (e.key === 'Escape') {
+      // An open list takes the first Esc (the popup around it stays open)
+      if (open) e.stopPropagation();
       setOpen(false);
       setArrowQuery(null);
     }

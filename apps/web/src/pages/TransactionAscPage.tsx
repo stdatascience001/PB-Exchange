@@ -88,8 +88,21 @@ export const TransactionAscPage: React.FC<TransactionAscPageProps> = ({ shifts =
   // longer reloads on its own whenever Shift or Date changes, or on page open).
   const [hasSearched, setHasSearched] = useState(false);
 
+  // Live Enter flow: the page opens on Shift; Enter walks Shift -> Date DD -> MM -> YYYY ->
+  // Amount -> Search, and Enter on Search searches (spinner while it runs)
+  const focusAsc = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
+  useEffect(() => {
+    const id = requestAnimationFrame(() => focusAsc('asc-shift'));
+    return () => cancelAnimationFrame(id);
+  }, []);
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     setHasSearched(true);
     fetchList();
   };
@@ -120,9 +133,11 @@ export const TransactionAscPage: React.FC<TransactionAscPageProps> = ({ shifts =
             <div className="flex items-center gap-1.5">
               <span className="text-slate-600 font-medium text-xs">Shift</span>
               <select
+                id="asc-shift"
                 value={shiftId}
                 onChange={(e) => setShiftId(e.target.value)}
-                className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer min-w-40 shadow-xs"
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); focusAsc('asc-date-dd'); } }}
+                className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 cursor-pointer min-w-40 shadow-xs"
               >
                 <option value="">-- ALL SHIFTS --</option>
                 {availableShifts.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -131,20 +146,29 @@ export const TransactionAscPage: React.FC<TransactionAscPageProps> = ({ shifts =
             <div className="flex items-center gap-1.5">
               <span className="text-slate-600 font-medium text-xs">Date</span>
               {/* DD / MM / YYYY as on live (the browser picker showed MM/DD/YYYY); still sends YYYY-MM-DD */}
-              <DateDMYInput value={reportDate} onChange={setReportDate} idPrefix="asc-date" />
+              <DateDMYInput value={reportDate} onChange={setReportDate} idPrefix="asc-date" onEnterFromYear={() => focusAsc('asc-amount')} />
             </div>
             <div className="flex items-center gap-1.5">
               <span className="text-slate-600 font-medium text-xs">Amount</span>
               <input
+                id="asc-amount"
                 type="number"
                 value={minAmount}
                 onChange={(e) => setMinAmount(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); focusAsc('asc-search-btn'); } }}
                 placeholder="ABOVE"
-                className="w-32 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 focus:outline-none focus:border-blue-500 placeholder:text-slate-400 font-semibold"
+                className="w-32 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 placeholder:text-slate-400 font-semibold"
               />
             </div>
-            <button type="submit" className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors">
+            <button
+              id="asc-search-btn"
+              type="submit"
+              disabled={loading}
+              className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5"
+            >
               Search
+              {/* Spinner while the report loads, as on live */}
+              {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
             </button>
           </div>
           <button type="button" onClick={handleExportExcel} className="px-4 py-1 bg-[#15803d] hover:bg-[#166534] active:bg-[#14532d] text-white font-bold text-xs rounded shadow-xs transition-colors">

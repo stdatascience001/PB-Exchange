@@ -126,6 +126,102 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
   const [viewingTx, setViewingTx] = useState<TransactionItem | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingTx, setEditingTx] = useState<TransactionItem | null>(null);
+
+  // Kwada Trans / Abs Party popups — the same two as Live Transactions, on this page's shift
+  // and date. Kwada: parties who hit an exact Amount (an exact Count of times, if given).
+  // Abs Party ("Party Not Working"): parties normally active in this shift absent on the date.
+  const [showKwadaModal, setShowKwadaModal] = useState(false);
+  const [showAbsPartyModal, setShowAbsPartyModal] = useState(false);
+  const [kwadaAmount, setKwadaAmount] = useState('');
+  const [kwadaCount, setKwadaCount] = useState('');
+  const [kwadaResults, setKwadaResults] = useState<{ sr: number; partyId: number; party: string; amount: number }[]>([]);
+  const [kwadaLoading, setKwadaLoading] = useState(false);
+  const [kwadaSearched, setKwadaSearched] = useState(false);
+  const [absentParties, setAbsentParties] = useState<{ sr: number; id: number; party: string; mobile: string; work: number }[]>([]);
+  const [absentPartiesLoading, setAbsentPartiesLoading] = useState(false);
+
+  // Esc (or a click on the dimmed area outside the box) closes the View / Edit / Kwada /
+  // Party Not Working popup, the same as its Close / X button. (Jantri View and Copy handle
+  // this themselves.)
+  const pageModalOpen = showViewModal || showEditModal || showKwadaModal || showAbsPartyModal;
+  const closePageModal = () => {
+    setShowViewModal(false);
+    setShowEditModal(false);
+    setShowKwadaModal(false);
+    setShowAbsPartyModal(false);
+  };
+  useEffect(() => {
+    if (!pageModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      closePageModal();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pageModalOpen]);
+  const handleKwadaFind = async () => {
+    if (!kwadaAmount.trim() || kwadaLoading) return;
+    setKwadaLoading(true);
+    setKwadaSearched(true);
+    try {
+      const params = new URLSearchParams();
+      if (selectedShiftId) params.append('shiftId', selectedShiftId);
+      if (dateStr) params.append('date', dateStr);
+      params.append('amount', kwadaAmount.trim());
+      if (kwadaCount.trim()) params.append('count', kwadaCount.trim());
+      const res = await apiRequest<{ sr: number; partyId: number; party: string; amount: number }[]>(
+        `/transactions/kwada?${params.toString()}`
+      );
+      setKwadaResults(res.data || []);
+    } catch (err) {
+      console.warn('Failed to load Kwada transactions:', err);
+      setKwadaResults([]);
+    } finally {
+      setKwadaLoading(false);
+    }
+  };
+
+  const fetchAbsentParties = async () => {
+    if (!selectedShiftId) {
+      setAbsentParties([]);
+      return;
+    }
+    setAbsentPartiesLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.append('shiftId', selectedShiftId);
+      params.append('date', dateStr);
+      const res = await apiRequest<{ sr: number; id: number; party: string; mobile: string; work: number }[]>(
+        `/transactions/absent-parties?${params.toString()}`
+      );
+      setAbsentParties(res.data || []);
+    } catch (err) {
+      console.warn('Failed to load absent parties:', err);
+      setAbsentParties([]);
+    } finally {
+      setAbsentPartiesLoading(false);
+    }
+  };
+  useEffect(() => {
+    if (showAbsPartyModal) fetchAbsentParties();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAbsPartyModal]);
+  // Kwada opens with the cursor in Amount
+  useEffect(() => {
+    if (!showKwadaModal) return;
+    const id = requestAnimationFrame(() => document.getElementById('decl-kwada-amount')?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [showKwadaModal]);
+
+  const backdropDownRef = React.useRef(false);
+  const backdropProps = {
+    onMouseDown: (e: React.MouseEvent) => { backdropDownRef.current = e.target === e.currentTarget; },
+    onClick: (e: React.MouseEvent) => {
+      if (backdropDownRef.current && e.target === e.currentTarget) closePageModal();
+      backdropDownRef.current = false;
+    },
+  };
   const [editAmount, setEditAmount] = useState<number>(0);
 
   const formatDateTimePb = (dStr?: string) => {
@@ -623,12 +719,14 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
           <div className="flex items-center gap-2">
             <button
               type="button"
+              onClick={() => setShowKwadaModal(true)}
               className="px-4 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
             >
               Kwada Trans
             </button>
             <button
               type="button"
+              onClick={() => setShowAbsPartyModal(true)}
               className="px-4 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
             >
               Abs Party
@@ -678,7 +776,7 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
 
       {/* View Slip Modal */}
       {showViewModal && viewingTx && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
           <div className="bg-white rounded-lg shadow-2xl max-w-lg w-full overflow-hidden border border-slate-300">
             <div className="bg-[#1f4277] text-white px-4 py-2.5 flex items-center justify-between">
               <h2 className="text-sm font-bold tracking-tight">Declared Slip: {viewingTx.slipNumber}</h2>
@@ -740,7 +838,7 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
 
       {/* Edit Slip Modal */}
       {showEditModal && editingTx && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
           <div className="bg-white rounded-lg shadow-2xl max-w-sm w-full overflow-hidden border border-slate-300">
             <div className="bg-[#1f4277] text-white px-4 py-2.5 flex items-center justify-between">
               <h2 className="text-sm font-bold tracking-tight">Edit Total: {editingTx.slipNumber}</h2>
@@ -791,6 +889,123 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
           </div>
         </div>
       )}
+      {/* Kwada Transaction popup (live: Amount / Count / Find, then Sr | Party | Amount) */}
+      {showKwadaModal && (
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
+          <div className="bg-white rounded-lg shadow-2xl max-w-lg w-full overflow-hidden border border-slate-300 flex flex-col max-h-[85vh]">
+            <div className="bg-[#24497e] text-white px-4 py-2.5 flex items-center justify-between">
+              <h2 className="text-sm font-bold tracking-tight">Kwada Transaction</h2>
+              <button type="button" onClick={() => setShowKwadaModal(false)} className="text-white hover:text-slate-200 p-0.5">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <form
+              onSubmit={(e) => { e.preventDefault(); handleKwadaFind(); }}
+              className="px-3 py-2.5 flex flex-wrap items-center gap-3 text-xs border-b border-slate-200"
+            >
+              <span className="text-slate-700 font-semibold">Amount</span>
+              <input
+                id="decl-kwada-amount"
+                type="number"
+                value={kwadaAmount}
+                onChange={(e) => setKwadaAmount(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); document.getElementById('decl-kwada-count')?.focus(); } }}
+                placeholder="AMOUNT"
+                className="w-28 px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
+              />
+              <span className="text-slate-700 font-semibold">Count</span>
+              <input
+                id="decl-kwada-count"
+                type="number"
+                value={kwadaCount}
+                onChange={(e) => setKwadaCount(e.target.value)}
+                placeholder="COUNT"
+                className="w-16 px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
+              />
+              <button
+                type="submit"
+                disabled={!kwadaAmount.trim() || kwadaLoading}
+                className="px-5 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] active:bg-[#0f4691] text-white font-bold text-xs rounded shadow-xs transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                {kwadaLoading ? 'Finding...' : 'Find'}
+              </button>
+            </form>
+            <div className="overflow-y-auto min-h-[320px] p-1">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="sticky top-0">
+                  <tr className="bg-[#152847] text-white font-bold text-[11px]">
+                    <th className="py-2 px-3 w-12 border-r border-[#223b63]">Sr</th>
+                    <th className="py-2 px-3 border-r border-[#223b63]">Party</th>
+                    <th className="py-2 px-3 w-20 text-right">Amount</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {kwadaResults.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="py-6 text-center text-slate-400">
+                        {kwadaSearched && !kwadaLoading ? 'No matching parties found.' : ''}
+                      </td>
+                    </tr>
+                  ) : (
+                    kwadaResults.map((r) => (
+                      <tr key={r.partyId} className="hover:bg-slate-50">
+                        <td className="py-1.5 px-3 font-mono text-slate-500">{r.sr}</td>
+                        <td className="py-1.5 px-3 font-bold uppercase text-slate-800">{r.party}</td>
+                        <td className="py-1.5 px-3 text-right font-mono font-semibold text-slate-800">{r.amount}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Party Not Working popup (Abs Party): Sr | Party | Mobile | Work */}
+      {showAbsPartyModal && (
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
+          <div className="bg-white rounded-lg shadow-2xl max-w-lg w-full overflow-hidden border border-slate-300 flex flex-col max-h-[85vh]">
+            <div className="bg-[#24497e] text-white px-4 py-2.5 flex items-center justify-between">
+              <h2 className="text-sm font-bold tracking-tight">Party Not Working</h2>
+              <button type="button" onClick={() => setShowAbsPartyModal(false)} className="text-white hover:text-slate-200 p-0.5">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="overflow-y-auto p-1 pbmax-table-scrollbar">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="sticky top-0">
+                  <tr className="bg-[#152847] text-white font-bold text-[11px]">
+                    <th className="py-2 px-3 w-12 border-r border-[#223b63]">Sr</th>
+                    <th className="py-2 px-3 border-r border-[#223b63]">Party</th>
+                    <th className="py-2 px-3 w-24 text-center border-r border-[#223b63]">Mobile</th>
+                    <th className="py-2 px-3 w-20 text-center">Work</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {absentPartiesLoading ? (
+                    <tr><td colSpan={4} className="py-6 text-center text-slate-400">Loading...</td></tr>
+                  ) : !selectedShiftId ? (
+                    <tr><td colSpan={4} className="py-6 text-center text-slate-400">Choose a shift first.</td></tr>
+                  ) : absentParties.length === 0 ? (
+                    <tr><td colSpan={4} className="py-6 text-center text-slate-400">No regular parties are absent.</td></tr>
+                  ) : (
+                    absentParties.map((p) => (
+                      <tr key={p.id} className="hover:bg-slate-50">
+                        <td className="py-1.5 px-3 font-mono text-slate-500">{p.sr}</td>
+                        <td className="py-1.5 px-3 font-bold uppercase text-slate-800">{p.party}</td>
+                        <td className="py-1.5 px-3 text-center font-mono text-slate-700">{p.mobile}</td>
+                        <td className="py-1.5 px-3 text-center font-mono font-semibold text-slate-800">{p.work}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
       <JantriViewModal
         open={showJantriModal}
         onClose={() => setShowJantriModal(false)}

@@ -408,12 +408,13 @@ export const App: React.FC = () => {
   // place, unused, for a future retry behind a single shared connection instead of
   // one-per-page.
 
-  // Global Keyboard Shortcuts (F1 -> Add Slip)
+  // F1 no longer jumps to the old Add Slip page (/add-transaction) — it only stops the
+  // browser's own Help page from opening. Pages that use F1 themselves (e.g. Trans-Audit's
+  // Jantri View) still get it. /add-transaction itself still opens from its URL.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'F1') {
         e.preventDefault();
-        navigateTo('add-transaction');
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -489,6 +490,8 @@ export const App: React.FC = () => {
 
   const isMasterOrDashboard = [
     'dashboard',
+    // F1 (Add Slip) opens the slip entry page full width — no dark side menu next to it
+    'add-transaction',
     'shifts',
     'ledgers',
     'staff',

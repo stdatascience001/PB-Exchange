@@ -34,12 +34,38 @@ export const JantriPage: React.FC<JantriPageProps> = ({
     // Enable/Disable tab) shouldn't still be selectable here.
     const activeOnly = shifts.filter(s => s.isActive !== false);
     const base = activeOnly.length > 0 ? activeOnly : shifts;
-    if (!declareModeOnly) return base;
-    const declared = base.filter(s => !!s.declaredNumber || s.status === 'DECLARED' || s.status === 'AUDITED');
-    return declared.length > 0 ? declared : base;
+    // Jantri (live) leaves out shifts whose result is already declared (e.g. HYDRABAD NIGHT once
+    // it reads "01") — those belong on Declare Jantri
+    if (!declareModeOnly) return base.filter(s => !(s.declaredNumber || s.status === 'DECLARED' || s.status === 'AUDITED'));
+    // Declare Jantri lists the active shifts too (as live); a shift whose result isn't
+    // declared just shows an empty grid with the "Record not avaliable!" toast (fetchJantri)
+    return base;
   }, [shifts, declareModeOnly]);
+  const isShiftDeclared = (s?: ShiftDto) => !!s && (!!s.declaredNumber || s.status === 'DECLARED' || s.status === 'AUDITED');
 
   const fetchJantri = async (shiftId: number) => {
+    // Declare Jantri: only a declared result has a declare jantri — an undeclared shift gets
+    // the zero grid and the live "Error / Record not avaliable!" toast, without its live figures
+    if (declareModeOnly && !isShiftDeclared(shifts.find(s => s.id === shiftId))) {
+      const shift = shifts.find(s => s.id === shiftId);
+      setData({
+        shiftId,
+        shiftName: shift?.name || '',
+        shiftDate: dateStr,
+        totalCollected: 0,
+        totalRisk: 0,
+        grid: [],
+        haruf: [],
+      });
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Error</div>
+          <div className="text-sm mt-0.5">Record not avaliable!</div>
+        </div>,
+        { toastId: 'declare-jantri-no-record' }
+      );
+      return;
+    }
     setLoading(true);
     try {
       // Jantri page shows net (Commission/Hissa/Kat-adjusted) amounts, confirmed against live:
@@ -49,6 +75,23 @@ export const JantriPage: React.FC<JantriPageProps> = ({
       // Calculation), which must keep showing raw amounts.
       const res = await apiRequest<JantriViewDto>(`/jantri/${shiftId}/net?date=${dateStr}`);
       if (res.data) setData(res.data);
+      // Declare Jantri: nothing for that declared shift + date (null response / no amounts) ->
+      // live's red "Error / Record not avaliable!" toast, with the grid at zeros
+      if (declareModeOnly) {
+        const hasAmounts = !!res.data && (
+          (res.data.grid || []).some(g => (g.totalAmount || 0) !== 0) ||
+          (res.data.haruf || []).some(h => (h.andarAmount || 0) !== 0 || (h.baharAmount || 0) !== 0)
+        );
+        if (!hasAmounts) {
+          toast.error(
+            <div>
+              <div className="font-bold text-base">Error</div>
+              <div className="text-sm mt-0.5">Record not avaliable!</div>
+            </div>,
+            { toastId: 'declare-jantri-no-record' }
+          );
+        }
+      }
     } catch (err: any) {
       // Before the shift's Main Jantri Time (Edit Shift > Time tab), as on live: an error
       // toast and the Jantri grid shown empty, never the previous shift's figures.
@@ -81,6 +124,17 @@ export const JantriPage: React.FC<JantriPageProps> = ({
   useEffect(() => {
     const target = activeShift && availableShifts.some(s => s.id === activeShift.id) ? activeShift : availableShifts[0];
     if (target) fetchJantri(target.id);
+    else if (declareModeOnly && shifts.length > 0) {
+      // No declared shift at all: empty grid and the same "Record not avaliable!" toast
+      setData(null);
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Error</div>
+          <div className="text-sm mt-0.5">Record not avaliable!</div>
+        </div>,
+        { toastId: 'declare-jantri-no-record' }
+      );
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeShift, availableShifts.length, dateStr]);
 
@@ -238,14 +292,14 @@ export const JantriPage: React.FC<JantriPageProps> = ({
                             </span>
                             {amt > 0 ? (
                               <span className="font-bold text-xs sm:text-[13px] text-slate-900 font-mono">
-                                {amt.toLocaleString('en-IN')}
+                                {Math.round(amt)}
                               </span>
                             ) : null}
                           </td>
                         );
                       })}
                       <td className="text-center font-bold text-slate-900 bg-white border border-slate-300 text-xs sm:text-[13px] font-mono">
-                        {rowTotal > 0 ? rowTotal.toLocaleString('en-IN') : 0}
+                        {rowTotal > 0 ? Math.round(rowTotal) : 0}
                       </td>
                     </tr>
                   );
@@ -256,12 +310,12 @@ export const JantriPage: React.FC<JantriPageProps> = ({
                     const colTotal = getColTotal(c + 1);
                     return (
                       <td key={c + 1} className="py-1.5 sm:py-2 border border-[#2b446f]">
-                        {colTotal > 0 ? colTotal.toLocaleString('en-IN') : 0}
+                        {colTotal > 0 ? Math.round(colTotal) : 0}
                       </td>
                     );
                   })}
                   <td className="py-1.5 sm:py-2 border border-[#2b446f]">
-                    {numbersTotal > 0 ? numbersTotal.toLocaleString('en-IN') : 0}
+                    {numbersTotal > 0 ? Math.round(numbersTotal) : 0}
                   </td>
                 </tr>
 
@@ -277,14 +331,14 @@ export const JantriPage: React.FC<JantriPageProps> = ({
                         </span>
                         {bAmt > 0 ? (
                           <span className="font-bold text-xs sm:text-[13px] text-slate-900 font-mono">
-                            {bAmt.toLocaleString('en-IN')}
+                            {Math.round(bAmt)}
                           </span>
                         ) : null}
                       </td>
                     );
                   })}
                   <td className="text-center font-bold text-slate-900 bg-white border border-slate-300 text-xs sm:text-[13px] font-mono">
-                    {baharTotal > 0 ? baharTotal.toLocaleString('en-IN') : 0}
+                    {baharTotal > 0 ? Math.round(baharTotal) : 0}
                   </td>
                 </tr>
 
@@ -300,14 +354,14 @@ export const JantriPage: React.FC<JantriPageProps> = ({
                         </span>
                         {aAmt > 0 ? (
                           <span className="font-bold text-xs sm:text-[13px] text-slate-900 font-mono">
-                            {aAmt.toLocaleString('en-IN')}
+                            {Math.round(aAmt)}
                           </span>
                         ) : null}
                       </td>
                     );
                   })}
                   <td className="text-center font-bold text-slate-900 bg-white border border-slate-300 text-xs sm:text-[13px] font-mono">
-                    {andarTotal > 0 ? andarTotal.toLocaleString('en-IN') : 0}
+                    {andarTotal > 0 ? Math.round(andarTotal) : 0}
                   </td>
                 </tr>
 
@@ -317,7 +371,7 @@ export const JantriPage: React.FC<JantriPageProps> = ({
                   ))}
                   <td className="py-1.5 sm:py-2 text-center border border-[#2b446f] font-bold whitespace-nowrap">Grand Total</td>
                   <td className="py-1.5 sm:py-2 text-center border border-[#2b446f] font-mono font-bold">
-                    {grandTotal > 0 ? grandTotal.toLocaleString('en-IN') : 0}
+                    {grandTotal > 0 ? Math.round(grandTotal).toLocaleString('en-IN') : 0}
                   </td>
                 </tr>
               </tbody>

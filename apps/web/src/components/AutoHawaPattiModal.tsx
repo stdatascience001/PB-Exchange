@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { apiRequest } from '../api/client.js';
@@ -76,6 +76,22 @@ export const AutoHawaPattiModal: React.FC<{ open: boolean; onClose: () => void; 
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
+  // Live Enter flow: opens on Month; Enter walks Month -> Year -> Agents -> Search, and Enter
+  // on Search searches
+  const focusAh = (id: string) => (document.getElementById(id) as HTMLElement | null)?.focus();
+  const ahEnterTo = (id: string) => (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    focusAh(id);
+  };
+  useEffect(() => {
+    if (!open) return;
+    const id = requestAnimationFrame(() => focusAh('ah-month'));
+    return () => cancelAnimationFrame(id);
+  }, [open]);
+  // A click on the dimmed area outside the box closes it (as Esc / X do)
+  const backdropDownRef = useRef(false);
+
   const search = async () => {
     setLoading(true);
     try {
@@ -140,7 +156,14 @@ export const AutoHawaPattiModal: React.FC<{ open: boolean; onClose: () => void; 
   const sel = 'px-2 py-1.5 bg-white border border-slate-300 rounded-xs text-xs font-bold text-slate-800 cursor-pointer focus:outline-none focus:bg-[#fde68a]';
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-start justify-center p-3 pt-10 z-50 animate-in fade-in duration-150">
+    <div
+      onMouseDown={(e) => { backdropDownRef.current = e.target === e.currentTarget; }}
+      onClick={(e) => {
+        if (backdropDownRef.current && e.target === e.currentTarget) onClose();
+        backdropDownRef.current = false;
+      }}
+      className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-start justify-center p-3 pt-10 z-50 animate-in fade-in duration-150"
+    >
       <div className="bg-white rounded-lg shadow-2xl w-full max-w-[1720px] overflow-hidden border border-slate-300 flex flex-col h-[85vh]">
         <div className="bg-[#1f4277] text-white px-4 py-3 flex items-center justify-between">
           <h2 className="text-base font-bold tracking-tight">
@@ -153,18 +176,18 @@ export const AutoHawaPattiModal: React.FC<{ open: boolean; onClose: () => void; 
 
         <form onSubmit={(e) => { e.preventDefault(); search(); }} className="px-3 py-2 flex flex-wrap items-center gap-4 text-xs border-b border-slate-200">
           <span className="font-semibold text-slate-600">Month</span>
-          <select value={month} onChange={(e) => setMonth(parseInt(e.target.value, 10))} className={`${sel} w-32`}>
+          <select id="ah-month" onKeyDown={ahEnterTo('ah-year')} value={month} onChange={(e) => setMonth(parseInt(e.target.value, 10))} className={`${sel} w-32`}>
             {VAPSI_MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
           </select>
-          <select value={year} onChange={(e) => setYear(parseInt(e.target.value, 10))} className={`${sel} w-32`}>
+          <select id="ah-year" onKeyDown={ahEnterTo('ah-agent')} value={year} onChange={(e) => setYear(parseInt(e.target.value, 10))} className={`${sel} w-32`}>
             {vapsiYears().map(y => <option key={y} value={y}>{y}</option>)}
           </select>
           <span className="font-semibold text-slate-600">Agents</span>
-          <select value={agentId} onChange={(e) => setAgentId(e.target.value)} className={`${sel} w-32`}>
+          <select id="ah-agent" onKeyDown={ahEnterTo('ah-search-btn')} value={agentId} onChange={(e) => setAgentId(e.target.value)} className={`${sel} w-32`}>
             <option value="">-- ALL --</option>
             {agents.map(a => <option key={a.id} value={a.id}>{a.agentName}</option>)}
           </select>
-          <button type="submit" disabled={loading} className="px-10 py-2 bg-[#1662c6] hover:bg-[#1354ab] text-white font-bold text-xs rounded-xs disabled:opacity-60">
+          <button id="ah-search-btn" type="submit" disabled={loading} className="px-10 py-2 bg-[#1662c6] hover:bg-[#1354ab] text-white font-bold text-xs rounded-xs disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#1662c6]">
             {loading ? 'Searching...' : 'Search'}
           </button>
           <label className="ml-16 flex items-center gap-1.5 font-semibold text-slate-700 cursor-pointer" title="P&L before commission (Sale − Payout)">

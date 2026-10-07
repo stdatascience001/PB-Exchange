@@ -173,6 +173,41 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
   const [showDistributorModal, setShowDistributorModal] = useState(false);
   const [showHPLModal, setShowHPLModal] = useState(false);
 
+  // Esc (or a click on the dimmed area outside the box) closes whichever popup is open —
+  // Add, Edit, Jantri View, Kwada Trans, Abs Party, Jantri Distributor, HPL-Jantri — the
+  // same as its own Close / X button.
+  const anyModalOpen = showAddModal || showEditModal || showJantriModal || showKwadaModal
+    || showAbsPartyModal || showDistributorModal || showHPLModal;
+  const closeOpenModal = () => {
+    setShowAddModal(false);
+    setShowEditModal(false);
+    setShowJantriModal(false);
+    setShowKwadaModal(false);
+    setShowAbsPartyModal(false);
+    setShowDistributorModal(false);
+    setShowHPLModal(false);
+  };
+  useEffect(() => {
+    if (!anyModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      closeOpenModal();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [anyModalOpen]);
+  // Only a press that starts AND ends on the dimmed area closes it, so a drag that begins
+  // inside the box (e.g. selecting text) doesn't
+  const backdropDownRef = useRef(false);
+  const backdropProps = {
+    onMouseDown: (e: React.MouseEvent) => { backdropDownRef.current = e.target === e.currentTarget; },
+    onClick: (e: React.MouseEvent) => {
+      if (backdropDownRef.current && e.target === e.currentTarget) closeOpenModal();
+      backdropDownRef.current = false;
+    },
+  };
+
   // Kwada Transaction popup: find parties who hit an exact Amount an exact Count of times
   const [kwadaAmount, setKwadaAmount] = useState('');
   const [kwadaCount, setKwadaCount] = useState('');
@@ -1103,7 +1138,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
 
       {/* Modal 1: Add Slip Modal (F2) */}
       {showAddModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
           <div className="bg-white rounded-lg shadow-2xl max-w-md w-full overflow-hidden border border-slate-300">
             <div className="bg-[#1f4277] text-white px-4 py-2.5 flex items-center justify-between">
               <h2 className="text-sm font-bold tracking-tight">Add Live Transaction Slip</h2>
@@ -1191,7 +1226,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
 
       {/* Modal 2: Edit Slip Total Modal */}
       {showEditModal && editingTx && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
           <div className="bg-white rounded-lg shadow-2xl max-w-sm w-full overflow-hidden border border-slate-300">
             <div className="bg-[#1f4277] text-white px-4 py-2.5 flex items-center justify-between">
               <h2 className="text-sm font-bold tracking-tight">Edit Total: {editingTx.slipNumber}</h2>
@@ -1245,7 +1280,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
 
       {/* Modal 4: Jantri View Modal (F3) matching Screenshot 2 */}
       {showJantriModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 z-50 animate-in fade-in duration-150">
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 z-50 animate-in fade-in duration-150">
           <div className="bg-[#1b3258] rounded-lg shadow-2xl w-full max-w-5xl overflow-hidden border border-slate-500">
             {/* Header Bar matching Screenshot 2 */}
             <div className="bg-[#1b3258] px-4 py-2.5 flex items-center justify-between border-b border-[#2a4a7a]">
@@ -1459,7 +1494,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
 
       {/* Modal 5: Kwada Transaction Modal — matching live reference */}
       {showKwadaModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
           <div className="bg-white rounded-lg shadow-2xl max-w-lg w-full overflow-hidden border border-slate-300">
             <div className="bg-[#152847] text-white px-4 py-2.5 flex items-center justify-between">
               <h2 className="text-sm font-bold tracking-tight">Kwada Transaction</h2>
@@ -1540,7 +1575,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
 
       {/* Modal 6: Party Not Working (Abs Party) Modal — matching live reference */}
       {showAbsPartyModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
           <div className="bg-white rounded-lg shadow-2xl max-w-2xl w-full overflow-hidden border border-slate-300">
             <div className="bg-[#152847] text-white px-4 py-2.5 flex items-center justify-between">
               <h2 className="text-sm font-bold tracking-tight">Party Not Working</h2>
@@ -1592,7 +1627,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
 
       {/* Modal 7: Distributor Wise Jantri (F4) Modal — matching live reference */}
       {showDistributorModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 z-50 animate-in fade-in duration-150">
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 z-50 animate-in fade-in duration-150">
           <div className="bg-white rounded-lg shadow-2xl w-full max-w-5xl overflow-hidden border border-slate-300">
             <div className="bg-[#152847] text-white px-4 py-2.5 flex items-center justify-between">
               <h2 className="text-sm font-bold tracking-tight">Distributor Wise Jantri</h2>
@@ -1742,7 +1777,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
 
       {/* Modal 8: HPL-Jantri Modal */}
       {showHPLModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
+        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
           <div className="bg-white rounded-lg shadow-2xl max-w-lg w-full overflow-hidden border border-slate-300">
             <div className="bg-[#00897b] text-white px-4 py-2.5 flex items-center justify-between">
               <h2 className="text-sm font-bold tracking-tight">HPL (Haruf / Panna / Limit) Jantri</h2>

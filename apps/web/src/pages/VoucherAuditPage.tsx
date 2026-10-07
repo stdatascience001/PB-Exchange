@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { apiRequest } from '../api/client.js';
 import { ArrowLeft } from 'lucide-react';
 import { toast } from 'react-toastify';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 
 interface VoucherAuditPageProps {
   onNavigate?: (page: string) => void;
@@ -34,7 +35,9 @@ export const VoucherAuditPage: React.FC<VoucherAuditPageProps> = ({ onNavigate }
   const [toDate, setToDate] = useState(todayInputDate());
   const [auditStatus, setAuditStatus] = useState('FOR_AUDIT');
 
-  const fetchList = async () => {
+  // announce: Search says "Record not found!" when nothing comes back (as live); the automatic
+  // load on page open and the refresh after Allow / Cancel stay quiet.
+  const fetchList = async (announce = false) => {
     // Same checks the Search button needs before it can ask for a date range.
     const problem = !fromDate || !toDate
       ? 'Please select both Dates!'
@@ -57,6 +60,16 @@ export const VoucherAuditPage: React.FC<VoucherAuditPageProps> = ({ onNavigate }
       const params = new URLSearchParams({ fromDate, toDate, auditStatus, manualOnly: '1' });
       const res = await apiRequest<ManualVoucherItem[]>(`/vouchers/manual?${params.toString()}`);
       if (res.data) setList(res.data);
+      if (announce && (!res.data || res.data.length === 0)) {
+        setList([]);
+        toast.error(
+          <div>
+            <div className="font-bold text-base">Message</div>
+            <div className="text-sm mt-0.5">Record not found!</div>
+          </div>,
+          { toastId: 'voucher-audit-none' }
+        );
+      }
     } catch (err) {
       console.warn('Failed to load vouchers for audit:', err);
     } finally {
@@ -69,9 +82,22 @@ export const VoucherAuditPage: React.FC<VoucherAuditPageProps> = ({ onNavigate }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Live Enter flow: the page opens on From's day; Enter walks From DD -> MM -> YYYY ->
+  // To DD -> MM -> YYYY -> Audit -> Search, and Enter on Search searches (spinner while it runs)
+  const focusVa = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
+  useEffect(() => {
+    const id = requestAnimationFrame(() => focusVa('va-from-dd'));
+    return () => cancelAnimationFrame(id);
+  }, []);
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    fetchList();
+    if (loading) return;
+    fetchList(true);
   };
 
   const handleAuditAction = async (id: number, status: 'ALLOWED' | 'CANCELED') => {
@@ -120,26 +146,19 @@ export const VoucherAuditPage: React.FC<VoucherAuditPageProps> = ({ onNavigate }
 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">Date</span>
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800"
-            />
-            <input
-              type="date"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800"
-            />
+            {/* DD / MM / YYYY as live */}
+            <DateDMYInput value={fromDate} onChange={setFromDate} idPrefix="va-from" onEnterFromYear={() => focusVa('va-to-dd')} />
+            <DateDMYInput value={toDate} onChange={setToDate} idPrefix="va-to" onEnterFromYear={() => focusVa('va-audit')} />
           </div>
 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">Audit</span>
             <select
+              id="va-audit"
               value={auditStatus}
               onChange={(e) => setAuditStatus(e.target.value)}
-              className="px-2.5 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer shadow-xs"
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); focusVa('va-search-btn'); } }}
+              className="px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 cursor-pointer shadow-xs"
             >
               <option value="FOR_AUDIT">FOR AUDIT</option>
               <option value="ALLOWED">ALLOWED</option>
@@ -149,10 +168,14 @@ export const VoucherAuditPage: React.FC<VoucherAuditPageProps> = ({ onNavigate }
           </div>
 
           <button
+            id="va-search-btn"
             type="submit"
-            className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors"
+            disabled={loading}
+            className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5"
           >
             Search
+            {/* Spinner while the list loads, as on live */}
+            {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
           </button>
 
           <button

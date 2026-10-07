@@ -80,6 +80,8 @@ export const PartyPicker: React.FC<{
       else if (value.trim() && onInvalidName) onInvalidName();
       else onInvalid();
     } else if (e.key === 'Escape') {
+      // An open list takes the first Esc (a popup around it stays open)
+      if (open && options.length > 0) e.stopPropagation();
       setOpen(false);
     }
   };

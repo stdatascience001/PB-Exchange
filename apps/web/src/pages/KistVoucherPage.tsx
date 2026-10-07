@@ -102,6 +102,29 @@ export const KistVoucherPage: React.FC = () => {
   const [kistType, setKistType] = useState<(typeof KIST_TYPES)[number]>('DAILY');
   const [kistRemark, setKistRemark] = useState('');
   const [creatingKist, setCreatingKist] = useState(false);
+  // Create Kist popup Enter flow (as live): Party Name (pick from its list) -> Credit Amount ->
+  // Kist Start Date DD -> MM -> YYYY -> One Kist Amount -> Kist Type -> Remark -> Save
+  const [kistPartyHi, setKistPartyHi] = useState(0);
+  const focusKist = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
+  const kistEnterTo = (id: string) => (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    focusKist(id);
+  };
+  // A click on the dimmed area outside a popup closes it (as Esc / X do); only a press that
+  // starts AND ends there counts, so a drag from inside the box doesn't
+  const backdropDownRef = React.useRef(false);
+  const backdropProps = (close: () => void) => ({
+    onMouseDown: (e: React.MouseEvent) => { backdropDownRef.current = e.target === e.currentTarget; },
+    onClick: (e: React.MouseEvent) => {
+      if (backdropDownRef.current && e.target === e.currentTarget) close();
+      backdropDownRef.current = false;
+    },
+  });
 
   // Right-hand Party panel: installments of the party picked in the list (or just created).
   const [panelParty, setPanelParty] = useState<{ id: number; name: string } | null>(null);
@@ -177,6 +200,19 @@ export const KistVoucherPage: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Esc closes the Create Kist / Edit popup, the same as its X (Auto Kist handles its own)
+  useEffect(() => {
+    if (!showCreateModal && !showModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      setShowCreateModal(false);
+      setShowModal(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showCreateModal, showModal]);
 
   const filteredList = useMemo(() => {
     if (!search.trim()) return list;
@@ -274,8 +310,19 @@ export const KistVoucherPage: React.FC = () => {
     const credit = parseFloat(creditAmount);
     const oneKist = parseFloat(oneKistAmount);
     let problem = '';
-    if (!kistPartyId) problem = 'Please select Party Name from the list!';
-    else if (!(credit > 0)) problem = 'Please enter Credit Amount!';
+    if (!kistPartyId) {
+      // Live: "Invalid Party / Please enter all valid Party!", cursor back on Party Name
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Invalid Party</div>
+          <div className="text-sm mt-0.5">Please enter all valid Party!</div>
+        </div>,
+        { toastId: 'kist-invalid-party' }
+      );
+      focusKist('kv-c-party');
+      return;
+    }
+    if (!(credit > 0)) problem = 'Please enter Credit Amount!';
     else if (!kistStartDate) problem = 'Please enter Kist Start Date!';
     else if (!(oneKist > 0)) problem = 'Please enter One Kist Amount!';
     else if (oneKist > credit) problem = 'One Kist Amount cannot be more than Credit Amount!';
@@ -552,7 +599,7 @@ export const KistVoucherPage: React.FC = () => {
 
       {/* Create Kist Voucher popup (Add F2) */}
       {showCreateModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-start justify-center p-3 pt-16 z-50 animate-in fade-in duration-150">
+        <div {...backdropProps(() => setShowCreateModal(false))} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-start justify-center p-3 pt-16 z-50 animate-in fade-in duration-150">
           {/* overflow-visible so the Party Name list can drop past the popup's bottom edge */}
           <div className="bg-white rounded-lg shadow-2xl max-w-3xl w-full overflow-visible border border-slate-300">
             <div className="bg-[#1f4277] text-white px-4 py-3 flex items-center justify-between rounded-t-lg">
@@ -567,22 +614,40 @@ export const KistVoucherPage: React.FC = () => {
                 <div className="relative sm:col-span-2">
                   <label className="block text-slate-700 mb-1 text-[13px]">Party Name</label>
                   <input
+                    id="kv-c-party"
                     type="text"
                     value={kistPartySearch}
-                    onChange={(e) => { setKistPartySearch(e.target.value); setKistPartyId(null); setShowKistPartyDropdown(true); }}
+                    onChange={(e) => { setKistPartySearch(e.target.value); setKistPartyId(null); setShowKistPartyDropdown(true); setKistPartyHi(0); }}
                     onFocus={() => setShowKistPartyDropdown(true)}
                     onBlur={() => setTimeout(() => setShowKistPartyDropdown(false), 150)}
+                    onKeyDown={(e) => {
+                      const n = kistPartyOptions.length;
+                      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && showKistPartyDropdown && n > 0) {
+                        e.preventDefault();
+                        setKistPartyHi(i => e.key === 'ArrowDown' ? Math.min(i + 1, n - 1) : Math.max(i - 1, 0));
+                      } else if (e.key === 'Enter') {
+                        // Pick the highlighted party (typed text only), then on to Credit Amount
+                        e.preventDefault();
+                        const p = kistPartyOptions[kistPartyHi];
+                        if (showKistPartyDropdown && p && kistPartySearch.trim()) {
+                          setKistPartyId(p.id); setKistPartySearch(p.partyName);
+                        }
+                        setShowKistPartyDropdown(false);
+                        focusKist('kv-c-credit');
+                      }
+                    }}
                     autoComplete="off"
                     autoFocus
                     className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xs text-[13px] text-slate-900 focus:outline-none focus:bg-[#fde68a] focus:border-amber-400 uppercase font-semibold"
                   />
                   {showKistPartyDropdown && kistPartyOptions.length > 0 && (
                     <div className="absolute left-0 right-0 bg-white border border-slate-400 shadow-xl z-50 max-h-52 overflow-y-auto">
-                      {kistPartyOptions.map(p => (
+                      {kistPartyOptions.map((p, idx) => (
                         <div
                           key={p.id}
+                          ref={idx === kistPartyHi ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
                           onMouseDown={() => { setKistPartyId(p.id); setKistPartySearch(p.partyName); setShowKistPartyDropdown(false); }}
-                          className={`px-2.5 py-0.5 text-[13px] uppercase cursor-pointer hover:bg-[#1e66d0] hover:text-white ${kistPartyId === p.id ? 'bg-[#1e66d0] text-white' : 'text-slate-800'}`}
+                          className={`px-2.5 py-0.5 text-[13px] uppercase cursor-pointer hover:bg-[#1e66d0] hover:text-white ${kistPartyId === p.id || (idx === kistPartyHi && kistPartySearch.trim()) ? 'bg-[#1e66d0] text-white' : 'text-slate-800'}`}
                         >
                           {p.partyName}
                         </div>
@@ -593,38 +658,39 @@ export const KistVoucherPage: React.FC = () => {
 
                 <div>
                   <label className="block text-slate-700 mb-1 text-[13px]">Credit Amount</label>
-                  <input type="number" min="0" step="any" value={creditAmount} onChange={(e) => setCreditAmount(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xs text-[13px] text-slate-900 focus:outline-none focus:bg-[#fde68a] focus:border-amber-400 font-mono font-bold" />
+                  <input id="kv-c-credit" onKeyDown={kistEnterTo('kv-kist-start-dd')} type="number" min="0" step="any" value={creditAmount} onChange={(e) => setCreditAmount(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xs text-[13px] text-slate-900 focus:outline-none focus:bg-[#fde68a] focus:border-amber-400 font-mono font-bold" />
                 </div>
 
                 <div>
                   <label className="block text-slate-700 mb-1 text-[13px]">Kist Start Date</label>
                   {/* DD / MM / YYYY, same as the filter bar */}
-                  <DateDMYInput value={kistStartDate} onChange={setKistStartDate} idPrefix="kv-kist-start" />
+                  <DateDMYInput value={kistStartDate} onChange={setKistStartDate} idPrefix="kv-kist-start" onEnterFromYear={() => focusKist('kv-c-onekist')} />
                 </div>
 
                 <div>
                   <label className="block text-slate-700 mb-1 text-[13px]">One Kist Amount</label>
-                  <input type="number" min="0" step="any" value={oneKistAmount} onChange={(e) => setOneKistAmount(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xs text-[13px] text-slate-900 focus:outline-none focus:bg-[#fde68a] focus:border-amber-400 font-mono font-bold" />
+                  <input id="kv-c-onekist" onKeyDown={kistEnterTo('kv-c-type')} type="number" min="0" step="any" value={oneKistAmount} onChange={(e) => setOneKistAmount(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xs text-[13px] text-slate-900 focus:outline-none focus:bg-[#fde68a] focus:border-amber-400 font-mono font-bold" />
                 </div>
 
                 <div>
                   <label className="block text-slate-700 mb-1 text-[13px]">Kist Type</label>
-                  <select value={kistType} onChange={(e) => setKistType(e.target.value as (typeof KIST_TYPES)[number])} className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xs text-[13px] text-slate-900 focus:outline-none focus:bg-[#fde68a] focus:border-amber-400 font-bold cursor-pointer">
+                  <select id="kv-c-type" onKeyDown={kistEnterTo('kv-c-remark')} value={kistType} onChange={(e) => setKistType(e.target.value as (typeof KIST_TYPES)[number])} className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xs text-[13px] text-slate-900 focus:outline-none focus:bg-[#fde68a] focus:border-amber-400 font-bold cursor-pointer">
                     {KIST_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
                 </div>
 
                 <div className="sm:col-span-2">
                   <label className="block text-slate-700 mb-1 text-[13px]">Remark</label>
-                  <input type="text" value={kistRemark} onChange={(e) => setKistRemark(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xs text-[13px] text-slate-900 focus:outline-none focus:bg-[#fde68a] focus:border-amber-400" />
+                  <input id="kv-c-remark" onKeyDown={kistEnterTo('kv-c-save')} type="text" value={kistRemark} onChange={(e) => setKistRemark(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xs text-[13px] text-slate-900 focus:outline-none focus:bg-[#fde68a] focus:border-amber-400" />
                 </div>
               </div>
 
               <div className="flex justify-end px-4 py-3 border-t border-slate-200">
                 <button
+                  id="kv-c-save"
                   type="submit"
                   disabled={creatingKist}
-                  className="px-4 py-2 bg-[#1e3a8a] hover:bg-[#172554] active:bg-[#0f172a] text-white font-bold rounded text-xs shadow-xs disabled:opacity-50"
+                  className="px-4 py-2 bg-[#1e3a8a] hover:bg-[#172554] active:bg-[#0f172a] text-white font-bold rounded text-xs shadow-xs disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#1e3a8a]"
                 >
                   {creatingKist ? 'Saving...' : 'Save'}
                 </button>
@@ -635,7 +701,7 @@ export const KistVoucherPage: React.FC = () => {
       )}
 
       {showModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
+        <div {...backdropProps(() => setShowModal(false))} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
           <div className="bg-white rounded-lg shadow-2xl max-w-2xl w-full overflow-visible border border-slate-300">
             <div className="bg-[#1f4277] text-white px-4 py-2.5 flex items-center justify-between rounded-t-lg">
               <h2 className="text-sm font-bold tracking-tight">{editingId ? `Edit ${PAGE_TITLE}` : `Add ${PAGE_TITLE}`}</h2>

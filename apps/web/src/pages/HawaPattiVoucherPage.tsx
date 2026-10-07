@@ -5,6 +5,7 @@ import { X, Edit2 } from 'lucide-react';
 import { AutoHawaPattiModal } from '../components/AutoHawaPattiModal.js';
 import { DateDMYInput } from '../components/DateDMYInput.js';
 import { PartyPicker } from '../components/PartyPicker.js';
+import { toast } from 'react-toastify';
 
 const VOUCHER_TYPE = 'HAWA_PATTI';
 const PAGE_TITLE = 'Hawa Patti Voucher';
@@ -93,6 +94,18 @@ export const HawaPattiVoucherPage: React.FC = () => {
       const params = new URLSearchParams({ voucherType: VOUCHER_TYPE, fromDate, toDate });
       const res = await apiRequest<ManualVoucherItem[]>(`/vouchers/manual?${params.toString()}`);
       if (res.data) setList(res.data);
+      // Live: no vouchers for the dates (null / empty response) -> red "Error / Record not
+      // avaliable!" toast (one at a time), with the table left empty
+      if (!res.data || res.data.length === 0) {
+        setList([]);
+        toast.error(
+          <div>
+            <div className="font-bold text-base">Error</div>
+            <div className="text-sm mt-0.5">Record not avaliable!</div>
+          </div>,
+          { toastId: 'hpv-empty' }
+        );
+      }
     } catch (err) {
       console.warn('Failed to load vouchers:', err);
     } finally {
@@ -126,6 +139,39 @@ export const HawaPattiVoucherPage: React.FC = () => {
     focusFilter('hpv-fromDate-dd');
   }, []);
   const filterPartyRef = useRef<HTMLInputElement>(null);
+
+  // Create / Edit Hawa Patti popup Enter flow (as live): From Month -> From Year -> Party Name
+  // (pick from its list) -> Voucher Date DD -> MM -> YYYY -> HP Party Name (pick) -> P&L ->
+  // HP % -> Final HP -> Save (Enter saves)
+  const [hpPartyHi, setHpPartyHi] = useState(0);
+  const [hpOppHi, setHpOppHi] = useState(0);
+  const focusHm = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
+  const hmEnterTo = (id: string) => (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    focusHm(id);
+  };
+  useEffect(() => {
+    if (!showModal) return;
+    const id = requestAnimationFrame(() => focusHm('hm-from-month'));
+    return () => cancelAnimationFrame(id);
+  }, [showModal]);
+  // Esc (or a click on the dimmed area outside the box) closes the popup, as its X does
+  useEffect(() => {
+    if (!showModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      setShowModal(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showModal]);
+  const hmBackdropDownRef = useRef(false);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -375,7 +421,14 @@ export const HawaPattiVoucherPage: React.FC = () => {
       <AutoHawaPattiModal open={showAutoHp} onClose={() => setShowAutoHp(false)} onProcessed={fetchList} />
 
       {showModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
+        <div
+          onMouseDown={(e) => { hmBackdropDownRef.current = e.target === e.currentTarget; }}
+          onClick={(e) => {
+            if (hmBackdropDownRef.current && e.target === e.currentTarget) setShowModal(false);
+            hmBackdropDownRef.current = false;
+          }}
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150"
+        >
           <div className="bg-white rounded-lg shadow-2xl max-w-2xl w-full overflow-hidden border border-slate-300">
             <div className="bg-[#1f4277] text-white px-4 py-2.5 flex items-center justify-between">
               <h2 className="text-sm font-bold tracking-tight">{editingId ? `Edit ${PAGE_TITLE}` : `Add ${PAGE_TITLE}`}</h2>
@@ -389,9 +442,11 @@ export const HawaPattiVoucherPage: React.FC = () => {
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">From Month</label>
                   <select
+                    id="hm-from-month"
+                    onKeyDown={hmEnterTo('hm-from-year')}
                     value={fromMonth}
                     onChange={(e) => setFromMonth(e.target.value)}
-                    className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800"
+                    className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                   >
                     {MONTH_NAMES.map(m => <option key={m} value={m}>{m}</option>)}
                   </select>
@@ -400,11 +455,13 @@ export const HawaPattiVoucherPage: React.FC = () => {
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">From Year</label>
                   <input
+                    id="hm-from-year"
+                    onKeyDown={hmEnterTo('hm-party')}
                     type="number"
                     required
                     value={fromYear}
                     onChange={(e) => setFromYear(parseInt(e.target.value, 10) || fromYear)}
-                    className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono font-semibold text-slate-800"
+                    className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono font-semibold text-slate-800 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                   />
                 </div>
 
@@ -414,22 +471,41 @@ export const HawaPattiVoucherPage: React.FC = () => {
                     <span className="font-normal text-blue-600"> &amp; Limit: {selectedPartyLimit}</span>
                   </label>
                   <input
+                    id="hm-party"
                     type="text"
                     required
                     value={partySearch}
-                    onChange={(e) => { setPartySearch(e.target.value); setPartyId(null); setShowPartyDropdown(true); }}
+                    onChange={(e) => { setPartySearch(e.target.value); setPartyId(null); setShowPartyDropdown(true); setHpPartyHi(0); }}
                     onFocus={() => setShowPartyDropdown(true)}
                     onBlur={() => setTimeout(() => setShowPartyDropdown(false), 150)}
+                    onKeyDown={(e) => {
+                      const n = filteredPartyOptions.length;
+                      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && showPartyDropdown && n > 0) {
+                        e.preventDefault();
+                        setHpPartyHi(i => e.key === 'ArrowDown' ? Math.min(i + 1, n - 1) : Math.max(i - 1, 0));
+                      } else if (e.key === 'Enter') {
+                        // Pick the highlighted party (typed text only), then on to Voucher Date
+                        e.preventDefault();
+                        const p = filteredPartyOptions[hpPartyHi];
+                        if (showPartyDropdown && p && partySearch.trim()) {
+                          setPartyId(p.id); setPartySearch(p.partyName);
+                        }
+                        setShowPartyDropdown(false);
+                        focusHm('hpv-voucherDate-dd');
+                      }
+                    }}
+                    autoComplete="off"
                     placeholder="Search party..."
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:border-blue-500"
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                   />
                   {showPartyDropdown && filteredPartyOptions.length > 0 && (
                     <div className="absolute left-0 right-0 mt-1 bg-white border border-slate-300 shadow-xl rounded z-50 max-h-40 overflow-y-auto">
-                      {filteredPartyOptions.map(p => (
+                      {filteredPartyOptions.map((p, idx) => (
                         <div
                           key={p.id}
+                          ref={idx === hpPartyHi ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
                           onMouseDown={() => { setPartyId(p.id); setPartySearch(p.partyName); setShowPartyDropdown(false); }}
-                          className="px-3 py-1.5 text-xs uppercase cursor-pointer hover:bg-amber-50 font-semibold text-slate-800"
+                          className={`px-3 py-1.5 text-xs uppercase cursor-pointer hover:bg-amber-50 font-semibold text-slate-800 ${idx === hpPartyHi && partySearch.trim() ? 'bg-[#f6c343]' : ''}`}
                         >
                           {p.partyName}
                         </div>
@@ -440,7 +516,7 @@ export const HawaPattiVoucherPage: React.FC = () => {
 
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">Voucher Date</label>
-                  <DateDMYInput value={voucherDate} onChange={setVoucherDate} idPrefix="hpv-voucherDate" separator="-" />
+                  <DateDMYInput value={voucherDate} onChange={setVoucherDate} idPrefix="hpv-voucherDate" separator="-" onEnterFromYear={() => focusHm('hm-opp')} />
                 </div>
               </div>
 
@@ -448,22 +524,41 @@ export const HawaPattiVoucherPage: React.FC = () => {
                 <div className="relative">
                   <label className="block text-slate-700 font-bold mb-1">HP Party Name</label>
                   <input
+                    id="hm-opp"
                     type="text"
                     required
                     value={oppositeSearch}
-                    onChange={(e) => { setOppositeSearch(e.target.value); setOppositeId(null); setShowOppositeDropdown(true); }}
+                    onChange={(e) => { setOppositeSearch(e.target.value); setOppositeId(null); setShowOppositeDropdown(true); setHpOppHi(0); }}
                     onFocus={() => setShowOppositeDropdown(true)}
                     onBlur={() => setTimeout(() => setShowOppositeDropdown(false), 150)}
+                    onKeyDown={(e) => {
+                      const n = filteredOppositeOptions.length;
+                      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && showOppositeDropdown && n > 0) {
+                        e.preventDefault();
+                        setHpOppHi(i => e.key === 'ArrowDown' ? Math.min(i + 1, n - 1) : Math.max(i - 1, 0));
+                      } else if (e.key === 'Enter') {
+                        // Pick the highlighted HP party (typed text only), then on to P&L
+                        e.preventDefault();
+                        const p = filteredOppositeOptions[hpOppHi];
+                        if (showOppositeDropdown && p && oppositeSearch.trim()) {
+                          setOppositeId(p.id); setOppositeSearch(p.partyName);
+                        }
+                        setShowOppositeDropdown(false);
+                        focusHm('hm-pnl');
+                      }
+                    }}
+                    autoComplete="off"
                     placeholder="Search HP party..."
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:border-blue-500"
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                   />
                   {showOppositeDropdown && filteredOppositeOptions.length > 0 && (
                     <div className="absolute left-0 right-0 mt-1 bg-white border border-slate-300 shadow-xl rounded z-50 max-h-40 overflow-y-auto">
-                      {filteredOppositeOptions.map(p => (
+                      {filteredOppositeOptions.map((p, idx) => (
                         <div
                           key={p.id}
+                          ref={idx === hpOppHi ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
                           onMouseDown={() => { setOppositeId(p.id); setOppositeSearch(p.partyName); setShowOppositeDropdown(false); }}
-                          className="px-3 py-1.5 text-xs uppercase cursor-pointer hover:bg-amber-50 font-semibold text-slate-800"
+                          className={`px-3 py-1.5 text-xs uppercase cursor-pointer hover:bg-amber-50 font-semibold text-slate-800 ${idx === hpOppHi && oppositeSearch.trim() ? 'bg-[#f6c343]' : ''}`}
                         >
                           {p.partyName}
                         </div>
@@ -475,40 +570,47 @@ export const HawaPattiVoucherPage: React.FC = () => {
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">P&amp;L</label>
                   <input
+                    id="hm-pnl"
+                    onKeyDown={hmEnterTo('hm-hp-pct')}
                     type="number"
                     value={pnl}
                     onChange={(e) => setPnl(e.target.value)}
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-slate-900 text-xs focus:outline-none focus:border-blue-500"
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-slate-900 text-xs focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                   />
                 </div>
 
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">HP %</label>
                   <input
+                    id="hm-hp-pct"
+                    onKeyDown={hmEnterTo('hm-final')}
                     type="number"
                     value={hpPercent}
                     onChange={(e) => setHpPercent(e.target.value)}
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-slate-900 text-xs focus:outline-none focus:border-blue-500"
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-slate-900 text-xs focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                   />
                 </div>
 
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">Final HP</label>
                   <input
+                    id="hm-final"
+                    onKeyDown={hmEnterTo('hm-save')}
                     type="number"
                     required
                     value={finalHp}
                     onChange={(e) => { setFinalHp(e.target.value); setFinalHpTouched(true); }}
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-slate-900 text-xs focus:outline-none focus:border-blue-500"
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-slate-900 text-xs focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                   />
                 </div>
               </div>
 
               <div className="flex justify-end pt-3 border-t border-slate-200">
                 <button
+                  id="hm-save"
                   type="submit"
                   disabled={saving}
-                  className="px-6 py-1.5 bg-[#1e3a8a] hover:bg-[#172554] active:bg-[#0f172a] text-white font-bold rounded text-xs shadow-xs disabled:opacity-50"
+                  className="px-6 py-1.5 bg-[#1e3a8a] hover:bg-[#172554] active:bg-[#0f172a] text-white font-bold rounded text-xs shadow-xs disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#1e3a8a]"
                 >
                   {saving ? 'Saving...' : 'Save'}
                 </button>

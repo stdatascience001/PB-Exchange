@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { ShiftDto, UserSession, PredictionDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { toast } from 'react-toastify';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 import { ArrowLeft, ArrowUpDown } from 'lucide-react';
 
 interface LivePredictionPageProps {
@@ -118,6 +119,18 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
           { toastId: 'declare-prediction-no-record' }
         );
       }
+      // Live Prediction: the shift has no slips for the date (null response / no parties) ->
+      // the live "Error / Record not avaliable!" toast; the grid still shows its zeros. Not on
+      // a number click within results already loaded.
+      if (!isDeclareMode && !number && (!res.data || (res.data.parties || []).length === 0)) {
+        toast.error(
+          <div>
+            <div className="font-bold text-base">Error</div>
+            <div className="text-sm mt-0.5">Record not avaliable!</div>
+          </div>,
+          { toastId: 'live-prediction-no-record' }
+        );
+      }
     } catch (err) {
       console.warn('Failed to load prediction data:', err);
     } finally {
@@ -216,8 +229,33 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
 
   const reload = () => fetchPrediction(shiftId, dateStr, focusNumber || undefined);
 
+  // Live Enter flow: the page opens on Shift; Enter walks Shift -> Date DD -> MM -> YYYY ->
+  // Search, and Enter on Search searches (spinner while it runs)
+  const focusPred = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
+  useEffect(() => {
+    const id = requestAnimationFrame(() => focusPred('pred-shift'));
+    return () => cancelAnimationFrame(id);
+  }, []);
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
+    // Live: Search on "-- CHOOSE --" -> "Message / Please choose a valid shift!"
+    if (!shiftId) {
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Message</div>
+          <div className="text-sm mt-0.5">Please choose a valid shift!</div>
+        </div>,
+        { toastId: 'prediction-no-shift' }
+      );
+      focusPred('pred-shift');
+      return;
+    }
     reload();
     // Declare Prediction loads everything on Search, including the declared-results history
     // (Result 30 Days / declare panel) that Live Prediction loads on shift change.
@@ -388,9 +426,11 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">Shift</span>
             <select
+              id="pred-shift"
               value={shiftId}
               onChange={(e) => handleShiftChange(e.target.value)}
-              className="px-3 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer min-w-32 shadow-xs"
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); focusPred('pred-date-dd'); } }}
+              className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 cursor-pointer min-w-32 shadow-xs"
             >
               <option value="">-- CHOOSE --</option>
               {availableShifts.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -398,15 +438,18 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
           </div>
           <div className="flex items-center gap-1.5">
             <span className="text-slate-600 font-medium text-xs">Date</span>
-            <input
-              type="date"
-              value={dateStr}
-              onChange={(e) => setDateStr(e.target.value)}
-              className="px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-700 tracking-wider focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer"
-            />
+            {/* DD / MM / YYYY as live */}
+            <DateDMYInput value={dateStr} onChange={setDateStr} idPrefix="pred-date" onEnterFromYear={() => focusPred('pred-search-btn')} />
           </div>
-          <button type="submit" className="px-4 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors">
+          <button
+            id="pred-search-btn"
+            type="submit"
+            disabled={loading}
+            className="px-4 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5"
+          >
             Search
+            {/* Spinner while it loads, as on live */}
+            {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
           </button>
         </form>
 

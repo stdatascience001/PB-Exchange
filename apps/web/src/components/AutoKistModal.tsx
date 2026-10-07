@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { DateDMYInput } from './DateDMYInput.js';
 import { X } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { apiRequest } from '../api/client.js';
@@ -53,7 +54,17 @@ export const AutoKistModal: React.FC<AutoKistModalProps> = ({ open, onClose, onP
     setRows([]);
     setTicked(new Set());
     setSearched(false);
+    // Live: opens with the cursor on the date's day part
+    const id = requestAnimationFrame(() => {
+      const el = document.getElementById('autokist-date-dd') as HTMLInputElement | null;
+      el?.focus();
+      el?.select();
+    });
+    return () => cancelAnimationFrame(id);
   }, [open]);
+  // A click on the dimmed area outside the box closes it (as Esc / X do); only a press that
+  // starts AND ends there counts
+  const backdropDownRef = useRef(false);
 
   useEffect(() => {
     if (!open) return;
@@ -129,7 +140,14 @@ export const AutoKistModal: React.FC<AutoKistModalProps> = ({ open, onClose, onP
   const th = 'py-2.5 px-3 border-r border-[#2b446f] font-bold text-[12px] text-left';
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-start justify-center p-3 pt-14 z-50 animate-in fade-in duration-150">
+    <div
+      onMouseDown={(e) => { backdropDownRef.current = e.target === e.currentTarget; }}
+      onClick={(e) => {
+        if (backdropDownRef.current && e.target === e.currentTarget) onClose();
+        backdropDownRef.current = false;
+      }}
+      className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-start justify-center p-3 pt-14 z-50 animate-in fade-in duration-150"
+    >
       <div className="bg-white rounded-lg shadow-2xl max-w-3xl w-full overflow-hidden border border-slate-300 flex flex-col max-h-[85vh]">
         <div className="bg-[#1f4277] text-white px-4 py-3 flex items-center justify-between">
           <h2 className="text-base font-bold tracking-tight">Auto Kist Voucher</h2>
@@ -144,13 +162,15 @@ export const AutoKistModal: React.FC<AutoKistModalProps> = ({ open, onClose, onP
           className="px-3 py-2 flex items-center gap-4 text-xs border-b border-slate-200"
         >
           <span className="font-semibold text-slate-600">Date</span>
-          <input
-            type="date"
+          {/* DD / MM / YYYY as live; Enter steps DD -> MM -> YYYY -> Search */}
+          <DateDMYInput
             value={date}
-            onChange={(e) => setDate(e.target.value)}
-            className="px-2 py-1.5 bg-white border border-slate-300 rounded-xs text-xs font-semibold text-slate-800 focus:outline-none focus:bg-[#fde68a] focus:border-amber-400"
+            onChange={setDate}
+            idPrefix="autokist-date"
+            onEnterFromYear={() => document.getElementById('autokist-search-btn')?.focus()}
           />
           <button
+            id="autokist-search-btn"
             type="submit"
             disabled={loading}
             className="px-10 py-2 bg-[#1662c6] hover:bg-[#1354ab] active:bg-[#0f4691] text-white font-bold text-xs rounded-xs shadow-xs transition-colors disabled:opacity-60"

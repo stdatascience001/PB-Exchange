@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { ShiftDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 
 const DECLARE_MODE = true;
 const PAGE_TITLE = 'Declare Trans ASC';
@@ -33,7 +34,17 @@ export const DeclareTransAscPage: React.FC<DeclareTransAscPageProps> = ({ shifts
     return declared.length > 0 ? declared : base;
   }, [shifts]);
 
-  const [shiftId, setShiftId] = useState('');
+  // Live: no "-- ALL SHIFTS --" choice — the dropdown opens on its first shift (index 0)
+  const [shiftId, setShiftId] = useState(() => (availableShifts[0] ? String(availableShifts[0].id) : ''));
+  useEffect(() => {
+    // Shifts arrive after the first render: pick the first one once they're in (or if the
+    // chosen one is no longer listed)
+    if (availableShifts.length === 0) return;
+    if (!shiftId || !availableShifts.some(s => String(s.id) === shiftId)) {
+      setShiftId(String(availableShifts[0].id));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableShifts]);
   const [fromDate, setFromDate] = useState(todayInputDate());
   const [toDate, setToDate] = useState(todayInputDate());
   const [minAmount, setMinAmount] = useState('');
@@ -62,8 +73,21 @@ export const DeclareTransAscPage: React.FC<DeclareTransAscPageProps> = ({ shifts
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shiftId, fromDate, toDate]);
 
+  // Live Enter flow: the page opens on Shift; Enter walks Shift -> From DD -> MM -> YYYY ->
+  // To DD -> MM -> YYYY -> Amount -> Search, and Enter on Search searches (spinner while it runs)
+  const focusDasc = (id: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    el?.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  };
+  useEffect(() => {
+    const id = requestAnimationFrame(() => focusDasc('dasc-shift'));
+    return () => cancelAnimationFrame(id);
+  }, []);
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     fetchList();
   };
 
@@ -91,24 +115,35 @@ export const DeclareTransAscPage: React.FC<DeclareTransAscPageProps> = ({ shifts
           <div className="flex flex-wrap items-center gap-2.5">
             <span className="font-bold text-sm text-slate-900 tracking-tight mr-2">{PAGE_TITLE}</span>
             <select
+              id="dasc-shift"
               value={shiftId}
               onChange={(e) => setShiftId(e.target.value)}
-              className="px-3 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer min-w-32 shadow-xs"
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); focusDasc('dasc-from-dd'); } }}
+              className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 cursor-pointer min-w-32 shadow-xs"
             >
-              <option value="">-- ALL SHIFTS --</option>
               {availableShifts.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
-            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800" />
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800" />
+            {/* DD / MM / YYYY as live; still sends YYYY-MM-DD */}
+            <DateDMYInput value={fromDate} onChange={setFromDate} idPrefix="dasc-from" onEnterFromYear={() => focusDasc('dasc-to-dd')} />
+            <DateDMYInput value={toDate} onChange={setToDate} idPrefix="dasc-to" onEnterFromYear={() => focusDasc('dasc-amount')} />
             <input
+              id="dasc-amount"
               type="number"
               value={minAmount}
               onChange={(e) => setMinAmount(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); focusDasc('dasc-search-btn'); } }}
               placeholder="ABOVE"
-              className="w-24 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 focus:outline-none focus:border-blue-500 placeholder:text-slate-400 font-semibold"
+              className="w-24 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 placeholder:text-slate-400 font-semibold"
             />
-            <button type="submit" className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors">
+            <button
+              id="dasc-search-btn"
+              type="submit"
+              disabled={loading}
+              className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5"
+            >
               Search
+              {/* Spinner while the report loads, as on live */}
+              {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
             </button>
           </div>
           <button type="button" onClick={handleExportExcel} className="px-4 py-1 bg-[#15803d] hover:bg-[#166534] active:bg-[#14532d] text-white font-bold text-xs rounded shadow-xs transition-colors">
@@ -116,9 +151,10 @@ export const DeclareTransAscPage: React.FC<DeclareTransAscPageProps> = ({ shifts
           </button>
         </form>
 
-        <div className="overflow-x-auto flex-1">
+        {/* Scrolls inside its own box with the header and the total row pinned, as on live */}
+        <div className="overflow-auto flex-1 max-h-[calc(100vh-200px)] pbmax-table-scrollbar">
           <table className="w-full text-left text-xs border-collapse">
-            <thead>
+            <thead className="sticky top-0 z-10">
               <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
                 <th className="py-2.5 px-3 border-r border-[#223b63] w-12 text-center">Sr</th>
                 <th className="py-2.5 px-4 border-r border-[#223b63]">Party</th>
@@ -152,6 +188,19 @@ export const DeclareTransAscPage: React.FC<DeclareTransAscPageProps> = ({ shifts
                 ))
               )}
             </tbody>
+            {/* Live total row: row count, then the Sale and P&L Amount totals (plain numbers) */}
+            <tfoot className="sticky bottom-0 z-10">
+              <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
+                <td className="py-2.5 px-3 border-r border-[#223b63] text-center">{list.length}</td>
+                <td className="py-2.5 px-4 border-r border-[#223b63]">Party</td>
+                <td className="py-2.5 px-4 border-r border-[#223b63] text-center">Number</td>
+                <td className="py-2.5 px-4 border-r border-[#223b63] text-right font-mono">{Math.round(list.reduce((t, r) => t + (r.sale || 0), 0))}</td>
+                <td className="py-2.5 px-4 border-r border-[#223b63] text-right font-mono">{Math.round(list.reduce((t, r) => t + (r.pnlAmount || 0), 0))}</td>
+                <td className="py-2.5 px-4 border-r border-[#223b63] text-center">Rate</td>
+                <td className="py-2.5 px-4 border-r border-[#223b63] text-center">S-Hissa</td>
+                <td className="py-2.5 px-4 text-center">O-Hissa</td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       </div>
