@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { apiRequest } from '../api/client.js';
+import { toast } from 'react-toastify';
+import { LedgerDto } from '@pb/types';
+import { PartyPicker } from '../components/PartyPicker.js';
 import { X, Trash2, Edit2, Plus } from 'lucide-react';
 
 interface AssetRecord {
@@ -111,6 +114,9 @@ export const StaffAssetsPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [submittedSearch, setSubmittedSearch] = useState('');
+  // Rows Search fetched from the server for the searched staff (null = no search -> everyone)
+  const [searchedRows, setSearchedRows] = useState<StaffSalaryAssetItem[] | null>(null);
+  const [searching, setSearching] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [activeTab, setActiveTab] = useState<'assets' | 'salary'>('assets');
   const [actionMenuOpenId, setActionMenuOpenId] = useState<number | null>(null);
@@ -141,8 +147,75 @@ export const StaffAssetsPage: React.FC = () => {
   const [earningsList, setEarningsList] = useState<SalaryItem[]>([]);
   const [deductionsList, setDeductionsList] = useState<SalaryItem[]>([]);
   const [structureSaving, setStructureSaving] = useState(false);
+  // Add (F2) opens the popup with an empty, searchable Party box (as live); Action opens it on
+  // its row's staff, shown read-only
+  const [partyPickMode, setPartyPickMode] = useState(false);
+  const [partyQuery, setPartyQuery] = useState('');
+  const [partyListOpen, setPartyListOpen] = useState(false);
+  const [partyHi, setPartyHi] = useState(0);
+  const staffLabel = (st: StaffSalaryAssetItem) => st.fullName || st.partyName || '';
+  const partyMatches = partyQuery.trim()
+    ? staffList.filter(st => staffLabel(st).toUpperCase().includes(partyQuery.trim().toUpperCase()))
+    : staffList;
+  // Live red "Message" toast for the popup's checks
+  const popupToast = (text: string, id: string) =>
+    toast.error(
+      <div>
+        <div className="font-bold text-base">Message</div>
+        <div className="text-sm mt-0.5">{text}</div>
+      </div>,
+      { toastId: id }
+    );
+  // A staff's saved salary structure, loaded into the Earning / Deduction lists (live shows the
+  // already-saved rows, e.g. BASE SALARY 15000)
+  const loadStructureOf = (st?: StaffSalaryAssetItem) => {
+    setEarningsList(st?.salaryStructure?.earnings ? [...st.salaryStructure.earnings] : []);
+    setDeductionsList(st?.salaryStructure?.deductions ? [...st.salaryStructure.deductions] : []);
+  };
+  // Popup Enter flow (as live): Party -> the open tab's first box; Assets: Assets -> Amount ->
+  // Type -> Brand -> Serial No -> Remark -> Save; Salary: Items -> Amount -> Type -> "+" (each
+  // of Earning / Deduction). Enter on a button presses it.
+  const focusGroupStart = (group: 'assets' | 'earning' | 'deduction') => {
+    requestAnimationFrame(() => {
+      const el = document.querySelector<HTMLElement>(`[data-sa-group="${group}"] select, [data-sa-group="${group}"] input`);
+      el?.focus();
+    });
+  };
+  const handlePopupEnter = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Enter') return;
+    const t = e.target as HTMLElement;
+    if (t.tagName === 'BUTTON') return;
+    const group = t.closest('[data-sa-group]');
+    if (!group) return;
+    e.preventDefault();
+    const items = Array.from(group.querySelectorAll<HTMLElement>('input, select, button'))
+      .filter(el => !(el as HTMLInputElement).readOnly && !(el as HTMLButtonElement).disabled && !el.hidden);
+    const next = items[items.indexOf(t) + 1];
+    next?.focus();
+    if (next instanceof HTMLInputElement) next.select();
+  };
+  const pickParty = (st: StaffSalaryAssetItem) => {
+    setSelectedStaffId(st.id);
+    setPartyQuery(staffLabel(st));
+    setPartyListOpen(false);
+    loadStructureOf(st);
+    focusGroupStart(activeTab === 'salary' ? 'earning' : 'assets');
+  };
 
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // Search box lists the party names that start with the typed text (as live); picking one
+  // moves to Search, which reloads with a spinner
+  const [searchParties, setSearchParties] = useState<LedgerDto[]>([]);
+  useEffect(() => {
+    apiRequest<LedgerDto[]>('/ledgers')
+      .then(res => { if (res.data) setSearchParties(res.data); })
+      .catch(err => console.warn('Failed to load parties:', err));
+  }, []);
+  // Page opens with the cursor in Search (as live)
+  useEffect(() => {
+    const id = requestAnimationFrame(() => searchInputRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, []);
 
   const fetchData = async () => {
     setLoading(true);
@@ -201,14 +274,18 @@ export const StaffAssetsPage: React.FC = () => {
   }, [showModal]);
 
   const openModal = (staffItem?: StaffSalaryAssetItem, tab: 'assets' | 'salary' = 'assets') => {
-    const target = staffItem || (selectedStaffId ? staffList.find(s => s.id === selectedStaffId) : staffList[0]);
-    if (target) {
-      setSelectedStaffId(target.id);
-    }
+    // Add (F2): no party yet, typed / picked in the popup. Action: the row's staff.
+    setPartyPickMode(!staffItem);
+    setPartyQuery('');
+    setPartyListOpen(false);
+    setPartyHi(0);
+    setSelectedStaffId(staffItem ? staffItem.id : 0);
 
-    // Always reset earnings & deductions so popup opens completely clean (no old data)
-    setEarningsList([]);
-    setDeductionsList([]);
+    // Lists start from the chosen staff's own saved structure (empty until a party is picked);
+    // never another staff's leftovers
+    loadStructureOf(staffItem);
+    // Action (party already known): the cursor starts in the open tab's first box
+    if (staffItem) focusGroupStart(tab === 'salary' ? 'earning' : 'assets');
 
     setActiveTab(tab);
     setSelectedAsset('LAPTOP');
@@ -227,14 +304,47 @@ export const StaffAssetsPage: React.FC = () => {
     setActionMenuOpenId(null);
   };
 
-  const handleSearchSubmit = (e: React.FormEvent) => {
+  const handleSearchSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSubmittedSearch(searchTerm.trim());
+    if (loading || searching) return;
+    const term = searchTerm.trim();
+    setSubmittedSearch(term);
+    if (!term) {
+      // Empty Search: everyone again (full reload)
+      setSearchedRows(null);
+      fetchData();
+      return;
+    }
+    // Live: Search asks the server for just the searched staff (spinner while it runs)
+    setSearching(true);
+    try {
+      const res = await apiRequest<StaffSalaryAssetItem[]>(`/staff?search=${encodeURIComponent(term)}`);
+      setSearchedRows(res.data || []);
+      if (!res.data || res.data.length === 0) {
+        toast.error(
+          <div>
+            <div className="font-bold text-base">Error</div>
+            <div className="text-sm mt-0.5">Record not avaliable!</div>
+          </div>,
+          { toastId: 'staff-assets-search-none' }
+        );
+      }
+    } catch (err) {
+      console.warn('Failed to search staff:', err);
+    } finally {
+      setSearching(false);
+    }
   };
 
   // Add Earning row on click '+'
   const handleAddEarningRow = () => {
+    if (!selectedStaffId) return popupToast('Please select a valid party!', 'salary-no-party');
+    // Live: the same item can't be added twice
+    if (earningsList.some(r => r.item.toUpperCase() === newEarningItem.toUpperCase())) {
+      return popupToast('Selected item is already exist!', 'salary-earning-dup');
+    }
     const amt = parseFloat(newEarningAmount || '0');
+    focusGroupStart('earning');
     setEarningsList(prev => [
       ...prev,
       { item: newEarningItem, amount: amt, type: newEarningType },
@@ -249,7 +359,12 @@ export const StaffAssetsPage: React.FC = () => {
 
   // Add Deduction row on click '+'
   const handleAddDeductionRow = () => {
+    if (!selectedStaffId) return popupToast('Please select a valid party!', 'salary-no-party');
+    if (deductionsList.some(r => r.item.toUpperCase() === newDeductionItem.toUpperCase())) {
+      return popupToast('Selected item is already exist!', 'salary-deduction-dup');
+    }
     const amt = parseFloat(newDeductionAmount || '0');
+    focusGroupStart('deduction');
     setDeductionsList(prev => [
       ...prev,
       { item: newDeductionItem, amount: amt, type: newDeductionType },
@@ -264,7 +379,10 @@ export const StaffAssetsPage: React.FC = () => {
 
   // Save Complete Structure (PATCH /staff/:id/salary with { earnings, deductions })
   const handleSaveCompleteStructure = async () => {
-    if (!selectedStaffId) return;
+    if (!selectedStaffId) {
+      popupToast('Please select a valid party!', 'salary-no-party');
+      return;
+    }
     setStructureSaving(true);
     try {
       await apiRequest(`/staff/${selectedStaffId}/salary`, {
@@ -287,7 +405,7 @@ export const StaffAssetsPage: React.FC = () => {
   const handleSaveAsset = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedStaffId) {
-      alert('Please select a Staff Party');
+      popupToast('Please select a valid party!', 'asset-no-party');
       return;
     }
 
@@ -312,6 +430,15 @@ export const StaffAssetsPage: React.FC = () => {
       setSerialNo('');
       setRemark('');
       fetchData();
+      // Saved: green toast, then the popup closes (as live)
+      toast.success(
+        <div>
+          <div className="font-bold text-base">Success</div>
+          <div className="text-sm mt-0.5">Staff assets has been saved successfully!</div>
+        </div>,
+        { toastId: `asset-saved-${Date.now()}` }
+      );
+      setShowModal(false);
     } catch (err: any) {
       alert(err.message || 'Failed to save asset');
     }
@@ -332,8 +459,15 @@ export const StaffAssetsPage: React.FC = () => {
 
   const currentSelectedStaff = staffList.find(s => s.id === selectedStaffId);
 
-  const activeSearch = submittedSearch || searchTerm;
-  const filteredStaff = staffList.filter(s => {
+  // The table filters by what was searched — typing alone doesn't change it; Search (Enter /
+  // click) applies the box, and Search on an empty box shows everyone again
+  const activeSearch = submittedSearch;
+  // After a Search the table shows the server's rows for it; otherwise the full list. The
+  // fresh copy of each searched row (after a save / reload) is taken from the full list.
+  const tableSource = searchedRows
+    ? searchedRows.map(r => staffList.find(st => st.id === r.id) || r)
+    : staffList;
+  const filteredStaff = tableSource.filter(s => {
     const term = activeSearch.toLowerCase().trim();
     if (!term) return true;
     return (
@@ -357,20 +491,29 @@ export const StaffAssetsPage: React.FC = () => {
             </span>
             <div className="flex items-center gap-2">
               <span className="text-slate-600 font-medium text-xs">Search</span>
-              <input
-                ref={searchInputRef}
-                type="text"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder=""
-                className="w-44 sm:w-64 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500 shadow-xs"
-              />
+              <div className="w-44 sm:w-64">
+                <PartyPicker
+                  // Suggestions are this page's own staff names (B24, B21, ...) — the list the
+                  // table shows — not the ledger master
+                  parties={staffList.map(st => ({ id: st.id, partyName: st.fullName || st.partyName || '' }) as unknown as LedgerDto).filter(p => p.partyName)}
+                  value={searchTerm}
+                  onChange={setSearchTerm}
+                  onPick={(p) => { setSearchTerm(p.partyName); document.getElementById('sa-search-btn')?.focus(); }}
+                  onInvalid={() => document.getElementById('sa-search-btn')?.focus()}
+                  inputRef={searchInputRef}
+                  className="w-full px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 uppercase focus:outline-none focus:bg-[#fde68a] focus:border-amber-300 shadow-xs"
+                />
+              </div>
             </div>
             <button
+              id="sa-search-btn"
               type="submit"
-              className="px-4 py-1 bg-[#1662c6] hover:bg-[#1354ab] active:bg-[#0f4691] text-white font-bold text-xs rounded shadow-xs transition-colors"
+              disabled={loading || searching}
+              className="px-4 py-1 bg-[#1662c6] hover:bg-[#1354ab] active:bg-[#0f4691] text-white font-bold text-xs rounded shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#1662c6] disabled:opacity-80 inline-flex items-center gap-1.5"
             >
               Search
+              {/* Spinner while the list reloads, as on live */}
+              {(loading || searching) && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
             </button>
           </form>
 
@@ -480,7 +623,10 @@ export const StaffAssetsPage: React.FC = () => {
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setActionMenuOpenId(actionMenuOpenId === s.id ? null : s.id);
+                            // Live: Action opens the STAFF SALARY/ASSETS Manage popup directly on
+                            // its Assets tab (Salary is the popup's second tab)
+                            setActionMenuOpenId(null);
+                            openModal(s, 'assets');
                           }}
                           className="px-2.5 py-1 bg-[#1662c6] hover:bg-[#1354ab] text-white rounded text-[10px] font-bold shadow-xs transition-colors cursor-pointer"
                         >
@@ -544,7 +690,13 @@ export const StaffAssetsPage: React.FC = () => {
 
       {/* STAFF SALARY/ASSETS Manage Modal matching pbmax1 Images 1, 2, 3, 4 */}
       {showModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 overflow-y-auto">
+        <div
+          // A click on the dimmed area outside the box closes the popup (as Esc / X / Close do);
+          // only a press that starts AND ends there counts
+          onMouseDown={(e) => { (e.currentTarget as HTMLElement).dataset.downOnBackdrop = e.target === e.currentTarget ? '1' : ''; }}
+          onClick={(e) => { if (e.target === e.currentTarget && (e.currentTarget as HTMLElement).dataset.downOnBackdrop === '1') setShowModal(false); }}
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 overflow-y-auto"
+        >
           <div className="bg-white rounded shadow-2xl max-w-5xl w-full overflow-hidden border border-slate-300 my-auto animate-in fade-in zoom-in-95 duration-150">
             {/* Modal Header matching Screenshot */}
             <div className="bg-[#1f4277] text-white px-4 py-2.5 flex items-center justify-between">
@@ -560,14 +712,71 @@ export const StaffAssetsPage: React.FC = () => {
               </button>
             </div>
 
-            <div className="p-4 sm:p-5 space-y-4 text-xs">
+            <div className="p-4 sm:p-5 space-y-4 text-xs" onKeyDown={handlePopupEnter}>
               {/* Party Selection Field matching Screenshot 1 */}
               <div className="flex items-center gap-3">
                 <label className="text-slate-700 font-bold text-xs min-w-12">
                   Party
                 </label>
                 <div className="relative max-w-xs w-full">
+                  {partyPickMode ? (
+                    <>
+                      {/* Add (F2): type to search the staff list; arrows + Enter / click pick */}
+                      <input
+                        type="text"
+                        autoFocus
+                        value={partyQuery}
+                        onChange={(e) => { setPartyQuery(e.target.value); setSelectedStaffId(0); loadStructureOf(undefined); setPartyListOpen(true); setPartyHi(0); }}
+                        onFocus={() => setPartyListOpen(true)}
+                        onBlur={() => setTimeout(() => setPartyListOpen(false), 150)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                            e.preventDefault();
+                            setPartyListOpen(true);
+                            setPartyHi(i => e.key === 'ArrowDown' ? Math.min(i + 1, Math.max(partyMatches.length - 1, 0)) : Math.max(i - 1, 0));
+                          } else if (e.key === 'Enter') {
+                            e.preventDefault();
+                            const st = partyMatches[partyHi];
+                            if (partyListOpen && st) pickParty(st);
+                            else if (!selectedStaffId) popupToast('Please select a valid party!', 'asset-no-party');
+                          } else if (e.key === 'Escape' && partyListOpen) {
+                            e.stopPropagation();
+                            setPartyListOpen(false);
+                          }
+                        }}
+                        autoComplete="off"
+                        className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:bg-[#fde68a] focus:border-amber-300"
+                      />
+                      {partyListOpen && partyMatches.length > 0 && (
+                        <div className="absolute left-0 right-0 top-full mt-0.5 bg-white border border-slate-400 shadow-xl z-50 max-h-56 overflow-y-auto">
+                          {partyMatches.map((st, idx) => (
+                            <div
+                              key={st.id}
+                              ref={idx === partyHi ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+                              onMouseDown={(e) => { e.preventDefault(); pickParty(st); }}
+                              onMouseEnter={() => setPartyHi(idx)}
+                              className={`px-2.5 py-1 text-xs uppercase cursor-pointer ${idx === partyHi ? 'bg-[#f6c343] font-bold text-slate-900' : 'text-slate-800'}`}
+                            >
+                              {staffLabel(st)}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    /* Action: the party the popup was opened for, read-only (live) */
+                    <input
+                      type="text"
+                      readOnly
+                      value={(() => {
+                        const cur = staffList.find(st => st.id === selectedStaffId);
+                        return cur ? staffLabel(cur) : '';
+                      })()}
+                      className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none cursor-default"
+                    />
+                  )}
                   <select
+                    hidden
                     value={selectedStaffId}
                     onChange={(e) => {
                       const id = parseInt(e.target.value, 10);
@@ -620,7 +829,7 @@ export const StaffAssetsPage: React.FC = () => {
               {activeTab === 'assets' && (
                 <div className="space-y-4">
                   {/* Form Strip with Dark Navy Headers matching Image 1 */}
-                  <form onSubmit={handleSaveAsset}>
+                  <form onSubmit={handleSaveAsset} data-sa-group="assets">
                     <div className="border border-slate-300 rounded overflow-hidden shadow-xs">
                       {/* Strip Headers */}
                       <div className="bg-[#152847] text-white font-bold text-[11px] grid grid-cols-7 divide-x divide-[#223b63]">
@@ -819,7 +1028,7 @@ export const StaffAssetsPage: React.FC = () => {
                         </div>
 
                         {/* Input Row */}
-                        <div className="bg-white grid grid-cols-12 divide-x divide-slate-200 p-1 items-center gap-1">
+                        <div data-sa-group="earning" className="bg-white grid grid-cols-12 divide-x divide-slate-200 p-1 items-center gap-1">
                           {/* Items dropdown */}
                           <div className="col-span-5 px-1">
                             <select
@@ -921,7 +1130,7 @@ export const StaffAssetsPage: React.FC = () => {
                         </div>
 
                         {/* Input Row */}
-                        <div className="bg-white grid grid-cols-12 divide-x divide-slate-200 p-1 items-center gap-1">
+                        <div data-sa-group="deduction" className="bg-white grid grid-cols-12 divide-x divide-slate-200 p-1 items-center gap-1">
                           {/* Items dropdown */}
                           <div className="col-span-5 px-1">
                             <select

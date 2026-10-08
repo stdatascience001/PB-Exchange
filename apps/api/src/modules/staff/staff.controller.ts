@@ -5,7 +5,8 @@ import { sendSuccess } from '../../common/response.js';
 export class StaffController {
   static async list(req: Request, res: Response, next: NextFunction) {
     try {
-      const list = await StaffService.listStaff();
+      const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+      const list = await StaffService.listStaff(search);
       return sendSuccess(res, list, 'Staff list retrieved');
     } catch (err) {
       next(err);

@@ -122,10 +122,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
               <input
                 type="text"
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                // Capital letters only, as live (login matches usernames case-insensitively,
+                // so "developer" and "DEVELOPER" still sign in to the same account)
+                onChange={(e) => setUsername(e.target.value.toUpperCase())}
                 required
                 placeholder="ENTER USERNAME"
-                className="w-full px-4 py-2.5 bg-white rounded text-slate-900 placeholder:text-slate-400 placeholder:text-xs placeholder:tracking-wider text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-400 transition-all shadow-sm"
+                style={{ fontFamily: "'Open Sans', sans-serif" }}
+                className="w-full px-4 py-2.5 bg-white rounded text-slate-900 placeholder:text-slate-400 placeholder:text-xs placeholder:tracking-wider text-sm font-bold uppercase focus:outline-none focus:ring-2 focus:ring-blue-400 transition-all shadow-sm"
               />
             </div>
 

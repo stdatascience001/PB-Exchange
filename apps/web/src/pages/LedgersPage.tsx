@@ -148,7 +148,11 @@ const LedgerRow = React.memo(function LedgerRow({ l, idx, isSelected, onSelect, 
       key={l.id}
       onClick={() => onSelect(l.id)}
       className={`transition-colors cursor-pointer ${
-        l.loginActive === false
+        l.accountActive === false
+          // Account Status Deactive (Ledger Update > Account): the whole row in red, its text a
+          // darker red, as live
+          ? 'bg-[#f43f5e] [&>td]:!text-[#881337]'
+          : l.loginActive === false
           // Login Status Deactive: the whole row in orange, as live
           ? 'bg-[#f4a460] text-slate-900'
           : isSelected

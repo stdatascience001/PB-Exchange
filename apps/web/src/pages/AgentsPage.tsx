@@ -188,7 +188,9 @@ export const AgentsPage: React.FC = () => {
     fetchCashAgentParties();
     setEditingAgentId(agent.id);
     setAgentName(agent.agentName || agent.group || '');
-    setMainAgentName(agent.mainAgentName || (agent.agent !== 'VIKAS CASH' ? agent.agent : '') || '');
+    // Main Agent Name opens on exactly what the list's Agent column shows for the row (VIKAS
+    // CASH included — it used to be blanked out, so the popup looked like it lost the name)
+    setMainAgentName(agent.mainAgentName || agent.agent || '');
     setParentAgentName(agent.parentAgentName || agent.parentAgent || '');
     setShowModal(true);
     setActionMenuOpenId(null);

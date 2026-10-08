@@ -29,8 +29,13 @@ const todayIso = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
+// declaredAt is the declare moment's India (IST) wall-clock time as saved in the DB — the API
+// sends it with a "Z", so reading it through new Date() added another +5:30 and, after 6:30 PM,
+// showed the NEXT day (a 07-10 21:03 declare read 08-10). Its own YYYY-MM-DD is the real date.
 const formatDateOnly = (dateVal?: string) => {
   if (!dateVal) return '-';
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateVal);
+  if (ymd) return `${ymd[3]}-${ymd[2]}-${ymd[1]}`;
   const d = new Date(dateVal);
   if (isNaN(d.getTime())) return dateVal;
   const day = String(d.getDate()).padStart(2, '0');
@@ -94,8 +99,13 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
       // been declared (e.g. the date was moved onto a still-open day), its slips are not shown —
       // the grid stays at zeros with no parties / agent groups, same as an empty declared day.
       const undeclaredCycle = isDeclareMode && res.data?.isCycleDeclared === false;
+      // Live Prediction is for a cycle still awaiting its result: once the cycle's number is
+      // declared (as live), its sales / P&L / parties / agent groups are no longer shown — the
+      // number grid sits at zeros, only the declared results list stays — with the
+      // "Record not avaliable!" toast below.
+      const declaredCycleLive = !isDeclareMode && res.data?.isCycleDeclared === true;
       if (res.data) {
-        setData(undeclaredCycle
+        setData(undeclaredCycle || declaredCycleLive
           ? {
               ...res.data,
               totalCollected: 0,
@@ -122,7 +132,7 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
       // Live Prediction: the shift has no slips for the date (null response / no parties) ->
       // the live "Error / Record not avaliable!" toast; the grid still shows its zeros. Not on
       // a number click within results already loaded.
-      if (!isDeclareMode && !number && (!res.data || (res.data.parties || []).length === 0)) {
+      if (!isDeclareMode && !number && (!res.data || declaredCycleLive || (res.data.parties || []).length === 0)) {
         toast.error(
           <div>
             <div className="font-bold text-base">Error</div>
@@ -310,6 +320,23 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
   }, [history]);
 
   const allPartiesSelected = sortedParties.length > 0 && selectedParties.length === sortedParties.length;
+
+  // Jantri button (under the party list): the ticked parties' combined Jantri in the grid popup,
+  // titled "<first party> and N more..." as live; nothing ticked -> "Invalid" toast
+  const openSelectedJantri = () => {
+    const picked = (data?.parties || []).filter(p => selectedParties.includes(p.partyId));
+    if (picked.length === 0) {
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Invalid</div>
+          <div className="text-sm mt-0.5">Please select at least one party!</div>
+        </div>,
+        { toastId: 'prediction-jantri-no-party' }
+      );
+      return;
+    }
+    openGrid(`${picked[0].partyName} and ${picked.length - 1} more...`, picked.map(p => p.partyId));
+  };
 
   const toggleParty = (partyId: number) => {
     setSelectedParties(prev => prev.includes(partyId) ? prev.filter(id => id !== partyId) : [...prev, partyId]);
@@ -590,7 +617,7 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
               </span>
               <button
                 type="button"
-                onClick={() => onNavigate && onNavigate('jantri')}
+                onClick={openSelectedJantri}
                 className="px-3 py-1 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-[10px] rounded shadow-xs"
               >
                 Jantri
@@ -707,7 +734,7 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
             onClick={(e) => e.stopPropagation()}
           >
             <div className="bg-[#24497e] text-white px-4 py-2.5 flex items-center justify-between rounded-t-xs flex-shrink-0">
-              <h3 className="text-sm font-bold tracking-wide uppercase">{gridPopupTitle}</h3>
+              <h3 className="text-sm font-bold tracking-wide">{gridPopupTitle}</h3>
               <button
                 type="button"
                 onClick={closePartyGrid}

@@ -526,6 +526,8 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
               <span className="text-xs text-slate-600 font-medium">Search</span>
               <input
                 type="text"
+                // Page opens with the cursor in Search (as live)
+                autoFocus
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 placeholder=""
@@ -543,9 +545,11 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
         </div>
 
         {/* Shift Data Table matching Image 3 */}
-        <div className="overflow-x-auto">
+        {/* Scrolls inside its own box (as live): header and footer rows stay pinned while the
+            shift rows scroll with a visible scrollbar */}
+        <div className="overflow-auto max-h-[calc(100vh-240px)] min-h-[240px] pbmax-table-scrollbar">
           <table className="w-full text-left text-xs border-collapse">
-            <thead>
+            <thead className="sticky top-0 z-10">
               <tr className="bg-[#152847] text-white font-bold text-xs">
                 <th className="py-2.5 px-3 border-r border-[#223b63] w-14 text-center">Sr. No</th>
                 <th className="py-2.5 px-4 border-r border-[#223b63]">Shift Name</th>
@@ -614,14 +618,8 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
                           >
                             {s.name}
                           </span>
-                          <button
-                            type="button"
-                            onClick={() => handleOpenEdit(s)}
-                            className="opacity-70 group-hover:opacity-100 text-blue-600 hover:text-blue-800 p-1 hover:bg-blue-50 rounded transition-all cursor-pointer"
-                            title={`Edit Shift Name: ${s.name}`}
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
+                          {/* Pencil icon removed (as live); clicking the name or Action > Edit
+                              still opens Edit Shift */}
                         </div>
                       </td>
                       <td className="py-2.5 px-4 text-center font-mono text-slate-600 border-r border-slate-100">
@@ -652,53 +650,33 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
                         {s.updatedAt ? new Date(s.updatedAt).toLocaleString('en-GB') : '08-09-2026 20:42 PM'}
                       </td>
                       <td className="py-2.5 px-3 text-center relative">
-                        <div className="action-dropdown-container relative inline-block text-left">
+                        <div className="action-dropdown-container relative inline-flex items-center gap-1.5 text-left">
+                          {/* Action opens Edit Shift straight away (as live) — no menu, no
+                              Deactivate; a shift is switched on / off from Edit Shift's
+                              Enable/Disable tab */}
                           <button
                             type="button"
-                            onClick={() => setActiveActionDropdownId(activeActionDropdownId === s.id ? null : s.id)}
+                            onClick={() => {
+                              setActiveActionDropdownId(null);
+                              handleOpenEdit(s);
+                            }}
                             className="px-3 py-1 bg-[#1662c6] hover:bg-[#1354ab] text-white rounded text-[11px] font-bold shadow-sm inline-flex items-center gap-1 cursor-pointer transition-colors"
                           >
                             <span>Action</span>
-                            <ChevronDown className="w-3 h-3" />
                           </button>
-                          {activeActionDropdownId === s.id && (
-                            <div className="absolute right-0 mt-1 w-36 bg-white border border-slate-200 rounded shadow-xl z-30 py-1 text-left animate-in fade-in duration-100 divide-y divide-slate-100">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setActiveActionDropdownId(null);
-                                  handleOpenEdit(s);
-                                }}
-                                className="w-full px-3 py-2 text-xs text-slate-800 hover:bg-blue-50 hover:text-blue-700 flex items-center gap-2 font-semibold cursor-pointer text-left"
-                              >
-                                <Edit2 className="w-3.5 h-3.5 text-blue-600" />
-                                <span>Edit Shift</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setActiveActionDropdownId(null);
-                                  handleToggleActive(s.id);
-                                }}
-                                className="w-full px-3 py-2 text-xs text-slate-800 hover:bg-slate-50 flex items-center gap-2 font-semibold cursor-pointer text-left"
-                              >
-                                <span className={`w-2 h-2 rounded-full ${isActive ? 'bg-red-500' : 'bg-green-500'}`} />
-                                <span>{isActive ? 'Deactivate' : 'Activate'}</span>
-                              </button>
-                              {canDeleteShift && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setActiveActionDropdownId(null);
-                                    setDeleteTarget(s);
-                                  }}
-                                  className="w-full px-3 py-2 text-xs text-red-600 hover:bg-red-50 flex items-center gap-2 font-semibold cursor-pointer text-left"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                  <span>Delete</span>
-                                </button>
-                              )}
-                            </div>
+                          {/* Delete stays for the roles allowed to delete a shift */}
+                          {canDeleteShift && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveActionDropdownId(null);
+                                setDeleteTarget(s);
+                              }}
+                              title={`Delete ${s.name}`}
+                              className="p-1 text-red-600 hover:bg-red-50 rounded cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           )}
                         </div>
                       </td>
@@ -708,7 +686,7 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
               )}
             </tbody>
             {/* Table Footer matching Image 3 */}
-            <tfoot>
+            <tfoot className="sticky bottom-0 z-10">
               <tr className="bg-[#152847] text-white font-bold text-xs">
                 <th className="py-2 px-3 border-r border-[#223b63] text-center">Sr. No</th>
                 <th className="py-2 px-4 border-r border-[#223b63]">Shift Name</th>

@@ -7,6 +7,7 @@ import { toast } from 'react-toastify';
 import { TransactionItem } from './TransactionListPage.js';
 import { JantriViewModal } from '../components/JantriViewModal.js';
 import { MistakeActionModal } from '../components/MistakeActionModal.js';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 
 interface TransactionAuditPageProps {
   shifts?: ShiftDto[];
@@ -51,26 +52,30 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
     const activeOnly = shifts.filter(s => s.isActive !== false);
     const base = activeOnly.length > 0 ? activeOnly : shifts;
     if (isDeclareMode) {
-      const declared = base.filter(s => !!s.declaredNumber || s.status === 'DECLARED' || s.status === 'AUDITED');
-      return declared.length > 0 ? declared : base;
+      // Declare Trans-Audit: declared shifts only — never falls back to undeclared ones
+      return base.filter(s => !!s.declaredNumber || s.status === 'DECLARED' || s.status === 'AUDITED');
     } else {
       const live = base.filter(s => !s.declaredNumber && s.status !== 'DECLARED' && s.status !== 'AUDITED');
       return live.length > 0 ? live : base;
     }
   }, [shifts, isDeclareMode]);
 
-  const [selectedShiftId, setSelectedShiftId] = useState<string>(
-    isDeclareMode ? (availableShifts[0]?.id.toString() || '1') : ''
-  );
+  // Both pages open on "-- ALL SHIFT --" (live). Declare Trans-Audit then lists every
+  // declared shift's slips for its Date; a chosen shift narrows it to that one.
+  const [selectedShiftId, setSelectedShiftId] = useState<string>('');
+  // Declare Trans-Audit's Date (DD / MM / YYYY, today by default) — the day whose declared
+  // slips are listed, the same way Live Trans-Audit pins its search to a day
+  const [declareDate, setDeclareDate] = useState<string>(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
 
   // Sync selectedShiftId when available shifts or mode change
   useEffect(() => {
     if (isDeclareMode) {
-      if (availableShifts.length > 0) {
-        const exists = availableShifts.some(s => String(s.id) === String(selectedShiftId));
-        if (!exists) {
-          setSelectedShiftId(String(availableShifts[0].id));
-        }
+      // A chosen shift that is no longer declared falls back to "-- ALL SHIFT --"
+      if (selectedShiftId && !availableShifts.some(s => String(s.id) === String(selectedShiftId))) {
+        setSelectedShiftId('');
       }
     }
   }, [availableShifts, isDeclareMode]);
@@ -143,16 +148,29 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
       // on already-declared cycles, which are often past days — pinning it to today would
       // empty that page, so its behaviour is left exactly as it was.
       if (!isDeclareMode) params.append('date', currentDateStr());
+      // Declare Trans-Audit: the day picked in its Date box
+      if (isDeclareMode && declareDate) params.append('date', declareDate);
       if (filters.search.trim()) params.append('search', filters.search.trim());
       if (filters.status && filters.status !== 'ALL') params.append('auditStatus', filters.status);
 
+      // Declare Trans-Audit with no declared shift at all: nothing to list
+      if (isDeclareMode && availableShifts.length === 0) {
+        setList([]);
+        setSelectedTx(null);
+        return;
+      }
+
       const res = await apiRequest<TransactionItem[]>(`/transactions?${params.toString()}`);
       if (res.data) {
-        setList(res.data);
-        if (res.data.length > 0) {
+        // Declare Trans-Audit shows declared shifts' slips only (on "-- ALL SHIFT --" the
+        // request covers every shift, so the undeclared ones are left out here)
+        const declaredIds = new Set(availableShifts.map(s => s.id));
+        const rows = isDeclareMode ? res.data.filter(t => declaredIds.has(t.shiftId)) : res.data;
+        setList(rows);
+        if (rows.length > 0) {
           // Keep current selection or default to first
-          if (!selectedTx || !res.data.some(t => t.id === selectedTx.id)) {
-            setSelectedTx(res.data[0]);
+          if (!selectedTx || !rows.some(t => t.id === selectedTx.id)) {
+            setSelectedTx(rows[0]);
           }
         } else {
           setSelectedTx(null);
@@ -169,7 +187,8 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
   // it opens empty and only loads when Search (F5) is pressed with a shift selected.
   useEffect(() => {
     if (isDeclareMode) fetchTransactions();
-  }, [selectedShiftId, selectedStatus, isDeclareMode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedShiftId, selectedStatus, isDeclareMode, declareDate, availableShifts.length]);
 
   // Refresh after an audit action with the filters of the last search (live), or the
   // current filters (declare, which always reflects its dropdowns).
@@ -403,7 +422,8 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault();
-                  focusAuditField('audit-search-party');
+                  // Declare: Shift -> Date -> Search Party; Live: Shift -> Search Party
+                  focusAuditField(isDeclareMode ? 'audit-date-dd' : 'audit-search-party');
                 }
               }}
               className="px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 cursor-pointer min-w-36 shadow-xs"
@@ -421,9 +441,13 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
           {isDeclareMode && (
             <div className="flex items-center gap-1.5">
               <span className="text-slate-600 font-medium text-xs">Date</span>
-              <div className="px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-700 tracking-wider">
-                {formattedDateStr}
-              </div>
+              {/* DD / MM / YYYY; the list follows the picked day */}
+              <DateDMYInput
+                value={declareDate}
+                onChange={setDeclareDate}
+                idPrefix="audit-date"
+                onEnterFromYear={() => focusAuditField('audit-search-party')}
+              />
             </div>
           )}
 
@@ -604,8 +628,10 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
                         {/* 8. Updated (Staff code on line 1, DD - HH:MM AM/PM on line 2) */}
                         {/* Red once a Mistake slip has been edited, as on the live Trans-Audit */}
                         <td className="py-1 px-3 border-r border-b border-slate-200 leading-snug">
-                          <div className={`font-bold uppercase text-[11px] ${tx.mistakeEdited ? 'text-red-600' : 'text-slate-900'}`}>{tx.updatedBy || tx.addedBy || 'SYSTEM'}</div>
-                          <div className={`font-mono text-[10px] ${tx.mistakeEdited ? 'text-red-500' : 'text-slate-500'}`}>{formatAuditDateTime(tx.updatedAt || tx.createdAt)}</div>
+                          {/* Red once the slip was edited — Declare Trans-Audit: any edit (as Live Transactions);
+                              Live Trans-Audit keeps its edited-after-Mistake rule */}
+                          <div className={`font-bold uppercase text-[11px] ${tx.mistakeEdited || (isDeclareMode && tx.isEdited) ? 'text-red-600' : 'text-slate-900'}`}>{tx.updatedBy || tx.addedBy || 'SYSTEM'}</div>
+                          <div className={`font-mono text-[10px] ${tx.mistakeEdited || (isDeclareMode && tx.isEdited) ? 'text-red-500' : 'text-slate-500'}`}>{formatAuditDateTime(tx.updatedAt || tx.createdAt)}</div>
                         </td>
 
                         {/* 9. Action (View, Valid, Mistake) */}

@@ -23,9 +23,16 @@ export class StaffService {
     return first?.id || 1;
   }
 
-  static async listStaff() {
+  // search (optional): only the staff whose name or username contains it — Staff Salary/Assets'
+  // Search asks for just the searched staff, as live does. No search: every staff, as before.
+  static async listStaff(search?: string) {
+    const term = (search || '').trim();
     const [staffList, allAssets] = await Promise.all([
-      db.select().from(staff).orderBy(asc(staff.id)),
+      term
+        ? db.select().from(staff)
+            .where(sql`(${staff.fullName} ILIKE ${'%' + term + '%'} OR ${staff.username} ILIKE ${'%' + term + '%'})`)
+            .orderBy(asc(staff.id))
+        : db.select().from(staff).orderBy(asc(staff.id)),
       db.select().from(staffAssets).orderBy(desc(staffAssets.id)),
     ]);
 

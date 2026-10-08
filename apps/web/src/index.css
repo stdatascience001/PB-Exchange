@@ -6,8 +6,13 @@
   body {
     background-color: #080d1a;
     color: #f1f5f9;
-    font-family: 'Inter', system-ui, sans-serif;
+    /* font-family: 'Inter', system-ui, sans-serif; */
+    font-family: "Open Sans", sans-serif !important;
   }
+  .font-sans, .font-mono{
+    font-family: "Open Sans", sans-serif !important;
+  }
+  
 }
 
 .custom-scrollbar::-webkit-scrollbar {

@@ -262,11 +262,35 @@ export const StaffPage: React.FC<StaffPageProps> = ({ user }) => {
     }
   };
 
+  // Strong password rule (as live): at least 8 characters, with at least 1 number and at least
+  // 1 letter. A weak one is refused with the live "Message" toast listing the rules, and the
+  // cursor goes back to the Password box.
+  const isStrongPassword = (pw: string) => pw.length >= 8 && /\d/.test(pw) && /[A-Za-z]/.test(pw);
+  const rejectWeakPassword = (inputId: string) => {
+    toast.error(
+      <div>
+        <div className="font-bold text-base">Message</div>
+        <div className="text-sm mt-0.5">Please enter a valid new password!</div>
+        <div className="text-sm">• Must be a minimum of 8 characters.</div>
+        <div className="text-sm">• Must contain at least 1 number.</div>
+        <div className="text-sm">• Must contain at least 1 alphabet character.</div>
+      </div>,
+      { toastId: 'staff-weak-password' }
+    );
+    const el = document.getElementById(inputId) as HTMLInputElement | null;
+    el?.focus();
+    el?.select();
+  };
+
   // Staff Update -> Password tab Save: the password only
   const handleSaveStaffPassword = async () => {
     if (!editingStaffId) return;
     if (!password.trim()) {
       alert('Please enter a password');
+      return;
+    }
+    if (!isStrongPassword(password.trim())) {
+      rejectWeakPassword('staff-edit-password');
       return;
     }
     setEditSaving(true);
@@ -331,6 +355,11 @@ export const StaffPage: React.FC<StaffPageProps> = ({ user }) => {
       );
       const firstEmpty = !staffName.trim() ? 'staff-add-name' : !username.trim() ? 'staff-add-username' : 'staff-add-password';
       document.getElementById(firstEmpty)?.focus();
+      return;
+    }
+    // New staff: the password must be strong too (the old 123456 default no longer passes)
+    if (!isStrongPassword(password.trim())) {
+      rejectWeakPassword('staff-add-password');
       return;
     }
 
@@ -713,6 +742,7 @@ export const StaffPage: React.FC<StaffPageProps> = ({ user }) => {
                   <label className="block text-slate-700 font-medium mb-1">Password</label>
                   <input
                     type="text"
+                    id="staff-edit-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded font-bold text-slate-800 text-xs focus:outline-none focus:border-blue-500"
