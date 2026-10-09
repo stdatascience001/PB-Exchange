@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ShiftDto, UserSession } from '@pb/types';
 import { apiRequest } from '../api/client.js';
+import { toast } from 'react-toastify';
 import { displayNumber, harufOf } from '../utils/entryDisplay.js';
 import { isOwnDataOnlyRole } from '../config/roleAccess.js';
 import { X, Search as SearchIcon, Eye, Copy, Trash2, Plus, Edit } from 'lucide-react';
 import { CopyTransactionsModal } from '../components/CopyTransactionsModal.js';
+import { HplJantriModal } from '../components/HplJantriModal.js';
 
 export interface TransactionItem {
   id: number;
@@ -172,12 +174,14 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
   const [showAbsPartyModal, setShowAbsPartyModal] = useState(false);
   const [showDistributorModal, setShowDistributorModal] = useState(false);
   const [showHPLModal, setShowHPLModal] = useState(false);
+  // Main Jantri (F7) — live opens the MAIN JANTRI popup here (not the Jantri page)
+  const [showMainJantri, setShowMainJantri] = useState(false);
 
   // Esc (or a click on the dimmed area outside the box) closes whichever popup is open —
   // Add, Edit, Jantri View, Kwada Trans, Abs Party, Jantri Distributor, HPL-Jantri — the
   // same as its own Close / X button.
   const anyModalOpen = showAddModal || showEditModal || showJantriModal || showKwadaModal
-    || showAbsPartyModal || showDistributorModal || showHPLModal;
+    || showAbsPartyModal || showDistributorModal || showHPLModal || showMainJantri;
   const closeOpenModal = () => {
     setShowAddModal(false);
     setShowEditModal(false);
@@ -186,6 +190,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
     setShowAbsPartyModal(false);
     setShowDistributorModal(false);
     setShowHPLModal(false);
+    setShowMainJantri(false);
   };
   useEffect(() => {
     if (!anyModalOpen) return;
@@ -271,26 +276,32 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
   };
 
   // Open Add Slip (F2) in a new window/tab with selected shift ID
+  // Live: with Shift left on "-- CHOOSE --", Add (F2) / Jantri View (F3) / Kwada Trans /
+  // Abs Party / Jantri Distributor (F4) / HPL-Jantri / Main Jantri (F7) only say
+  // "Message — Please choose a valid shift!"
+  const shiftNotChosenToast = () => {
+    toast.error(
+      <div>
+        <div className="font-bold text-base">Message</div>
+        <div className="text-sm mt-0.5">Please choose a valid shift!</div>
+      </div>,
+      { toastId: 'txl-no-shift' }
+    );
+  };
+
   const handleOpenAddSlipPage = (shiftIdParam?: string | number) => {
+    if (!shiftIdParam && !selectedShiftId) return shiftNotChosenToast();
     const targetShiftId = shiftIdParam || selectedShiftId || (shifts[0]?.id) || (list[0]?.shiftId) || 3;
     const targetUrl = `/transaction_add/${targetShiftId}`;
     window.open(targetUrl, '_blank');
   };
 
-  // Keyboard shortcut F2 to open Add Slip for selected shift
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'F2') {
-        e.preventDefault();
-        handleOpenAddSlipPage();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedShiftId, shifts, list]);
+  // F2 (Add Slip) is handled with the other shortcuts below — a second listener here opened
+  // two tabs on one key press.
 
   // Open Jantri View Modal (F3): loads entries if not cached and opens modal
   const handleOpenJantriView = async (tx?: TransactionItem) => {
+    if (!tx && !selectedShiftId) return shiftNotChosenToast();
     const target = tx || selectedTx || (list.length > 0 ? list[0] : null);
     if (target) {
       if (!target.entries || target.entries.length === 0) {
@@ -312,8 +323,24 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
   };
 
   // Kwada Transaction: find parties who hit the given exact Amount an exact number of times
+  // Live checks before Find: Amount, then Count, must be filled with a number above 0 — else a
+  // red "Message" toast and the cursor back on that box
+  const kwadaToast = (text: string, id: string, focusId: string) => {
+    toast.error(
+      <div>
+        <div className="font-bold text-base">Message</div>
+        <div className="text-sm mt-0.5">{text}</div>
+      </div>,
+      { toastId: id }
+    );
+    const el = document.getElementById(focusId) as HTMLInputElement | null;
+    el?.focus();
+    el?.select();
+  };
   const handleKwadaFind = async () => {
-    if (!kwadaAmount.trim()) return;
+    if (kwadaLoading) return;
+    if (!(parseFloat(kwadaAmount) > 0)) return kwadaToast('Please enter a valid amount!', 'kwada-amount', 'txl-kwada-amount');
+    if (!(parseInt(kwadaCount, 10) > 0)) return kwadaToast('Please enter a valid Count!', 'kwada-count', 'txl-kwada-count');
     setKwadaLoading(true);
     setKwadaSearched(true);
     try {
@@ -333,6 +360,14 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
       setKwadaLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!showKwadaModal) return;
+    setKwadaResults([]);
+    setKwadaSearched(false);
+    const id = requestAnimationFrame(() => document.getElementById('txl-kwada-amount')?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [showKwadaModal]);
 
   // Abs Party (Party Not Working): parties normally active in this shift who are absent today
   const fetchAbsentParties = async () => {
@@ -361,7 +396,9 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
   }, [showAbsPartyModal]);
 
   // Jantri Distributor: fetches the same-shape Jantri grid scoped to that distributor's parties
-  const fetchDistributorJantri = async (distributorId: number) => {
+  // notify (Submit): live says "Message — Record not avaliable!" when that distributor's
+  // parties have nothing in this shift/day (the grid still shows, all 0).
+  const fetchDistributorJantri = async (distributorId: number, notify = false) => {
     if (!selectedShiftId || !distributorId) return;
     setDistributorJantriLoading(true);
     try {
@@ -372,20 +409,41 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
         haruf: { digit: string; andarAmount: number; baharAmount: number }[];
       }>(`/jantri/${selectedShiftId}/distributor/${distributorId}?${params.toString()}`);
       setDistributorJantri(res.data || null);
+      const total = res.data
+        ? res.data.grid.reduce((a, g) => a + (g.totalAmount || 0), 0)
+          + res.data.haruf.reduce((a, h) => a + (h.andarAmount || 0) + (h.baharAmount || 0), 0)
+        : 0;
+      if (notify && total <= 0) distributorToast('Record not avaliable!');
     } catch (err) {
       console.warn('Failed to load distributor Jantri:', err);
       setDistributorJantri(null);
+      if (notify) distributorToast('Record not avaliable!');
     } finally {
       setDistributorJantriLoading(false);
     }
   };
 
-  const handleSubmitDistributorJantri = () => {
-    if (!selectedDistributorId) return;
-    fetchDistributorJantri(selectedDistributorId);
+  const distributorToast = (text: string) => {
+    toast.error(
+      <div>
+        <div className="font-bold text-base">Message</div>
+        <div className="text-sm mt-0.5">{text}</div>
+      </div>,
+      { toastId: 'txl-distributor' }
+    );
   };
 
-  const distributorOptions = partiesList.filter(p => p.groupName === 'Distributor');
+  const handleSubmitDistributorJantri = () => {
+    if (distributorJantriLoading) return;
+    if (!selectedDistributorId) return distributorToast('Please select a valid distributor!');
+    fetchDistributorJantri(selectedDistributorId, true);
+  };
+
+  // Every ledger in the Distributor group (Deactive ones too, as live lists them), in the
+  // order they were created — live's list runs by ledger, not A-Z
+  const distributorOptions = partiesList
+    .filter(p => p.groupName === 'Distributor')
+    .sort((a, b) => a.id - b.id);
 
   // Matches the live reference: opening the popup already has the first Distributor picked
   // and its Jantri loaded, rather than starting blank until Submit is clicked.
@@ -394,6 +452,12 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
       const firstId = distributorOptions[0].id;
       setSelectedDistributorId(firstId);
       fetchDistributorJantri(firstId);
+    } else if (showDistributorModal) {
+      setSelectedDistributorId('');
+      setDistributorJantri(null);
+    }
+    if (showDistributorModal) {
+      requestAnimationFrame(() => document.getElementById('txl-distributor-select')?.focus());
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showDistributorModal]);
@@ -588,7 +652,8 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
       }
       if (e.key === 'F4') {
         e.preventDefault();
-        setShowDistributorModal(true);
+        if (!selectedShiftId) shiftNotChosenToast();
+        else setShowDistributorModal(true);
       }
       if (e.key === 'F5') {
         e.preventDefault();
@@ -596,13 +661,13 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
       }
       if (e.key === 'F7') {
         e.preventDefault();
-        if (onNavigate) onNavigate('jantri');
-        else setShowJantriModal(true);
+        if (!selectedShiftId) shiftNotChosenToast();
+        else setShowMainJantri(true);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedShiftId, searchParty, selectedStatus, listMode, onNavigate]);
+  }, [selectedShiftId, searchParty, selectedStatus, listMode, onNavigate, shifts, list, selectedTx]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1072,14 +1137,14 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setShowKwadaModal(true)}
+              onClick={() => (selectedShiftId ? setShowKwadaModal(true) : shiftNotChosenToast())}
               className="px-4 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
             >
               Kwada Trans
             </button>
             <button
               type="button"
-              onClick={() => setShowAbsPartyModal(true)}
+              onClick={() => (selectedShiftId ? setShowAbsPartyModal(true) : shiftNotChosenToast())}
               className="px-4 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
             >
               Abs Party
@@ -1105,21 +1170,21 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
             </button>
             <button
               type="button"
-              onClick={() => setShowDistributorModal(true)}
+              onClick={() => (selectedShiftId ? setShowDistributorModal(true) : shiftNotChosenToast())}
               className="px-4 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
             >
               Jantri Distributor (F4)
             </button>
             <button
               type="button"
-              onClick={() => setShowHPLModal(true)}
+              onClick={() => (selectedShiftId ? setShowHPLModal(true) : shiftNotChosenToast())}
               className="px-4 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
             >
               HPL-Jantri
             </button>
             <button
               type="button"
-              onClick={() => onNavigate ? onNavigate('jantri') : setShowJantriModal(true)}
+              onClick={() => (selectedShiftId ? setShowMainJantri(true) : shiftNotChosenToast())}
               className="px-4 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
             >
               Main Jantri (F7)
@@ -1492,11 +1557,12 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
         </div>
       )}
 
-      {/* Modal 5: Kwada Transaction Modal — matching live reference */}
+      {/* Modal 5: Kwada Transaction — live layout: Amount / Count / Find in one row, then
+          Sr | Party | Amount (the party's sale). Opens on Amount; Enter: Amount -> Count -> Find. */}
       {showKwadaModal && (
         <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
-          <div className="bg-white rounded-lg shadow-2xl max-w-lg w-full overflow-hidden border border-slate-300">
-            <div className="bg-[#152847] text-white px-4 py-2.5 flex items-center justify-between">
+          <div className="bg-white rounded-lg shadow-2xl max-w-lg w-full overflow-hidden border border-slate-300 flex flex-col max-h-[85vh]">
+            <div className="bg-[#24497e] text-white px-4 py-3 flex items-center justify-between">
               <h2 className="text-sm font-bold tracking-tight">Kwada Transaction</h2>
               <button
                 type="button"
@@ -1506,68 +1572,69 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="p-4 space-y-3 text-xs">
-              <div className="flex flex-wrap items-end gap-3">
-                <div>
-                  <label className="block text-slate-700 font-medium mb-1">Amount</label>
-                  <input
-                    type="number"
-                    value={kwadaAmount}
-                    onChange={(e) => setKwadaAmount(e.target.value)}
-                    placeholder="AMOUNT"
-                    className="w-32 px-2.5 py-1.5 bg-[#fef08a] border border-amber-300 rounded text-xs font-semibold text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-700 font-medium mb-1">Count</label>
-                  <input
-                    type="number"
-                    value={kwadaCount}
-                    onChange={(e) => setKwadaCount(e.target.value)}
-                    placeholder="COUNT"
-                    className="w-24 px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={handleKwadaFind}
-                  disabled={!kwadaAmount.trim() || kwadaLoading}
-                  className="px-5 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] active:bg-[#0f4691] text-white font-bold text-xs rounded shadow-xs transition-colors disabled:opacity-50 cursor-pointer"
-                >
-                  {kwadaLoading ? 'Finding...' : 'Find'}
-                </button>
-              </div>
-
-              <div className="border border-slate-200 rounded overflow-hidden">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="bg-[#152847] text-white font-bold text-[11px]">
-                      <th className="py-1.5 px-3 w-14 text-center">Sr</th>
-                      <th className="py-1.5 px-3">Party</th>
-                      <th className="py-1.5 px-3 text-right">Amount</th>
+            <form
+              onSubmit={(e) => { e.preventDefault(); handleKwadaFind(); }}
+              className="px-3 py-2.5 flex flex-wrap items-center gap-3 text-xs border-b border-slate-200"
+            >
+              <span className="text-slate-700 font-semibold">Amount</span>
+              <input
+                id="txl-kwada-amount"
+                type="number"
+                value={kwadaAmount}
+                onChange={(e) => setKwadaAmount(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter') return;
+                  e.preventDefault();
+                  const el = document.getElementById('txl-kwada-count') as HTMLInputElement | null;
+                  el?.focus();
+                  el?.select();
+                }}
+                placeholder="AMOUNT"
+                className="w-28 px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
+              />
+              <span className="text-slate-700 font-semibold">Count</span>
+              <input
+                id="txl-kwada-count"
+                type="number"
+                value={kwadaCount}
+                onChange={(e) => setKwadaCount(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter') return;
+                  e.preventDefault();
+                  document.getElementById('txl-kwada-find')?.focus();
+                }}
+                placeholder="COUNT"
+                className="w-16 px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
+              />
+              <button
+                id="txl-kwada-find"
+                type="submit"
+                disabled={kwadaLoading}
+                className="px-5 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] active:bg-[#0f4691] text-white font-bold text-xs rounded shadow-xs transition-colors disabled:opacity-60 cursor-pointer focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#1662c6] inline-flex items-center gap-1.5"
+              >
+                Find
+                {kwadaLoading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
+              </button>
+            </form>
+            <div className="overflow-y-auto min-h-[420px] p-1 pbmax-table-scrollbar">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="sticky top-0">
+                  <tr className="bg-[#152847] text-white font-bold text-[11px]">
+                    <th className="py-2.5 px-3 w-12 border-r border-[#223b63]">Sr</th>
+                    <th className="py-2.5 px-3 border-r border-[#223b63]">Party</th>
+                    <th className="py-2.5 px-3 w-20 text-right">Amount</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {kwadaResults.map((r) => (
+                    <tr key={r.partyId} className="hover:bg-slate-50 even:bg-slate-50/60">
+                      <td className="py-1.5 px-3 font-semibold text-slate-600 border-r border-slate-100">{r.sr}</td>
+                      <td className="py-1.5 px-3 font-bold uppercase text-slate-700 border-r border-slate-100">{r.party}</td>
+                      <td className="py-1.5 px-3 text-right font-bold text-slate-700">{Math.round(r.amount)}</td>
                     </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {kwadaResults.length === 0 ? (
-                      <tr>
-                        <td colSpan={3} className="py-6 text-center text-slate-400">
-                          {kwadaSearched ? 'No matching parties found.' : 'Enter Amount (and optional Count) and click Find.'}
-                        </td>
-                      </tr>
-                    ) : (
-                      kwadaResults.map((r) => (
-                        <tr key={r.partyId} className="hover:bg-slate-50">
-                          <td className="py-1.5 px-3 text-center font-mono text-slate-500">{r.sr}</td>
-                          <td className="py-1.5 px-3 font-bold uppercase text-slate-800">{r.party}</td>
-                          <td className="py-1.5 px-3 text-right font-mono font-semibold text-slate-800">
-                            {r.amount.toLocaleString('en-IN')}
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
@@ -1576,9 +1643,9 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
       {/* Modal 6: Party Not Working (Abs Party) Modal — matching live reference */}
       {showAbsPartyModal && (
         <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
-          <div className="bg-white rounded-lg shadow-2xl max-w-2xl w-full overflow-hidden border border-slate-300">
-            <div className="bg-[#152847] text-white px-4 py-2.5 flex items-center justify-between">
-              <h2 className="text-sm font-bold tracking-tight">Party Not Working</h2>
+          <div className="bg-white rounded-lg shadow-2xl max-w-lg w-full overflow-hidden border border-slate-300">
+            <div className="bg-[#24497e] text-white px-4 py-3 flex items-center justify-between">
+              <h2 className="text-sm sm:text-base font-bold tracking-tight">Party Not Working</h2>
               <button
                 type="button"
                 onClick={() => setShowAbsPartyModal(false)}
@@ -1587,15 +1654,15 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="p-4 text-xs">
-              <div className="border border-slate-200 rounded overflow-hidden max-h-96 overflow-y-auto">
+            <div className="p-1 text-xs">
+              <div className="overflow-y-auto max-h-[70vh] pbmax-table-scrollbar">
                 <table className="w-full text-left text-xs border-collapse">
                   <thead className="sticky top-0">
-                    <tr className="bg-[#152847] text-white font-bold text-[11px]">
-                      <th className="py-1.5 px-3 w-14 text-center">Sr</th>
-                      <th className="py-1.5 px-3">Party</th>
-                      <th className="py-1.5 px-3">Mobile</th>
-                      <th className="py-1.5 px-3 text-center">Work</th>
+                    <tr className="bg-[#152847] text-white font-bold text-xs">
+                      <th className="py-3 px-3 w-12 border-r border-[#223b63]">Sr</th>
+                      <th className="py-3 px-3 border-r border-[#223b63]">Party</th>
+                      <th className="py-3 px-3 w-24 text-center border-r border-[#223b63]">Mobile</th>
+                      <th className="py-3 px-3 w-20 text-center">Work</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -1605,15 +1672,15 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
                       </tr>
                     ) : absentParties.length === 0 ? (
                       <tr>
-                        <td colSpan={4} className="py-6 text-center text-slate-400">No regular parties are absent right now.</td>
+                        <td colSpan={4} className="py-6 text-center text-slate-400">Record not avaliable!</td>
                       </tr>
                     ) : (
                       absentParties.map((p) => (
-                        <tr key={p.id} className="hover:bg-slate-50">
-                          <td className="py-1.5 px-3 text-center font-mono text-slate-500">{p.sr}</td>
-                          <td className="py-1.5 px-3 font-bold uppercase text-slate-800">{p.party}</td>
-                          <td className="py-1.5 px-3 font-mono text-slate-700">{p.mobile}</td>
-                          <td className="py-1.5 px-3 text-center font-mono font-semibold text-slate-800">{p.work}</td>
+                        <tr key={p.id} className="hover:bg-slate-50 even:bg-slate-50/60">
+                          <td className="py-2.5 px-3 font-semibold text-slate-700 border-r border-slate-100">{p.sr}</td>
+                          <td className="py-2.5 px-3 font-bold uppercase text-slate-700 border-r border-slate-100">{p.party}</td>
+                          <td className="py-2.5 px-3 text-center font-semibold text-slate-700 border-r border-slate-100">{p.mobile}</td>
+                          <td className="py-2.5 px-3 text-center font-semibold text-slate-700">{p.work}</td>
                         </tr>
                       ))
                     )}
@@ -1625,201 +1692,147 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
         </div>
       )}
 
-      {/* Modal 7: Distributor Wise Jantri (F4) Modal — matching live reference */}
-      {showDistributorModal && (
-        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 z-50 animate-in fade-in duration-150">
-          <div className="bg-white rounded-lg shadow-2xl w-full max-w-5xl overflow-hidden border border-slate-300">
-            <div className="bg-[#152847] text-white px-4 py-2.5 flex items-center justify-between">
-              <h2 className="text-sm font-bold tracking-tight">Distributor Wise Jantri</h2>
-              <button
-                type="button"
-                onClick={() => setShowDistributorModal(false)}
-                className="text-white hover:text-slate-200 p-0.5"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="p-3 sm:p-4 space-y-3 text-xs">
-              <div className="flex flex-wrap items-end gap-3">
-                <div>
-                  <label className="block text-slate-700 font-medium mb-1">Distributor</label>
-                  <select
-                    value={selectedDistributorId}
-                    onChange={(e) => setSelectedDistributorId(e.target.value ? parseInt(e.target.value, 10) : '')}
-                    className="w-56 px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 uppercase focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="">-- CHOOSE --</option>
-                    {distributorOptions.map((d) => (
-                      <option key={d.id} value={d.id}>{d.partyName}</option>
-                    ))}
-                  </select>
-                </div>
+      {/* Modal 7: Distributor Wise Jantri (F4) — live layout: Distributor dropdown (every
+          Distributor-group ledger, first one picked and loaded on open) + Submit, and the
+          jantri grid always shown (0s when empty). Submit with nothing for that distributor's
+          parties: "Message — Record not avaliable!". Enter on the dropdown submits. */}
+      {showDistributorModal && (() => {
+        const head = 'bg-[#152847] text-white font-bold text-xs sm:text-sm border border-[#223b63]';
+        const cellBox = 'relative h-8 bg-white border border-slate-300 text-right px-1.5 align-middle';
+        const badge = 'absolute top-0.5 left-0.5 text-[9px] font-bold px-1 rounded-xs bg-[#fde68a] text-[#713f12] leading-tight select-none';
+        const amt = (v: number) => (v > 0 ? <span className="font-bold text-[13px] text-slate-900 font-mono">{Math.round(v)}</span> : null);
+        const numbersTotal = Array.from({ length: 100 }, (_, i) => getDistributorAmountForNum(i + 1)).reduce((a, b) => a + b, 0);
+        const sideTotal = (side: 'andar' | 'bahar') => Array.from({ length: 10 }, (_, d) => getDistributorHaruf(d)[side]).reduce((a, b) => a + b, 0);
+        const harufRow = (side: 'A' | 'B') => (
+          <tr>
+            {Array.from({ length: 10 }, (_, c) => {
+              const digit = c + 1 === 10 ? 0 : c + 1;
+              const h = getDistributorHaruf(digit);
+              return (
+                <td key={digit} className={cellBox}>
+                  <span className={badge}>{side}{digit}</span>
+                  {amt(side === 'A' ? h.andar : h.bahar)}
+                </td>
+              );
+            })}
+            <td className={`${head} text-right px-2`}>{Math.round(sideTotal(side === 'A' ? 'andar' : 'bahar'))}</td>
+          </tr>
+        );
+        return (
+          <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 z-50 animate-in fade-in duration-150">
+            <div className="bg-white rounded-lg shadow-2xl w-full max-w-5xl overflow-hidden border border-slate-300 max-h-[95vh] flex flex-col">
+              <div className="bg-[#24497e] text-white px-4 py-3 flex items-center justify-between">
+                <h2 className="text-sm sm:text-base font-bold tracking-tight">Distributor Wise Jantri</h2>
                 <button
                   type="button"
-                  onClick={handleSubmitDistributorJantri}
-                  disabled={!selectedDistributorId || distributorJantriLoading}
-                  className="px-5 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] active:bg-[#0f4691] text-white font-bold text-xs rounded shadow-xs transition-colors disabled:opacity-50 cursor-pointer"
+                  onClick={() => setShowDistributorModal(false)}
+                  className="text-white hover:text-slate-200 p-0.5"
                 >
-                  {distributorJantriLoading ? 'Loading...' : 'Submit'}
+                  <X className="h-4 w-4" />
                 </button>
               </div>
-
-              {!distributorJantri ? (
-                <div className="py-10 text-center text-slate-400 font-medium">
-                  Choose a Distributor and click Submit to view their Jantri.
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full border-collapse text-xs font-mono select-none table-fixed">
-                    <thead className="bg-[#152847] text-white">
-                      <tr>
-                        {Array.from({ length: 10 }, (_, i) => (
-                          <th key={i + 1} className="py-1.5 sm:py-2 text-center text-xs font-bold border border-[#2b446f] w-[9.09%]">
-                            {i + 1}
-                          </th>
-                        ))}
-                        <th className="py-1.5 sm:py-2 text-center text-xs font-bold border border-[#2b446f] w-[9.09%]">Total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {Array.from({ length: 10 }, (_, r) => {
-                        const rowTotal = Array.from({ length: 10 }, (_, c) => getDistributorAmountForNum(r * 10 + c + 1)).reduce((a, b) => a + b, 0);
-                        return (
-                          <tr key={r} className="hover:bg-slate-50/70">
-                            {Array.from({ length: 10 }, (_, c) => {
-                              const num = r * 10 + (c + 1);
-                              const amt = getDistributorAmountForNum(num);
-                              return (
-                                <td key={num} className="relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 sm:px-1.5 align-middle">
-                                  <span className="absolute top-0.5 left-0.5 text-[9px] font-bold px-1 rounded-xs bg-[#fef9c3] text-[#854d0e] leading-tight select-none">
-                                    {num}
-                                  </span>
-                                  {amt > 0 ? (
-                                    <span className="font-bold text-xs sm:text-[13px] text-slate-900 font-mono">{amt.toLocaleString('en-IN')}</span>
-                                  ) : null}
-                                </td>
-                              );
-                            })}
-                            <td className="text-center font-bold text-slate-900 bg-white border border-slate-300 text-xs sm:text-[13px] font-mono">
-                              {rowTotal > 0 ? rowTotal.toLocaleString('en-IN') : 0}
-                            </td>
-                          </tr>
-                        );
+              <form
+                onSubmit={(e) => { e.preventDefault(); handleSubmitDistributorJantri(); }}
+                className="px-3 py-2 flex flex-wrap items-center gap-4 text-xs"
+              >
+                <span className="text-slate-600 font-semibold w-28">Distributor</span>
+                <select
+                  id="txl-distributor-select"
+                  value={selectedDistributorId}
+                  onChange={(e) => setSelectedDistributorId(e.target.value ? parseInt(e.target.value, 10) : '')}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter') return;
+                    e.preventDefault();
+                    handleSubmitDistributorJantri();
+                  }}
+                  className="w-44 px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs font-bold text-slate-800 uppercase focus:outline-none focus:bg-[#fde68a] focus:border-amber-300"
+                >
+                  {distributorOptions.length === 0 && <option value="">-- NO DISTRIBUTOR --</option>}
+                  {distributorOptions.map((d) => (
+                    <option key={d.id} value={d.id}>{d.partyName}</option>
+                  ))}
+                </select>
+                <button
+                  type="submit"
+                  disabled={distributorJantriLoading}
+                  className="px-4 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] text-white font-bold text-xs rounded shadow-xs disabled:opacity-70 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#1662c6] inline-flex items-center gap-1.5"
+                >
+                  Submit
+                  {distributorJantriLoading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
+                </button>
+              </form>
+              <div className="overflow-auto px-1 pb-1">
+                <table className="w-full border-collapse table-fixed">
+                  <thead>
+                    <tr>
+                      {Array.from({ length: 10 }, (_, c) => (
+                        <th key={c} className={`${head} py-1.5`}>{c + 1}</th>
+                      ))}
+                      <th className={`${head} py-1.5 w-28`}>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Array.from({ length: 10 }, (_, r) => {
+                      const rowTotal = Array.from({ length: 10 }, (_, c) => getDistributorAmountForNum(r * 10 + c + 1)).reduce((a, b) => a + b, 0);
+                      return (
+                        <tr key={r}>
+                          {Array.from({ length: 10 }, (_, c) => {
+                            const n = r * 10 + c + 1;
+                            return (
+                              <td key={n} className={cellBox}>
+                                <span className={badge}>{n}</span>
+                                {amt(getDistributorAmountForNum(n))}
+                              </td>
+                            );
+                          })}
+                          <td className={`${head} text-right px-2`}>{Math.round(rowTotal)}</td>
+                        </tr>
+                      );
+                    })}
+                    <tr>
+                      {Array.from({ length: 10 }, (_, c) => {
+                        const colTotal = Array.from({ length: 10 }, (_, r) => getDistributorAmountForNum(r * 10 + c + 1)).reduce((a, b) => a + b, 0);
+                        return <td key={c} className={`${head} text-right px-2 py-1`}>{Math.round(colTotal)}</td>;
                       })}
-
-                      <tr className="bg-[#152847] text-white font-bold font-mono text-center text-xs sm:text-[13px]">
-                        {Array.from({ length: 10 }, (_, c) => {
-                          const colTotal = Array.from({ length: 10 }, (_, r) => getDistributorAmountForNum(r * 10 + c + 1)).reduce((a, b) => a + b, 0);
-                          return (
-                            <td key={c + 1} className="py-1.5 sm:py-2 border border-[#2b446f]">
-                              {colTotal > 0 ? colTotal.toLocaleString('en-IN') : 0}
-                            </td>
-                          );
-                        })}
-                        <td className="py-1.5 sm:py-2 border border-[#2b446f]">
-                          {distributorJantri.grid.reduce((s, g) => s + g.totalAmount, 0).toLocaleString('en-IN')}
-                        </td>
-                      </tr>
-
-                      <tr className="hover:bg-slate-50/70">
-                        {Array.from({ length: 10 }, (_, c) => {
-                          const digit = c + 1 === 10 ? 0 : c + 1;
-                          const bAmt = getDistributorHaruf(digit).bahar;
-                          return (
-                            <td key={`b${digit}`} className="relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 sm:px-1.5 align-middle">
-                              <span className="absolute top-0.5 left-0.5 text-[9px] font-bold px-1 rounded-xs bg-[#fef9c3] text-[#854d0e] leading-tight select-none">
-                                B{digit}
-                              </span>
-                              {bAmt > 0 ? <span className="font-bold text-xs sm:text-[13px] text-slate-900 font-mono">{bAmt.toLocaleString('en-IN')}</span> : null}
-                            </td>
-                          );
-                        })}
-                        <td className="text-center font-bold text-slate-900 bg-white border border-slate-300 text-xs sm:text-[13px] font-mono">
-                          {distributorJantri.haruf.reduce((s, h) => s + h.baharAmount, 0).toLocaleString('en-IN')}
-                        </td>
-                      </tr>
-
-                      <tr className="hover:bg-slate-50/70">
-                        {Array.from({ length: 10 }, (_, c) => {
-                          const digit = c + 1 === 10 ? 0 : c + 1;
-                          const aAmt = getDistributorHaruf(digit).andar;
-                          return (
-                            <td key={`a${digit}`} className="relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 sm:px-1.5 align-middle">
-                              <span className="absolute top-0.5 left-0.5 text-[9px] font-bold px-1 rounded-xs bg-[#fef9c3] text-[#854d0e] leading-tight select-none">
-                                A{digit}
-                              </span>
-                              {aAmt > 0 ? <span className="font-bold text-xs sm:text-[13px] text-slate-900 font-mono">{aAmt.toLocaleString('en-IN')}</span> : null}
-                            </td>
-                          );
-                        })}
-                        <td className="text-center font-bold text-slate-900 bg-white border border-slate-300 text-xs sm:text-[13px] font-mono">
-                          {distributorJantri.haruf.reduce((s, h) => s + h.andarAmount, 0).toLocaleString('en-IN')}
-                        </td>
-                      </tr>
-
-                      <tr className="bg-[#152847] text-white font-bold text-xs sm:text-[13px]">
-                        {Array.from({ length: 9 }, (_, i) => (
-                          <td key={i} className="py-1.5 sm:py-2 text-center border border-[#2b446f]">-</td>
-                        ))}
-                        <td className="py-1.5 sm:py-2 text-center border border-[#2b446f] font-bold whitespace-nowrap">Grand Total</td>
-                        <td className="py-1.5 sm:py-2 text-center border border-[#2b446f] font-mono font-bold">
-                          {distributorGrandTotal.toLocaleString('en-IN')}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal 8: HPL-Jantri Modal */}
-      {showHPLModal && (
-        <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
-          <div className="bg-white rounded-lg shadow-2xl max-w-lg w-full overflow-hidden border border-slate-300">
-            <div className="bg-[#00897b] text-white px-4 py-2.5 flex items-center justify-between">
-              <h2 className="text-sm font-bold tracking-tight">HPL (Haruf / Panna / Limit) Jantri</h2>
-              <button
-                type="button"
-                onClick={() => setShowHPLModal(false)}
-                className="text-white hover:text-slate-200 p-0.5"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="p-4 space-y-3 text-xs">
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded">
-                <h3 className="font-bold text-slate-800 mb-2">Haruf & Limit Breakdown (0 - 9):</h3>
-                <div className="grid grid-cols-5 gap-2 font-mono text-center">
-                  {Array.from({ length: 10 }, (_, d) => {
-                    const digit = d.toString();
-                    const sum = list.flatMap(t => t.entries || [])
-                      .filter(e => e.numberValue.includes(digit))
-                      .reduce((acc, e) => acc + e.amount, 0);
-                    return (
-                      <div key={digit} className="p-2 bg-white border border-slate-200 rounded shadow-xs">
-                        <div className="text-slate-500 font-bold">Haruf [{digit}]</div>
-                        <div className="font-bold text-blue-700">{sum > 0 ? `₹${sum.toLocaleString('en-IN')}` : '-'}</div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-              <div className="flex justify-end pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowHPLModal(false)}
-                  className="px-5 py-1.5 bg-slate-700 hover:bg-slate-800 text-white font-bold text-xs rounded"
-                >
-                  Close
-                </button>
+                      <td className={`${head} text-right px-2`}>{Math.round(numbersTotal)}</td>
+                    </tr>
+                    {harufRow('B')}
+                    {harufRow('A')}
+                    <tr>
+                      {Array.from({ length: 9 }, (_, c) => (
+                        <td key={c} className={`${head} text-right px-2 py-1`}>-</td>
+                      ))}
+                      <td className={`${head} text-right px-2`}>Grand Total</td>
+                      <td className={`${head} text-right px-2`}>{Math.round(distributorGrandTotal).toLocaleString('en-IN')}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
+
+      {/* Modal 8: HPL - JANTRI (live): the shift's jantri at each party's rate, with Party /
+          Amount Less / Less %age filters applied on Submit */}
+      <HplJantriModal
+        open={showHPLModal}
+        onClose={() => setShowHPLModal(false)}
+        shiftId={selectedShiftId}
+        shiftName={shifts.find(sh => String(sh.id) === selectedShiftId)?.name || ''}
+        date={dateStr}
+        parties={partiesList}
+      />
+      {/* Modal 9: MAIN JANTRI (F7) — Commission + Hissa off, rounded to 50, loads on open */}
+      <HplJantriModal
+        variant="main"
+        open={showMainJantri}
+        onClose={() => setShowMainJantri(false)}
+        shiftId={selectedShiftId}
+        shiftName={shifts.find(sh => String(sh.id) === selectedShiftId)?.name || ''}
+        date={dateStr}
+        parties={partiesList}
+      />
       <CopyTransactionsModal
         tx={copyTx}
         shifts={shifts}

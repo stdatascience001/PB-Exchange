@@ -795,6 +795,18 @@ export class TransactionService {
     // to just theirs — the live page shows the whole book at 200, and with DK ROHIT 20% alone
     // in the list it redraws as that party's single number, 100.
     partyIds?: number[];
+    // HPL-Jantri (live, Live Transactions popup): each amount at the party's net — its
+    // Commission off, then its Hissa rows off EXCEPT those paid to a SYSTEM account (the HP A/C
+    // share stays in) — with the cells left exact (no rounding up to 50). Live HYDRABAD NIGHT
+    // 08-10: DK ROHIT 20% (10% comm, Hissa "20 | DK ROHIT 20%") 100 -> 72; DK ROHIT 50%
+    // (10% comm, Hissa "50 | HP A/C") 100 -> 90.
+    hpl?: boolean;
+    // Main Jantri (live, Live Transactions F7): Commission + Hissa off as above, but Amount
+    // Less / Less %age come off each cell's exact amount BEFORE it is rounded up to 50.
+    // Live HYDRABAD NIGHT 08-10 (cells exact 45, 36, 72, 144, 720 -> 50, 50, 100, 150, 750):
+    // Less 10 -> 7: 710 -> 750 (book 1,100); Less 20 -> 7: 700 -> 700 (1,050);
+    // Less 30 -> 5: 42 -> 50, 7: 690 -> 700 (1,000).
+    mainJantri?: boolean;
   }) {
     const conditions = [
       eq(transactions.shiftId, filters.shiftId),
@@ -830,14 +842,22 @@ export class TransactionService {
       // DK ROHIT 20% ("20 | DK ROHIT 20%", its own ledger) 1000 -> 800, and DK ROHIT 50%
       // ("50 | HP A/C") 2000 -> 1000.
       const hissaLinkFactorByParty = new Map<number, number>();
-      if (filters.hissa) {
+      if (filters.hissa || filters.hpl) {
         const hissaLinks = await db.select({
           ledgerId: ledgerThirdPartyLinks.ledgerId,
           percent: ledgerThirdPartyLinks.percent,
+          partyName: ledgerThirdPartyLinks.partyName,
         })
           .from(ledgerThirdPartyLinks)
           .where(and(eq(ledgerThirdPartyLinks.linkType, 'HISSA'), inArray(ledgerThirdPartyLinks.ledgerId, partyIds)));
+        // HPL leaves the Hissa paid to SYSTEM accounts (HP A/C) in
+        const systemNames = new Set<string>();
+        if (filters.hpl && !filters.hissa) {
+          const sys = await db.select({ partyName: ledgers.partyName }).from(ledgers).where(eq(ledgers.groupName, 'SYSTEM'));
+          for (const r of sys) systemNames.add((r.partyName || '').trim().toUpperCase());
+        }
         for (const l of hissaLinks) {
+          if (systemNames.has((l.partyName || '').trim().toUpperCase())) continue;
           const prev = hissaLinkFactorByParty.get(l.ledgerId) ?? 1;
           hissaLinkFactorByParty.set(l.ledgerId, prev * (1 - (parseFloat(l.percent) || 0) / 100));
         }
@@ -861,11 +881,11 @@ export class TransactionService {
         // 06-10 (both parties at 10%), Commission ticked: 1000 -> 900, 2000 -> 1800, book
         // 11,000 -> 9,900. With Hissa as well the two apply one after the other:
         // 1000 x 0.9 x 0.8 = 720 and 2000 x 0.9 x 0.5 = 900 (cells then rounded, see below).
-        if (filters.commission && party) {
+        if ((filters.commission || filters.hpl) && party) {
           const commPct = parseFloat(party.commissionRate) || 0;
           amt = amt * Math.max(0, 1 - commPct / 100);
         }
-        if (filters.hissa && party) {
+        if ((filters.hissa || filters.hpl) && party) {
           const hissaPct = parseFloat(party.hissaPercentage) || 0;
           const linkFactor = hissaLinkFactorByParty.get(party.id) ?? 1;
           amt = amt * Math.max(0, 1 - hissaPct / 100) * linkFactor;
@@ -899,9 +919,16 @@ export class TransactionService {
     // With Commission and/or Hissa taken off, or Akh mixed in, each cell shows in whole 50s
     // rounded up, as on live: 720 -> 750 (Commission + Hissa on DK ROHIT 20%), book 6,450;
     // Akh-Mix 210 -> 250, book 9,100 -> 9,500. An untouched book keeps its exact amounts.
-    const deducted = !!(filters.commission || filters.hissa || filters.akhMix);
+    // HPL keeps its cells exact (live: 72, 90 — not rounded up to 50)
+    const deducted = !filters.hpl && !!(filters.commission || filters.hissa || filters.akhMix);
     const roundUp50 = (v: number) => (v > 0 ? Math.ceil(Math.round(v * 100) / 100 / 50) * 50 : 0);
     const applyLess = (raw: number): number => {
+      if (filters.mainJantri) {
+        let exact = raw;
+        if (filters.amtLess && filters.amtLess > 0) exact = Math.max(0, exact - filters.amtLess);
+        if (filters.lessPercent && filters.lessPercent > 0) exact = exact * (1 - filters.lessPercent / 100);
+        return deducted ? roundUp50(exact) : exact;
+      }
       let amt = deducted ? roundUp50(raw) : raw;
       if (filters.amtLess && filters.amtLess > 0) amt = Math.max(0, amt - filters.amtLess);
       if (filters.lessPercent && filters.lessPercent > 0) amt = amt * (1 - filters.lessPercent / 100);
@@ -929,43 +956,76 @@ export class TransactionService {
     return { grid, haruf };
   }
 
-  // "Kwada Trans" finder — parties who submitted a given exact Amount a given exact number
-  // of Times (Count) in a shift, the same split-stake pattern the live site's own Amount/Count
-  // lookup surfaces. Count is optional — omitted, it just lists every matching party/amount.
+  // Kwada Transaction (live rule, from its screenshots): for the shift + day, a party is listed
+  // when it has staked at least Amount on at least Count different numbers (its stake per
+  // number = the sum over its live slips). Amount shows the party's total sale for the day.
+  //   DK ROHIT 50% = 3 -> 100, 4 -> 100 (sale 200):  100 x 1 / 100 x 2 / 50 x 1 list it, 100 x 3 doesn't.
   static async findKwadaTransactions(filters: { shiftId?: number; date?: string; amount: number; count?: number }) {
-    const conditions = [eq(transactions.totalAmount, filters.amount.toString()), ne(transactions.status, 'VOIDED')];
+    const conditions = [ne(transactions.status, 'VOIDED')];
     if (filters.shiftId) conditions.push(eq(transactions.shiftId, filters.shiftId));
     if (filters.date) conditions.push(sql`${transactions.createdAt}::date = ${filters.date}::date`);
 
-    const rows = await db.select({
+    const slips = await db.select({
+      id: transactions.id,
       partyId: transactions.partyId,
       partyName: ledgers.partyName,
+      totalAmount: transactions.totalAmount,
     })
       .from(transactions)
       .leftJoin(ledgers, eq(transactions.partyId, ledgers.id))
       .where(and(...conditions));
+    if (slips.length === 0) return [];
 
-    const grouped = new Map<number, { partyName: string; count: number }>();
-    for (const r of rows) {
-      if (!grouped.has(r.partyId)) grouped.set(r.partyId, { partyName: r.partyName || 'UNKNOWN', count: 0 });
-      grouped.get(r.partyId)!.count++;
+    const entries = await db.select({
+      transactionId: transactionEntries.transactionId,
+      numberValue: transactionEntries.numberValue,
+      entryType: transactionEntries.entryType,
+      amount: transactionEntries.amount,
+    })
+      .from(transactionEntries)
+      .where(inArray(transactionEntries.transactionId, slips.map(t => t.id)));
+
+    const partyOfSlip = new Map(slips.map(t => [t.id, t.partyId]));
+    const party = new Map<number, { partyName: string; sale: number; perNumber: Map<string, number> }>();
+    for (const t of slips) {
+      const p = party.get(t.partyId) || { partyName: t.partyName || 'UNKNOWN', sale: 0, perNumber: new Map<string, number>() };
+      p.sale += parseFloat(t.totalAmount) || 0;
+      party.set(t.partyId, p);
+    }
+    for (const e of entries) {
+      const p = party.get(partyOfSlip.get(e.transactionId)!);
+      if (!p) continue;
+      const key = `${e.entryType}:${e.numberValue}`;
+      p.perNumber.set(key, (p.perNumber.get(key) || 0) + (parseFloat(e.amount) || 0));
     }
 
-    return Array.from(grouped.entries())
-      .filter(([, v]) => filters.count === undefined || v.count === filters.count)
-      .map(([partyId, v], i) => ({ sr: i + 1, partyId, party: v.partyName, amount: filters.amount, count: v.count }));
+    const minCount = filters.count ?? 1;
+    const rows = Array.from(party.entries())
+      .map(([partyId, p]) => ({
+        partyId,
+        party: p.partyName,
+        sale: p.sale,
+        hits: Array.from(p.perNumber.values()).filter(v => v >= filters.amount).length,
+      }))
+      .filter(r => r.hits >= minCount);
+
+    return rows.map((r, i) => ({ sr: i + 1, partyId: r.partyId, party: r.party, amount: Math.round(r.sale), count: r.hits }));
   }
 
   // "Abs Party" (Party Not Working) — parties who regularly transact in this shift (any
   // activity in the last 30 days) but have none today. "Work" is a best-effort proxy: their
   // slip count in that same 30-day lookback window (no other source for this metric exists
   // anywhere in the schema), flagged the same honest way TPC/HP-Amt/RBT are flagged elsewhere.
+  // Live (Party Not Working, GHAZIABAD 08-10): A-Z list, every row Work = 3 — the regular
+  // parties of the shift: they played it on each of the last 3 days (Work = those days) but
+  // have no live slip in it today. AGARTALA EXPRESS, in today's book, isn't listed.
   static async getAbsentParties(filters: { shiftId: number; date: string }) {
-    const lookbackFrom = new Date(filters.date);
-    lookbackFrom.setDate(lookbackFrom.getDate() - 30);
+    const WORK_DAYS = 3;
+    const lookbackFrom = new Date(`${filters.date}T00:00:00Z`);
+    lookbackFrom.setUTCDate(lookbackFrom.getUTCDate() - WORK_DAYS);
     const fromDateStr = lookbackFrom.toISOString().slice(0, 10);
 
-    const historyRows = await db.select({ partyId: transactions.partyId })
+    const historyRows = await db.select({ partyId: transactions.partyId, day: sql<string>`${transactions.createdAt}::date::text` })
       .from(transactions)
       .where(and(
         eq(transactions.shiftId, filters.shiftId),
@@ -974,9 +1034,16 @@ export class TransactionService {
         sql`${transactions.createdAt}::date < ${filters.date}::date`,
       ));
 
-    const workCount = new Map<number, number>();
+    // Work = the number of different days (of the last 3) the party played this shift
+    const daysByParty = new Map<number, Set<string>>();
     for (const r of historyRows) {
-      workCount.set(r.partyId, (workCount.get(r.partyId) || 0) + 1);
+      const set = daysByParty.get(r.partyId) || new Set<string>();
+      set.add(r.day);
+      daysByParty.set(r.partyId, set);
+    }
+    const workCount = new Map<number, number>();
+    for (const [id, days] of daysByParty) {
+      if (days.size >= WORK_DAYS) workCount.set(id, days.size);
     }
     if (workCount.size === 0) return [];
 
@@ -984,6 +1051,7 @@ export class TransactionService {
       .from(transactions)
       .where(and(
         eq(transactions.shiftId, filters.shiftId),
+        ne(transactions.status, 'VOIDED'),
         sql`${transactions.createdAt}::date = ${filters.date}::date`,
       ));
     const presentToday = new Set(todayRows.map(r => r.partyId));
@@ -998,8 +1066,8 @@ export class TransactionService {
     }).from(ledgers).where(inArray(ledgers.id, absentPartyIds));
 
     return partyRows
-      .map((p, i) => ({ sr: i + 1, id: p.id, party: p.partyName, mobile: p.mobile || '-', work: workCount.get(p.id) || 0 }))
-      .sort((a, b) => b.work - a.work);
+      .sort((a, b) => (a.partyName || '').toUpperCase().localeCompare((b.partyName || '').toUpperCase()))
+      .map((p, i) => ({ sr: i + 1, id: p.id, party: p.partyName, mobile: p.mobile || '-', work: workCount.get(p.id) || 0 }));
   }
 
   // Duplicate Trans report: one row per GROUP of slips that share the same party, shift, day
@@ -1401,6 +1469,31 @@ export class TransactionService {
       : [];
     const agentNameById = new Map(agentRows.map(a => [a.id, a.agentName]));
 
+    // S-Hissa (live Daily Report): the share the party keeps itself — its Self Hissa plus every
+    // Hissa Party row (Ledger Update → Hissa) naming the party's OWN ledger. Live: AGARTALA
+    // EXPRESS "50 | AGARTALA EXPRESS" -> 50; DK ROHIT 20% "20 | DK ROHIT 20%" -> 20; a row to
+    // another ledger ("50 | HP A/C") is not the party's own share -> 0. Same rule as the
+    // Transaction ASC report's S-Hissa.
+    const dailyHissaLinks = partyIds.length > 0
+      ? await db.select({
+          ledgerId: ledgerThirdPartyLinks.ledgerId,
+          partyName: ledgerThirdPartyLinks.partyName,
+          percent: ledgerThirdPartyLinks.percent,
+        })
+          .from(ledgerThirdPartyLinks)
+          .where(and(eq(ledgerThirdPartyLinks.linkType, 'HISSA'), inArray(ledgerThirdPartyLinks.ledgerId, partyIds)))
+      : [];
+    const selfHissaOf = (party: typeof partyRows[number] | undefined): number => {
+      if (!party) return 0;
+      const ownName = (party.partyName || '').trim().toUpperCase();
+      let self = parseFloat(party.hissaPercentage || '0') || 0;
+      for (const l of dailyHissaLinks) {
+        if (l.ledgerId !== party.id) continue;
+        if ((l.partyName || '').trim().toUpperCase() === ownName) self += parseFloat(l.percent) || 0;
+      }
+      return self;
+    };
+
     const declaredNumber = shift.declaredNumber ? shift.declaredNumber.padStart(2, '0') : null;
     const tensDigit = declaredNumber?.[0];
     const unitsDigit = declaredNumber?.[1];
@@ -1431,9 +1524,15 @@ export class TransactionService {
     let rows = Array.from(perParty.entries()).map(([partyId, agg]) => {
       const party = partyById.get(partyId);
       const commissionRate = parseFloat(party?.commissionRate || '0');
-      const hissaPct = parseFloat(party?.hissaPercentage || '0');
+      const hissaPct = selfHissaOf(party);
       const comm = -(agg.totalSale * commissionRate / 100);
-      const hissa = -((agg.totalSale + comm) * hissaPct / 100);
+      // Live: Book = Sale + Comm − Payout (O-Dara + O-Akhar); Hissa = −Book × S-Hissa%;
+      // Closing = Book + Hissa -> Debit when above 0, Credit when below. AGARTALA EXPRESS
+      // 12270 − 1227 − 9000 = 2043 -> Hissa −1021, Debit 1022; ABHISHEK RAWLA (S-Hissa 0)
+      // 8100 − 810 − 9000 -> Credit 1710; ANUPGARH 3000 − 600 -> Debit 2400.
+      const book = agg.totalSale + comm - agg.oDara - agg.oAkhar;
+      const hissa = Math.round(-(book * hissaPct / 100));
+      const closing = Math.round(book + hissa);
 
       return {
         partyId,
@@ -1451,8 +1550,8 @@ export class TransactionService {
         oAkhar: agg.oAkhar,
         tpc: 0,
         hissa,
-        debit: hissa < 0 ? Math.abs(hissa) : 0,
-        credit: hissa > 0 ? hissa : 0,
+        debit: closing > 0 ? closing : 0,
+        credit: closing < 0 ? -closing : 0,
       };
     });
 
