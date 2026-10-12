@@ -6,6 +6,8 @@ import { X, Search as SearchIcon, Eye, Copy, Trash2, Plus, Edit } from 'lucide-r
 import { TransactionItem } from './TransactionListPage.js';
 import { JantriViewModal } from '../components/JantriViewModal.js';
 import { CopyTransactionsModal } from '../components/CopyTransactionsModal.js';
+import { HplJantriModal } from '../components/HplJantriModal.js';
+import { toast } from 'react-toastify';
 
 interface DeclareTransactionListPageProps {
   shifts?: ShiftDto[];
@@ -139,6 +141,27 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
   const [kwadaSearched, setKwadaSearched] = useState(false);
   const [absentParties, setAbsentParties] = useState<{ sr: number; id: number; party: string; mobile: string; work: number }[]>([]);
   const [absentPartiesLoading, setAbsentPartiesLoading] = useState(false);
+
+  // HPL-Jantri / Main Jantri (F7) — the same popups as Live Transactions, on this page's shift
+  // and date (each handles its own Esc / backdrop close)
+  const [showHPLModal, setShowHPLModal] = useState(false);
+  const [showMainJantri, setShowMainJantri] = useState(false);
+  const [partiesList, setPartiesList] = useState<{ id: number; partyName: string; mobile?: string; groupName?: string }[]>([]);
+  useEffect(() => {
+    apiRequest<{ id: number; partyName: string; mobile?: string; groupName?: string }[]>('/ledgers')
+      .then(res => { if (res.data) setPartiesList(res.data); })
+      .catch(() => {});
+  }, []);
+  // Live: with Shift left on "-- CHOOSE --" these only say "Message — Please choose a valid shift!"
+  const shiftNotChosenToast = () => {
+    toast.error(
+      <div>
+        <div className="font-bold text-base">Message</div>
+        <div className="text-sm mt-0.5">Please choose a valid shift!</div>
+      </div>,
+      { toastId: 'decl-no-shift' }
+    );
+  };
 
   // Esc (or a click on the dimmed area outside the box) closes the View / Edit / Kwada /
   // Party Not Working popup, the same as its Close / X button. (Jantri View and Copy handle
@@ -314,14 +337,20 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'F2') {
         e.preventDefault();
-        window.open(`/transaction_add/${selectedShiftId || '1'}`, '_blank');
+        if (!selectedShiftId) shiftNotChosenToast();
+        else window.open(`/transaction_add/${selectedShiftId}`, '_blank');
       } else if (e.key === 'F3') {
         // Jantri View popup for the selected slip's party (Consolidate / Cut toggles inside)
         e.preventDefault();
-        setShowJantriModal(true);
+        if (!selectedShiftId) shiftNotChosenToast();
+        else setShowJantriModal(true);
       } else if (e.key === 'F5') {
         e.preventDefault();
         fetchTransactionsRef.current();
+      } else if (e.key === 'F7') {
+        e.preventDefault();
+        if (!selectedShiftId) shiftNotChosenToast();
+        else setShowMainJantri(true);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -719,14 +748,14 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setShowKwadaModal(true)}
+              onClick={() => (selectedShiftId ? setShowKwadaModal(true) : shiftNotChosenToast())}
               className="px-4 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
             >
               Kwada Trans
             </button>
             <button
               type="button"
-              onClick={() => setShowAbsPartyModal(true)}
+              onClick={() => (selectedShiftId ? setShowAbsPartyModal(true) : shiftNotChosenToast())}
               className="px-4 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
             >
               Abs Party
@@ -738,26 +767,28 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
             <button
               id="decl-add-btn"
               type="button"
-              onClick={() => window.open(`/transaction_add/${selectedShiftId || '1'}`, '_blank')}
+              onClick={() => (selectedShiftId ? window.open(`/transaction_add/${selectedShiftId}`, '_blank') : shiftNotChosenToast())}
               className="px-4 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] active:bg-[#0f4691] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#1662c6]"
             >
               Add (F2)
             </button>
             <button
               type="button"
-              onClick={() => setShowJantriModal(true)}
+              onClick={() => (selectedShiftId ? setShowJantriModal(true) : shiftNotChosenToast())}
               className="px-4 py-1.5 bg-[#d97706] hover:bg-[#b45309] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
             >
               Jantri View (F3)
             </button>
             <button
               type="button"
+              onClick={() => (selectedShiftId ? setShowHPLModal(true) : shiftNotChosenToast())}
               className="px-4 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
             >
               HPL-Jantri
             </button>
             <button
               type="button"
+              onClick={() => (selectedShiftId ? setShowMainJantri(true) : shiftNotChosenToast())}
               className="px-4 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer"
             >
               Main Jantri (F7)
@@ -1011,6 +1042,23 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
         onClose={() => setShowJantriModal(false)}
         selectedTx={selectedTx}
         list={visibleList}
+      />
+      <HplJantriModal
+        open={showHPLModal}
+        onClose={() => setShowHPLModal(false)}
+        shiftId={selectedShiftId}
+        shiftName={shifts.find(sh => String(sh.id) === selectedShiftId)?.name || ''}
+        date={dateStr}
+        parties={partiesList}
+      />
+      <HplJantriModal
+        variant="main"
+        open={showMainJantri}
+        onClose={() => setShowMainJantri(false)}
+        shiftId={selectedShiftId}
+        shiftName={shifts.find(sh => String(sh.id) === selectedShiftId)?.name || ''}
+        date={dateStr}
+        parties={partiesList}
       />
       <CopyTransactionsModal
         tx={copyTx}
