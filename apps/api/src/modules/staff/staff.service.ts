@@ -1,8 +1,28 @@
-import { db, staff, staffAssets, users, roles } from '@pb/database';
+import { db, sql as pgSql, staff, staffAssets, users, roles } from '@pb/database';
 import { eq, asc, desc, sql } from 'drizzle-orm';
 import { AppError } from '../../common/errors.js';
 import { hashPassword } from '../auth/auth.service.js';
 import { clearRedirectForUsernames } from '../../middleware/inactive-redirect.js';
+
+// Staff Salary/Assets: the Salary / Assets status a double-click sets (NULL = follow the data —
+// salary above 0 / an issued asset not returned). Kept out of the drizzle `staff` table so every
+// existing select stays as it was; added on first use here (same DDL as migrate.ts).
+let staffFlagsReady: Promise<void> | null = null;
+function ensureStaffFlagColumns(): Promise<void> {
+  if (!staffFlagsReady) {
+    staffFlagsReady = pgSql
+      .unsafe(`
+        ALTER TABLE staff ADD COLUMN IF NOT EXISTS salary_flag BOOLEAN;
+        ALTER TABLE staff ADD COLUMN IF NOT EXISTS assets_flag BOOLEAN;
+      `)
+      .then(() => undefined)
+      .catch((err) => {
+        staffFlagsReady = null;
+        throw err;
+      });
+  }
+  return staffFlagsReady;
+}
 
 export class StaffService {
   private static async getOrCreateRoleId(roleName: string): Promise<number> {
@@ -35,6 +55,11 @@ export class StaffService {
         : db.select().from(staff).orderBy(asc(staff.id)),
       db.select().from(staffAssets).orderBy(desc(staffAssets.id)),
     ]);
+    await ensureStaffFlagColumns();
+    const flagRows = await pgSql<{ id: number; salary_flag: boolean | null; assets_flag: boolean | null }[]>`
+      SELECT id, salary_flag, assets_flag FROM staff
+    `;
+    const flagsById = new Map(flagRows.map(r => [r.id, r]));
 
     const assetsByStaff = new Map<number, typeof allAssets>();
     for (const a of allAssets) {
@@ -66,8 +91,8 @@ export class StaffService {
         updatedAt: s.updatedAt ? s.updatedAt.toISOString() : s.createdAt.toISOString(),
         monthlySalary: salaryNum,
         salaryStructure: s.salaryStructure || { earnings: [], deductions: [] },
-        hasSalary: salaryNum > 0,
-        hasAssets: hasActiveAssets,
+        hasSalary: flagsById.get(s.id)?.salary_flag ?? salaryNum > 0,
+        hasAssets: flagsById.get(s.id)?.assets_flag ?? hasActiveAssets,
         isWorkingLive: s.isWorkingLive,
         assignedStation: s.assignedStation,
         createdAt: s.createdAt.toISOString(),
@@ -463,6 +488,15 @@ export class StaffService {
     if (!updated) throw new AppError('Staff member not found', 404);
     return updated;
   }
+
+  // Double-click on a Salary / Assets badge: sets that status to YES / NO
+  static async setStatusFlag(staffId: number, field: 'salary' | 'assets', value: boolean, updatedBy?: string) {
+    await ensureStaffFlagColumns();
+    const actor = updatedBy || 'A100';
+    const rows = field === 'salary'
+      ? await pgSql`UPDATE staff SET salary_flag = ${value}, updated_by = ${actor}, updated_at = NOW() WHERE id = ${staffId} RETURNING id`
+      : await pgSql`UPDATE staff SET assets_flag = ${value}, updated_by = ${actor}, updated_at = NOW() WHERE id = ${staffId} RETURNING id`;
+    if (rows.length === 0) throw new AppError('Staff member not found', 404);
+    return { id: staffId, field, value };
+  }
 }
-
-

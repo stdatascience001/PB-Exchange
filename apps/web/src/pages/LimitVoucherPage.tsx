@@ -24,6 +24,8 @@ interface ManualVoucherItem {
   updatedBy: string;
   createdAt: string;
   updatedAt: string;
+  // Real insert time (createdAt is the picked voucher date at noon); absent on older APIs
+  addedAt?: string;
 }
 
 const todayInputDate = () => new Date().toISOString().slice(0, 10);
@@ -36,11 +38,10 @@ const formatTimestamp = (dateVal?: string) => {
     const day = String(d.getDate()).padStart(2, '0');
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const year = d.getFullYear();
-    let hours = d.getHours();
+    // Live Added / Updated: "DD-MM-YYYY HH:mm" (24-hour, no AM/PM)
+    const hours = String(d.getHours()).padStart(2, '0');
     const minutes = String(d.getMinutes()).padStart(2, '0');
-    const ampm = hours >= 12 ? 'PM' : 'AM';
-    hours = hours % 12 || 12;
-    return `${day}-${month}-${year} ${String(hours).padStart(2, '0')}:${minutes} ${ampm}`;
+    return `${day}-${month}-${year} ${hours}:${minutes}`;
   } catch {
     return dateVal;
   }
@@ -52,7 +53,8 @@ const formatDateOnly = (dateVal?: string) => {
   if (isNaN(d.getTime())) return dateVal;
   const day = String(d.getDate()).padStart(2, '0');
   const month = String(d.getMonth() + 1).padStart(2, '0');
-  return `${day}-${month}-${d.getFullYear()}`;
+  // Live Date column: "DD / MM / YYYY"
+  return `${day} / ${month} / ${d.getFullYear()}`;
 };
 
 export const LimitVoucherPage: React.FC = () => {
@@ -71,6 +73,9 @@ export const LimitVoucherPage: React.FC = () => {
   }, []);
   const [toDate, setToDate] = useState(todayInputDate());
   const [search, setSearch] = useState('');
+  // Bottom-bar Active / Deleted switch (live): Active = current vouchers, Deleted = vouchers
+  // someone deleted (read-only, so no Edit / Delete on them)
+  const [listMode, setListMode] = useState<'ACTIVE' | 'DELETED'>('ACTIVE');
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   // Add / Edit popup Enter flow (as live): Date DD -> MM -> YYYY -> Party (pick from its list)
@@ -105,6 +110,8 @@ export const LimitVoucherPage: React.FC = () => {
     setLoading(true);
     try {
       const params = new URLSearchParams({ voucherType: VOUCHER_TYPE, fromDate, toDate });
+      // Shared /vouchers/manual switch: status=DELETED lists the archived deleted vouchers
+      if (listMode === 'DELETED') params.set('status', 'DELETED');
       const res = await apiRequest<ManualVoucherItem[]>(`/vouchers/manual?${params.toString()}`);
       if (res.data) setList(res.data);
       // Live: no vouchers for the dates (null / empty response) -> red "Error / Record not
@@ -139,7 +146,7 @@ export const LimitVoucherPage: React.FC = () => {
     fetchList();
     fetchParties();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate]);
+  }, [fromDate, toDate, listMode]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -333,8 +340,8 @@ export const LimitVoucherPage: React.FC = () => {
                 <th className="py-2.5 px-4 border-r border-[#223b63] text-right">Amount</th>
                 <th className="py-2.5 px-4 border-r border-[#223b63]">Opposite Party</th>
                 <th className="py-2.5 px-4 border-r border-[#223b63]">Remark</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Added</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Updated</th>
+                <th className="py-2.5 px-4 border-r border-[#223b63] text-center">Added</th>
+                <th className="py-2.5 px-4 border-r border-[#223b63] text-center">Updated</th>
                 <th className="py-2.5 px-4 text-center w-24">Action</th>
               </tr>
             </thead>
@@ -350,49 +357,87 @@ export const LimitVoucherPage: React.FC = () => {
                     <td className="py-2 px-4 font-mono text-slate-600 border-r border-slate-200">{formatDateOnly(v.createdAt)}</td>
                     <td className="py-2 px-4 font-bold text-slate-900 uppercase border-r border-slate-200">{v.partyName}</td>
                     <td className="py-2 px-4 text-center border-r border-slate-200">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${v.entrySide === 'CR' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
-                        {v.entrySide}
+                      {/* Live shows plain "Cr" / "Dr" */}
+                      <span className={`font-bold ${v.entrySide === 'CR' ? 'text-emerald-700' : 'text-rose-700'}`}>
+                        {v.entrySide === 'CR' ? 'Cr' : 'Dr'}
                       </span>
                     </td>
                     <td className="py-2 px-4 text-right font-mono font-bold text-slate-900 border-r border-slate-200">
-                      {v.totalAmount.toLocaleString('en-IN')}
+                      {/* Live: plain integer, e.g. 70000 */}
+                      {Math.round(v.totalAmount)}
                     </td>
                     <td className="py-2 px-4 font-semibold uppercase text-slate-800 border-r border-slate-200">{v.oppositePartyName}</td>
                     <td className="py-2 px-4 text-slate-600 border-r border-slate-200 whitespace-normal max-w-xs">{v.narration || '-'}</td>
-                    <td className="py-1 px-4 border-r border-slate-200 leading-snug">
+                    <td className="py-1 px-4 border-r border-slate-200 leading-snug text-center">
                       <div className="font-bold text-slate-900 uppercase text-[11px]">{v.createdByUsername}</div>
-                      <div className="font-mono text-slate-500 text-[10px]">{formatTimestamp(v.createdAt)}</div>
+                      <div className="font-mono text-slate-500 text-[10px]">{formatTimestamp(v.addedAt || v.createdAt)}</div>
                     </td>
-                    <td className="py-1 px-4 border-r border-slate-200 leading-snug">
+                    <td className="py-1 px-4 border-r border-slate-200 leading-snug text-center">
                       <div className="font-bold text-slate-900 uppercase text-[11px]">{v.updatedBy}</div>
                       <div className="font-mono text-slate-500 text-[10px]">{formatTimestamp(v.updatedAt)}</div>
                     </td>
                     <td className="py-2 px-4 text-center">
-                      <div className="flex items-center justify-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => openEditModal(v)}
-                          title="Edit"
-                          className="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors"
-                        >
-                          <Edit2 className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(v.id)}
-                          title="Delete"
-                          className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
+                      {listMode === 'DELETED' ? (
+                        <span className="text-slate-400">-</span>
+                      ) : (
+                        <div className="flex items-center justify-center gap-1.5">
+                          {/* Live: blue "Edit" + red "Delete" buttons */}
+                          <button
+                            type="button"
+                            onClick={() => openEditModal(v)}
+                            title="Edit"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#1662c6] hover:bg-[#1354ab] text-white font-bold text-[11px] rounded shadow-xs transition-colors"
+                          >
+                            <Edit2 className="h-3 w-3" />
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(v.id)}
+                            title="Delete"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#dc2626] hover:bg-[#b91c1c] text-white font-bold text-[11px] rounded shadow-xs transition-colors"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                            Delete
+                          </button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))
               )}
             </tbody>
+            {/* Live footer repeats the headers; the Sr cell carries the row count */}
+            <tfoot>
+              <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
+                <td className="py-2 px-3 border-r border-[#223b63] text-center">{filteredList.length}</td>
+                <td className="py-2 px-4 border-r border-[#223b63]">Date</td>
+                <td className="py-2 px-4 border-r border-[#223b63]">Party</td>
+                <td className="py-2 px-3 border-r border-[#223b63] text-center">Cr/Dr</td>
+                <td className="py-2 px-4 border-r border-[#223b63] text-right">Amount</td>
+                <td className="py-2 px-4 border-r border-[#223b63]">Opposite Party</td>
+                <td className="py-2 px-4 border-r border-[#223b63]">Remark</td>
+                <td className="py-2 px-4 border-r border-[#223b63] text-center">Added</td>
+                <td className="py-2 px-4 border-r border-[#223b63] text-center">Updated</td>
+                <td className="py-2 px-4 text-center">Action</td>
+              </tr>
+            </tfoot>
           </table>
         </div>
+      </div>
+
+      {/* Bottom bar (live): Need Help? + yellow Active / Deleted switch on the right */}
+      <div className="mt-2 bg-[#1f3a63] rounded-md px-4 py-2 flex items-center justify-between">
+        <span className="text-amber-400 text-xs font-medium">Need Help?</span>
+        <select
+          id="lv-list-mode"
+          value={listMode}
+          onChange={(e) => setListMode(e.target.value as 'ACTIVE' | 'DELETED')}
+          className="w-24 px-2.5 py-1.5 bg-[#fde68a] border border-amber-300 rounded text-xs font-bold text-slate-900 cursor-pointer focus:outline-none"
+        >
+          <option value="ACTIVE">Active</option>
+          <option value="DELETED">Deleted</option>
+        </select>
       </div>
 
       {showModal && (

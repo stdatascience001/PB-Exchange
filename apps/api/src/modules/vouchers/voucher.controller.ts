@@ -24,6 +24,12 @@ export class VoucherController {
       const toDate = req.query.toDate as string | undefined;
       const search = req.query.search as string | undefined;
       const manualOnly = req.query.manualOnly === '1' || req.query.manualOnly === 'true';
+      // Bottom Active / Deleted switch: status=DELETED lists archived deleted vouchers;
+      // anything else (or no status) is the unchanged Active list.
+      if (String(req.query.status || '').toUpperCase() === 'DELETED') {
+        const deletedList = await VoucherService.listDeletedManualVouchers({ voucherType, manualOnly, fromDate, toDate, search });
+        return sendSuccess(res, deletedList, 'Vouchers retrieved');
+      }
       const list = await VoucherService.listManualVouchers({ voucherType, manualOnly, auditStatus, fromDate, toDate, search });
       return sendSuccess(res, list, 'Vouchers retrieved');
     } catch (err) {
@@ -113,7 +119,7 @@ export class VoucherController {
   static async remove(req: Request, res: Response, next: NextFunction) {
     try {
       const id = parseInt(req.params.id as string, 10);
-      const deleted = await VoucherService.deleteVoucher(id);
+      const deleted = await VoucherService.deleteVoucher(id, req.user?.username);
       return sendSuccess(res, deleted, 'Voucher deleted successfully');
     } catch (err) {
       next(err);

@@ -22,7 +22,11 @@ const VOUCHER_TYPES = [
   { value: 'HAWA_PATTI', label: 'Hawa Patti' },
 ];
 
-const todayInputDate = () => new Date().toISOString().slice(0, 10);
+// Local calendar date (toISOString is UTC, which shows yesterday before 05:30 IST).
+const todayInputDate = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
 const messageToast = (kind: 'success' | 'error', text: string, toastId?: string) =>
   toast[kind](
@@ -125,19 +129,34 @@ export const DuplicateVoucherPage: React.FC = () => {
 
   const handleExportExcel = () => {
     if (list.length === 0) {
-      alert('No duplicate records available to export.');
+      messageToast('error', 'Record not found!', 'dup-voucher-none');
       return;
     }
-    const csvContent = 'data:text/csv;charset=utf-8,' +
-      ['Date,Party,Amount,Dr/Cr,O-Party,D-Count'].concat(
-        list.map(r => `${formatDateOnly(r.voucherDate)},"${r.partyName}",${r.amount},${r.entrySide},"${r.oppositePartyName}",${r.count}`)
-      ).join('\n');
+    // Same columns as the table (minus Action). Quote every text cell and double inner quotes
+    // so party names with commas/quotes stay in one cell; a Blob (not an encodeURI data: URL)
+    // keeps '#' in names from truncating the file. BOM so Excel reads it as UTF-8.
+    const cell = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const csv = [
+      ['Sr.', 'Date', 'Party', 'Amount', 'Dr/Cr', 'O-Party', 'D-Count'].map(cell).join(','),
+      ...list.map((r, i) => [
+        i + 1,
+        formatDateOnly(r.voucherDate),
+        r.partyName,
+        r.amount,
+        r.entrySide === 'CR' ? 'Cr' : 'Dr',
+        r.oppositePartyName,
+        r.count,
+      ].map(cell).join(',')),
+    ].join('\r\n');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.setAttribute('href', encodeURI(csvContent));
-    link.setAttribute('download', `duplicate_voucher_${voucherType}_${fromDate}_${toDate}.csv`);
+    link.href = url;
+    link.download = `duplicate_voucher_${voucherType}_${fromDate}_${toDate}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   return (

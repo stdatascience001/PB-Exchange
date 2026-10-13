@@ -457,6 +457,57 @@ export const StaffAssetsPage: React.FC = () => {
     }
   };
 
+  // Salary / Assets badges: a single click opens the Manage popup on that tab (as before); a
+  // double-click switches the status YES <-> NO and saves it. The single click waits a moment so
+  // a double-click doesn't also open the popup.
+  const badgeClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [flagSavingKey, setFlagSavingKey] = useState<string | null>(null);
+  const handleBadgeClick = (st: StaffSalaryAssetItem, tab: 'assets' | 'salary') => {
+    if (badgeClickTimerRef.current) clearTimeout(badgeClickTimerRef.current);
+    badgeClickTimerRef.current = setTimeout(() => {
+      badgeClickTimerRef.current = null;
+      openModal(st, tab);
+    }, 250);
+  };
+  const handleBadgeDoubleClick = async (st: StaffSalaryAssetItem, field: 'salary' | 'assets') => {
+    if (badgeClickTimerRef.current) {
+      clearTimeout(badgeClickTimerRef.current);
+      badgeClickTimerRef.current = null;
+    }
+    const key = `${st.id}-${field}`;
+    if (flagSavingKey) return;
+    const current = field === 'salary' ? st.hasSalary : st.hasAssets;
+    const next = !current;
+    const patch = (rows: StaffSalaryAssetItem[]) =>
+      rows.map(r => (r.id === st.id ? { ...r, ...(field === 'salary' ? { hasSalary: next } : { hasAssets: next }) } : r));
+    setFlagSavingKey(key);
+    setStaffList(patch);
+    setSearchedRows(prev => (prev ? patch(prev) : prev));
+    try {
+      await apiRequest(`/staff/${st.id}/status-flag`, {
+        method: 'PATCH',
+        body: JSON.stringify({ field, value: next }),
+      });
+      toast.success(
+        <div>
+          <div className="font-bold text-base">Success</div>
+          <div className="text-sm mt-0.5">{field === 'salary' ? 'Salary' : 'Assets'} status has been updated successfully!</div>
+        </div>,
+        { toastId: `staff-flag-${key}-${Date.now()}` }
+      );
+      fetchData();
+    } catch (err: any) {
+      // Put the badge back as it was
+      const undo = (rows: StaffSalaryAssetItem[]) =>
+        rows.map(r => (r.id === st.id ? { ...r, ...(field === 'salary' ? { hasSalary: current } : { hasAssets: current }) } : r));
+      setStaffList(undo);
+      setSearchedRows(prev => (prev ? undo(prev) : prev));
+      popupToast(err?.message || 'Failed to update status', `staff-flag-err-${key}`);
+    } finally {
+      setFlagSavingKey(null);
+    }
+  };
+
   const currentSelectedStaff = staffList.find(s => s.id === selectedStaffId);
 
   // The table filters by what was searched — typing alone doesn't change it; Search (Enter /
@@ -579,24 +630,30 @@ export const StaffAssetsPage: React.FC = () => {
                     {/* Salary Badge */}
                     <td className="py-1.5 px-3.5 text-center border-r border-slate-200">
                       <span
-                        onClick={() => openModal(s, 'salary')}
-                        title={`Click to manage salary: ₹${s.monthlySalary}`}
+                        onClick={() => handleBadgeClick(s, 'salary')}
+                        onDoubleClick={() => handleBadgeDoubleClick(s, 'salary')}
+                        title={`Click to manage salary: ₹${s.monthlySalary} | Double-click to switch YES / NO`}
                         className={`inline-block min-w-10 px-2 py-0.5 rounded text-[10px] font-bold uppercase cursor-pointer transition-transform active:scale-95 ${
-                          s.hasSalary || s.monthlySalary > 0
+                          flagSavingKey === `${s.id}-salary` ? 'opacity-60' : ''
+                        } ${
+                          s.hasSalary
                             ? 'bg-[#00897b] text-white'
                             : 'bg-[#d32f2f] text-white'
                         }`}
                       >
-                        {s.hasSalary || s.monthlySalary > 0 ? 'YES' : 'NO'}
+                        {s.hasSalary ? 'YES' : 'NO'}
                       </span>
                     </td>
 
                     {/* Assets Badge */}
                     <td className="py-1.5 px-3.5 text-center border-r border-slate-200">
                       <span
-                        onClick={() => openModal(s, 'assets')}
-                        title="Click to view/manage assets"
+                        onClick={() => handleBadgeClick(s, 'assets')}
+                        onDoubleClick={() => handleBadgeDoubleClick(s, 'assets')}
+                        title="Click to view/manage assets | Double-click to switch YES / NO"
                         className={`inline-block min-w-10 px-2 py-0.5 rounded text-[10px] font-bold uppercase cursor-pointer transition-transform active:scale-95 ${
+                          flagSavingKey === `${s.id}-assets` ? 'opacity-60' : ''
+                        } ${
                           s.hasAssets
                             ? 'bg-[#00897b] text-white'
                             : 'bg-[#d32f2f] text-white'

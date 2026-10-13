@@ -3,6 +3,7 @@ import { ShiftDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { ArrowLeft } from 'lucide-react';
 import { DateDMYInput } from '../components/DateDMYInput.js';
+import { toast } from 'react-toastify';
 
 interface DailyReportPageProps {
   shifts?: ShiftDto[];
@@ -36,6 +37,8 @@ interface DailyReportRow {
 interface DailyReportData {
   shiftId: number;
   shiftName: string;
+  // false: the shift's result isn't declared for that day (no rows)
+  isDeclared?: boolean;
   partyCount: number;
   profit: number;
   rows: DailyReportRow[];
@@ -108,6 +111,17 @@ export const DailyReportPage: React.FC<DailyReportPageProps> = ({ shifts = [], o
       if (agentId) params.append('agentId', agentId);
       const res = await apiRequest<DailyReportData>(`/transactions/daily-report?${params.toString()}`);
       if (res.data) setData(res.data);
+      // Live: an undeclared shift (or a declared day with nothing in it) loads no rows and says
+      // "Error — Record not avaliable!"
+      if (!res.data || res.data.isDeclared === false || res.data.rows.length === 0) {
+        toast.error(
+          <div>
+            <div className="font-bold text-base">Error</div>
+            <div className="text-sm mt-0.5">Record not avaliable!</div>
+          </div>,
+          { toastId: 'daily-report-none' }
+        );
+      }
     } catch (err) {
       console.warn('Failed to load daily report:', err);
     } finally {

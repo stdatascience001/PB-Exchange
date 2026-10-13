@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { StaffService } from './staff.service.js';
 import { sendSuccess } from '../../common/response.js';
+import { AppError } from '../../common/errors.js';
 
 export class StaffController {
   static async list(req: Request, res: Response, next: NextFunction) {
@@ -131,6 +132,18 @@ export class StaffController {
       next(err);
     }
   }
+
+  static async setStatusFlag(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = parseInt(req.params.id as string, 10);
+      const { field, value } = req.body || {};
+      if (field !== 'salary' && field !== 'assets') throw new AppError('Invalid status field', 400);
+      if (typeof value !== 'boolean') throw new AppError('Invalid status value', 400);
+      const updatedBy = (req as any).user?.username || 'A100';
+      const updated = await StaffService.setStatusFlag(id, field, value, updatedBy);
+      return sendSuccess(res, updated, 'Staff status updated successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
 }
-
-

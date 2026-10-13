@@ -15,6 +15,8 @@ staffRoutes.delete('/:id', requireRoles('DEVELOPER'), StaffController.delete);
 staffRoutes.patch('/:id/live-status', requireRoles('DEVELOPER', 'SUPER ADMIN', 'ADMIN'), StaffController.setLiveStatus);
 staffRoutes.post('/heartbeat', StaffController.heartbeat);
 staffRoutes.patch('/:id/salary', requireRoles('DEVELOPER', 'SUPER ADMIN', 'ADMIN'), StaffController.updateSalary);
+// Staff Salary/Assets: double-click a Salary / Assets badge to switch it YES / NO
+staffRoutes.patch('/:id/status-flag', requireRoles('DEVELOPER', 'SUPER ADMIN', 'ADMIN'), StaffController.setStatusFlag);
 
 staffRoutes.get('/assets', StaffController.listAssets);
 staffRoutes.post('/assets', requireRoles('DEVELOPER', 'SUPER ADMIN', 'ADMIN'), StaffController.createAsset);

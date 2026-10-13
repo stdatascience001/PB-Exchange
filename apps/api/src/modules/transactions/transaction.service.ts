@@ -1429,6 +1429,36 @@ export class TransactionService {
 
     const dateFilter = filters.date || shift.openDate;
 
+    // Live: the Daily Report only shows a shift once its result is declared for that day — an
+    // undeclared shift gives "Record not avaliable!" with an empty table. Declared = that day's
+    // cycle is DECLARED / AUDITED (or has a result number); for the shift's current day, the
+    // shift's own state; a past day with no cycle row the shift has already moved past counts
+    // as declared (a shift only moves on after declaring).
+    const declaredStatuses = ['DECLARED', 'AUDITED'];
+    const [cycle] = await db.select().from(shiftCycles).where(
+      and(eq(shiftCycles.shiftId, shift.id), eq(shiftCycles.cycleDate, dateFilter))
+    );
+    let isDeclared: boolean;
+    if (cycle && (declaredStatuses.includes(cycle.status) || cycle.declaredNumber)) {
+      isDeclared = true;
+    } else if (dateFilter === shift.openDate) {
+      isDeclared = !!shift.declaredNumber || declaredStatuses.includes(shift.status);
+    } else {
+      isDeclared = !cycle && !!shift.openDate && dateFilter < shift.openDate;
+    }
+    if (!isDeclared) {
+      return {
+        shiftId: shift.id,
+        shiftName: shift.name,
+        date: dateFilter,
+        isDeclared: false,
+        partyCount: 0,
+        profit: 0,
+        rows: [],
+        masterTotal: { totalSale: 0, dSale: 0, aSale: 0, comm: 0, oDara: 0, oAkhar: 0, tpc: 0, hissa: 0, debit: 0, credit: 0 },
+      };
+    }
+
     const txRows = await db.select().from(transactions).where(
       and(
         eq(transactions.shiftId, filters.shiftId),
@@ -1570,6 +1600,7 @@ export class TransactionService {
       shiftId: shift.id,
       shiftName: shift.name,
       date: dateFilter,
+      isDeclared: true,
       partyCount: rows.length,
       profit: totalCollected - totalPayout,
       rows,

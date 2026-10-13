@@ -3,6 +3,36 @@ import { eq, desc, asc, and, inArray, sql, isNull, ne } from 'drizzle-orm';
 import { NotFoundError } from '../../common/errors.js';
 import { UserSession } from '@pb/types';
 import crypto from 'crypto';
+import { sql as pgSql } from '@pb/database';
+
+// Manual voucher pages' bottom Active / Deleted switch. Deleting a voucher still hard-deletes
+// it from vouchers/voucher_entries exactly as before (so every list, report and balance keeps
+// excluding it with no change); a snapshot is archived here only for the "Deleted" view. The
+// table is created on first use (same DDL as migrate.ts) so an un-migrated database still works.
+let voucherDeletionLogReady: Promise<void> | null = null;
+function ensureVoucherDeletionLog(): Promise<void> {
+  if (!voucherDeletionLogReady) {
+    voucherDeletionLogReady = pgSql
+      .unsafe(`
+        CREATE TABLE IF NOT EXISTS voucher_deletion_log (
+          id SERIAL PRIMARY KEY,
+          voucher_id INTEGER NOT NULL,
+          voucher_type VARCHAR(30) NOT NULL,
+          voucher_date DATE,
+          snapshot JSONB NOT NULL,
+          deleted_by VARCHAR(100),
+          deleted_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS voucher_deletion_log_type_date_idx ON voucher_deletion_log(voucher_type, voucher_date);
+      `)
+      .then(() => undefined)
+      .catch((err) => {
+        voucherDeletionLogReady = null;
+        throw err;
+      });
+  }
+  return voucherDeletionLogReady;
+}
 
 export class VoucherService {
   static async listVouchers(filters: { shiftId?: number; voucherType?: string; auditStatus?: string }) {
@@ -117,6 +147,9 @@ export class VoucherService {
           ledgerId: voucherEntries.ledgerId,
           partyName: ledgers.partyName,
           entrySide: voucherEntries.entrySide,
+          // Entries keep their insert time (edits never touch it), unlike vouchers.created_at,
+          // which is the picked voucher date at noon — so this is the real "Added" time.
+          entryCreatedAt: voucherEntries.createdAt,
         })
           .from(voucherEntries)
           .leftJoin(ledgers, eq(voucherEntries.ledgerId, ledgers.id))
@@ -151,6 +184,7 @@ export class VoucherService {
         updatedBy: v.updatedBy || 'SYSTEM',
         createdAt: v.createdAt.toISOString(),
         updatedAt: v.updatedAt.toISOString(),
+        addedAt: first?.entryCreatedAt ? first.entryCreatedAt.toISOString() : v.createdAt.toISOString(),
       };
     });
 
@@ -282,7 +316,92 @@ export class VoucherService {
     return updated;
   }
 
-  static async deleteVoucher(id: number) {
+  // Snapshot of a voucher in the listManualVouchers row shape, archived just before it is
+  // deleted. Best-effort: a failure here never blocks the delete itself.
+  private static async archiveDeletedVoucher(id: number, deletedBy: string) {
+    try {
+      const [v] = await db.select({
+        id: vouchers.id,
+        voucherNumber: vouchers.voucherNumber,
+        voucherType: vouchers.voucherType,
+        totalAmount: vouchers.totalAmount,
+        narration: vouchers.narration,
+        auditStatus: vouchers.auditStatus,
+        createdBy: vouchers.createdBy,
+        createdByUsername: users.username,
+        createdAt: vouchers.createdAt,
+      })
+        .from(vouchers)
+        .leftJoin(users, eq(vouchers.createdBy, users.id))
+        .where(eq(vouchers.id, id));
+      if (!v) return;
+      const ents = await db.select({
+        ledgerId: voucherEntries.ledgerId,
+        partyName: ledgers.partyName,
+        entrySide: voucherEntries.entrySide,
+        entryCreatedAt: voucherEntries.createdAt,
+      })
+        .from(voucherEntries)
+        .leftJoin(ledgers, eq(voucherEntries.ledgerId, ledgers.id))
+        .where(eq(voucherEntries.voucherId, id))
+        .orderBy(asc(voucherEntries.id));
+      const first = ents[0];
+      const second = ents[1];
+      const now = new Date();
+      const snapshot = {
+        id: v.id,
+        voucherNumber: v.voucherNumber,
+        voucherType: v.voucherType,
+        totalAmount: parseFloat(v.totalAmount),
+        narration: v.narration,
+        auditStatus: v.auditStatus,
+        partyLedgerId: first?.ledgerId ?? 0,
+        partyName: first?.partyName || '-',
+        entrySide: first?.entrySide || 'DR',
+        oppositeLedgerId: second?.ledgerId ?? 0,
+        oppositePartyName: second?.partyName || '-',
+        createdBy: v.createdBy,
+        createdByUsername: v.createdByUsername || 'SYSTEM',
+        createdAt: v.createdAt.toISOString(),
+        addedAt: first?.entryCreatedAt ? first.entryCreatedAt.toISOString() : v.createdAt.toISOString(),
+        // "Updated" of a deleted row = who deleted it and when
+        updatedBy: deletedBy,
+        updatedAt: now.toISOString(),
+      };
+      await ensureVoucherDeletionLog();
+      // created_at is a wall-clock value read by drizzle as UTC, so its ISO date is the same
+      // calendar day the Active list's created_at::date filter uses.
+      await pgSql`
+        INSERT INTO voucher_deletion_log (voucher_id, voucher_type, voucher_date, snapshot, deleted_by, deleted_at)
+        VALUES (${v.id}, ${v.voucherType}, ${snapshot.createdAt.slice(0, 10)}::date, ${pgSql.json(snapshot)}, ${deletedBy}, ${now})`;
+    } catch (err) {
+      console.warn('Failed to archive deleted voucher', id, err);
+    }
+  }
+
+  // Deleted view of the manual voucher pages: archived snapshots, newest voucher first.
+  static async listDeletedManualVouchers(filters: { voucherType?: string; manualOnly?: boolean; fromDate?: string; toDate?: string; search?: string }) {
+    await ensureVoucherDeletionLog();
+    const types = filters.voucherType ? [filters.voucherType] : filters.manualOnly ? VoucherService.MANUAL_VOUCHER_TYPES : null;
+    const rows = await pgSql<{ snapshot: any }[]>`
+      SELECT snapshot FROM voucher_deletion_log
+      WHERE TRUE
+        ${types ? pgSql`AND voucher_type IN ${pgSql(types)}` : pgSql``}
+        ${filters.fromDate ? pgSql`AND voucher_date >= ${filters.fromDate}::date` : pgSql``}
+        ${filters.toDate ? pgSql`AND voucher_date <= ${filters.toDate}::date` : pgSql``}
+      ORDER BY (snapshot->>'createdAt') DESC, id DESC`;
+    let result = rows.map(r => (typeof r.snapshot === 'string' ? JSON.parse(r.snapshot) : r.snapshot));
+    if (filters.search && filters.search.trim()) {
+      const term = filters.search.trim().toLowerCase();
+      result = result.filter((r: any) =>
+        String(r.partyName || '').toLowerCase().includes(term) || String(r.oppositePartyName || '').toLowerCase().includes(term)
+      );
+    }
+    return result;
+  }
+
+  static async deleteVoucher(id: number, deletedBy?: string) {
+    await VoucherService.archiveDeletedVoucher(id, deletedBy || 'SYSTEM');
     // A posted kist whose voucher is deleted goes back to PENDING, so the next Auto Kist
     // (F3) can post it again instead of it silently vanishing from the party's schedule.
     await db.update(kistSchedule)

@@ -389,6 +389,20 @@ export async function runMigrations() {
     CREATE INDEX IF NOT EXISTS kist_schedule_party_idx ON kist_schedule(party_ledger_id, kist_date);
     CREATE INDEX IF NOT EXISTS kist_schedule_due_idx ON kist_schedule(status, kist_date);
 
+    -- Manual voucher pages' bottom Active / Deleted switch: a deleted voucher is still removed
+    -- from vouchers/voucher_entries exactly as before (so every report/balance is unchanged);
+    -- a snapshot of it is kept here only so the "Deleted" view can list it.
+    CREATE TABLE IF NOT EXISTS voucher_deletion_log (
+      id SERIAL PRIMARY KEY,
+      voucher_id INTEGER NOT NULL,
+      voucher_type VARCHAR(30) NOT NULL,
+      voucher_date DATE,
+      snapshot JSONB NOT NULL,
+      deleted_by VARCHAR(100),
+      deleted_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS voucher_deletion_log_type_date_idx ON voucher_deletion_log(voucher_type, voucher_date);
+
     CREATE TABLE IF NOT EXISTS staff (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id),
@@ -410,6 +424,9 @@ export async function runMigrations() {
     ALTER TABLE staff ADD COLUMN IF NOT EXISTS updated_by VARCHAR(50) DEFAULT 'A100';
     ALTER TABLE staff ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW();
     ALTER TABLE staff ADD COLUMN IF NOT EXISTS salary_structure JSONB DEFAULT '{"earnings":[],"deductions":[]}'::jsonb;
+    -- Staff Salary/Assets: Salary / Assets status set by double-click (NULL = follow the data)
+    ALTER TABLE staff ADD COLUMN IF NOT EXISTS salary_flag BOOLEAN;
+    ALTER TABLE staff ADD COLUMN IF NOT EXISTS assets_flag BOOLEAN;
 
     CREATE TABLE IF NOT EXISTS staff_assets (
       id SERIAL PRIMARY KEY,

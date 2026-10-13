@@ -3,7 +3,7 @@ import { LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { DateDMYInput } from '../components/DateDMYInput.js';
 import { PartyNameInput } from '../components/PartyNameInput.js';
-import { X, Edit2 } from 'lucide-react';
+import { X } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { AutoKistModal } from '../components/AutoKistModal.js';
 
@@ -48,6 +48,8 @@ const pad2 = (n: number) => String(n).padStart(2, '0');
 // Live list shows dates as 2026-09-05 and Updated Date as 2026-08-23 05:16:34.
 const formatIsoDate = (dateVal?: string) => {
   if (!dateVal) return '-';
+  // Plain YYYY-MM-DD (kist schedule dates): show as-is, no timezone shift
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) return dateVal;
   const d = new Date(dateVal);
   if (isNaN(d.getTime())) return dateVal;
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -462,7 +464,7 @@ export const KistVoucherPage: React.FC = () => {
                   <th className="py-2.5 px-3 border-r border-[#223b63] w-12 text-center">Sr</th>
                   <th className="py-2.5 px-3 border-r border-[#223b63]">Date</th>
                   <th className="py-2.5 px-3 border-r border-[#223b63]">Party</th>
-                  <th className="py-2.5 px-3 border-r border-[#223b63] text-right">Amount</th>
+                  <th className="py-2.5 px-3 border-r border-[#223b63]">Amount</th>
                   <th className="py-2.5 px-3 border-r border-[#223b63] text-center">Cr/Dr</th>
                   <th className="py-2.5 px-3 border-r border-[#223b63]">Opposite</th>
                   <th className="py-2.5 px-3 border-r border-[#223b63]">Updated By</th>
@@ -480,14 +482,17 @@ export const KistVoucherPage: React.FC = () => {
                     <tr
                       key={v.id}
                       onClick={() => selectPanelParty(v.partyLedgerId, v.partyName)}
-                      title={v.narration || undefined}
+                      // Live shows only Delete in Action; editing stays available on double-click
+                      onDoubleClick={() => openEditModal(v)}
+                      title={`${v.narration ? v.narration + ' - ' : ''}Double-click to edit`}
                       className={`cursor-pointer transition-colors ${panelParty?.id === v.partyLedgerId ? 'bg-blue-50/70' : 'hover:bg-slate-50'}`}
                     >
                       <td className="py-2 px-3 text-center font-mono text-slate-600 border-r border-slate-200">{idx + 1}</td>
                       <td className="py-2 px-3 font-mono text-slate-700 border-r border-slate-200">{formatIsoDate(v.createdAt)}</td>
                       <td className="py-2 px-3 font-bold text-slate-900 uppercase border-r border-slate-200">{v.partyName}</td>
-                      <td className="py-2 px-3 text-right font-mono font-bold text-slate-900 border-r border-slate-200">
-                        {v.totalAmount.toLocaleString('en-IN')}
+                      {/* Live: plain number, left-aligned (50000) */}
+                      <td className="py-2 px-3 font-mono font-bold text-slate-900 border-r border-slate-200">
+                        {v.totalAmount}
                       </td>
                       <td className="py-2 px-3 text-center font-semibold text-slate-800 border-r border-slate-200">
                         {v.entrySide === 'CR' ? 'Cr' : 'Dr'}
@@ -499,15 +504,8 @@ export const KistVoucherPage: React.FC = () => {
                         <div className="flex items-center justify-center gap-1.5">
                           <button
                             type="button"
-                            onClick={(e) => { e.stopPropagation(); openEditModal(v); }}
-                            title="Edit"
-                            className="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors"
-                          >
-                            <Edit2 className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
                             onClick={(e) => { e.stopPropagation(); handleDelete(v.id); }}
+                            onDoubleClick={(e) => e.stopPropagation()}
                             className="px-2.5 py-0.5 bg-[#dc2626] hover:bg-[#b91c1c] text-white text-[10px] font-bold rounded shadow-xs transition-colors"
                           >
                             Delete
@@ -523,7 +521,7 @@ export const KistVoucherPage: React.FC = () => {
                   <td className="py-2.5 px-3 border-r border-[#223b63] text-center">{filteredList.length || 'Sr'}</td>
                   <td className="py-2.5 px-3 border-r border-[#223b63]">Date</td>
                   <td className="py-2.5 px-3 border-r border-[#223b63]">Party</td>
-                  <td className="py-2.5 px-3 border-r border-[#223b63] text-right font-mono">{filteredList.length ? listTotal.toLocaleString('en-IN') : 'Amount'}</td>
+                  <td className="py-2.5 px-3 border-r border-[#223b63] font-mono">{filteredList.length ? listTotal : 'Amount'}</td>
                   <td className="py-2.5 px-3 border-r border-[#223b63] text-center">Cr/Dr</td>
                   <td className="py-2.5 px-3 border-r border-[#223b63]">Opposite</td>
                   <td className="py-2.5 px-3 border-r border-[#223b63]">Updated By</td>
@@ -560,7 +558,7 @@ export const KistVoucherPage: React.FC = () => {
                   schedule.map((k, i) => (
                     <tr key={k.id} className="hover:bg-slate-50">
                       <td className="py-1.5 px-3 text-center font-mono text-slate-600 border-r border-slate-200">{i + 1}</td>
-                      <td className="py-1.5 px-3 font-mono text-slate-700 border-r border-slate-200">{k.kistDate}</td>
+                      <td className="py-1.5 px-3 font-mono text-slate-700 border-r border-slate-200">{formatIsoDate(k.kistDate)}</td>
                       <td className="py-1.5 px-3 font-semibold text-slate-800 border-r border-slate-200">{k.kistType}</td>
                       <td className="py-1.5 px-3 text-right font-mono font-bold text-slate-900 border-r border-slate-200">
                         {k.amount.toLocaleString('en-IN')}

@@ -3,7 +3,7 @@ import { LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { PartyNameInput } from '../components/PartyNameInput.js';
 import { DateDMYInput } from '../components/DateDMYInput.js';
-import { X, Edit2, Trash2 } from 'lucide-react';
+import { X } from 'lucide-react';
 import { toast } from 'react-toastify';
 
 const VOUCHER_TYPE = 'JOURNAL';
@@ -24,6 +24,8 @@ interface ManualVoucherItem {
   updatedBy: string;
   createdAt: string;
   updatedAt: string;
+  // Real insert time (createdAt is the picked voucher date at noon); older APIs omit it
+  addedAt?: string;
 }
 
 const todayInputDate = () => new Date().toISOString().slice(0, 10);
@@ -36,11 +38,10 @@ const formatTimestamp = (dateVal?: string) => {
     const day = String(d.getDate()).padStart(2, '0');
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const year = d.getFullYear();
-    let hours = d.getHours();
+    // Live: "12-10-2026 05:07" (DD-MM-YYYY HH:mm, 24-hour)
+    const hours = String(d.getHours()).padStart(2, '0');
     const minutes = String(d.getMinutes()).padStart(2, '0');
-    const ampm = hours >= 12 ? 'PM' : 'AM';
-    hours = hours % 12 || 12;
-    return `${day}-${month}-${year} ${String(hours).padStart(2, '0')}:${minutes} ${ampm}`;
+    return `${day}-${month}-${year} ${hours}:${minutes}`;
   } catch {
     return dateVal;
   }
@@ -52,7 +53,8 @@ const formatDateOnly = (dateVal?: string) => {
   if (isNaN(d.getTime())) return dateVal;
   const day = String(d.getDate()).padStart(2, '0');
   const month = String(d.getMonth() + 1).padStart(2, '0');
-  return `${day}-${month}-${d.getFullYear()}`;
+  // Live: "11 / 10 / 2026"
+  return `${day} / ${month} / ${d.getFullYear()}`;
 };
 
 export const JournalVoucherPage: React.FC = () => {
@@ -70,6 +72,8 @@ export const JournalVoucherPage: React.FC = () => {
     return () => cancelAnimationFrame(id);
   }, []);
   const [toDate, setToDate] = useState(todayInputDate());
+  // Bottom-right yellow Active / Deleted switch (live): Deleted lists deleted vouchers
+  const [listMode, setListMode] = useState<'ACTIVE' | 'DELETED'>('ACTIVE');
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -105,6 +109,7 @@ export const JournalVoucherPage: React.FC = () => {
     setLoading(true);
     try {
       const params = new URLSearchParams({ voucherType: VOUCHER_TYPE, fromDate, toDate });
+      if (listMode === 'DELETED') params.set('status', 'DELETED');
       const res = await apiRequest<ManualVoucherItem[]>(`/vouchers/manual?${params.toString()}`);
       if (res.data) setList(res.data);
       // Live: no vouchers for the dates (null / empty response) -> red "Error / Record not
@@ -139,7 +144,7 @@ export const JournalVoucherPage: React.FC = () => {
     fetchList();
     fetchParties();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate]);
+  }, [fromDate, toDate, listMode]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -168,9 +173,15 @@ export const JournalVoucherPage: React.FC = () => {
   const jvBackdropDownRef = React.useRef(false);
 
   const filteredList = useMemo(() => {
-    if (!search.trim()) return list;
+    // Newest first (as live): voucher date, then real added time, then id - the server
+    // orders by voucher date only, and every voucher of a day shares the same noon stamp.
+    const ts = (x?: string) => (x ? new Date(x).getTime() || 0 : 0);
+    const sorted = [...list].sort((a, b) =>
+      ts(b.createdAt) - ts(a.createdAt) || ts(b.addedAt) - ts(a.addedAt) || b.id - a.id
+    );
+    if (!search.trim()) return sorted;
     const term = search.trim().toLowerCase();
-    return list.filter(v =>
+    return sorted.filter(v =>
       v.partyName.toLowerCase().includes(term) || v.oppositePartyName.toLowerCase().includes(term)
     );
   }, [list, search]);
@@ -282,8 +293,8 @@ export const JournalVoucherPage: React.FC = () => {
   const selectedPartyLimit = parties.find(p => p.id === partyId)?.betLimit ?? 0;
 
   return (
-    <div className="min-h-full bg-[#eaedf2] p-2.5 sm:p-3 flex flex-col justify-between text-slate-800 select-none font-sans text-xs">
-      <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden flex flex-col flex-1">
+    <div className="h-[calc(100vh-82px)] max-h-[calc(100vh-82px)] min-h-[420px] bg-[#eaedf2] p-2.5 sm:p-3 flex flex-col justify-between text-slate-800 select-none font-sans text-xs overflow-hidden">
+      <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden flex flex-col flex-1 min-h-0">
         <div className="p-2 sm:p-2.5 flex flex-wrap items-center gap-2.5 border-b border-slate-200 bg-white">
           <span className="font-bold text-sm text-slate-900 tracking-tight mr-1">{PAGE_TITLE}</span>
 
@@ -346,23 +357,24 @@ export const JournalVoucherPage: React.FC = () => {
           </button>
         </div>
 
-        <div className="overflow-x-auto flex-1">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
+        {/* Body scrolls vertically; header and footer rows stay pinned (as live) */}
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto relative pbmax-table-scrollbar">
+          <table className="w-full text-left text-xs border-separate border-spacing-0">
+            <thead className="sticky top-0 z-20 bg-[#152847]">
               <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
-                <th className="py-2.5 px-3 border-r border-[#223b63] w-12 text-center">Sr</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Date</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Party</th>
-                <th className="py-2.5 px-3 border-r border-[#223b63] text-center">Cr/Dr</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63] text-right">Amount</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Opposite Party</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Remark</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Added</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Updated</th>
-                <th className="py-2.5 px-4 text-center w-24">Action</th>
+                <th className="py-2.5 px-3 w-12 text-center border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Sr</th>
+                <th className="py-2.5 px-4 border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Date</th>
+                <th className="py-2.5 px-4 border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Party</th>
+                <th className="py-2.5 px-3 text-center border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Cr/Dr</th>
+                <th className="py-2.5 px-4 text-right border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Amount</th>
+                <th className="py-2.5 px-4 border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Opposite Party</th>
+                <th className="py-2.5 px-4 border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Remark</th>
+                <th className="py-2.5 px-4 text-center border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Added</th>
+                <th className="py-2.5 px-4 text-center border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Updated</th>
+                <th className="py-2.5 px-4 text-center w-24 border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Action</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-200 font-sans text-xs whitespace-nowrap">
+            <tbody className="font-sans text-xs whitespace-nowrap [&>tr>td]:border-b [&>tr>td]:border-slate-200">
               {loading ? (
                 <tr><td colSpan={10} className="py-14 text-center text-slate-400 font-medium">Loading vouchers...</td></tr>
               ) : filteredList.length === 0 ? (
@@ -373,50 +385,81 @@ export const JournalVoucherPage: React.FC = () => {
                     <td className="py-2 px-3 text-center font-mono text-slate-600 border-r border-slate-200">{idx + 1}</td>
                     <td className="py-2 px-4 font-mono text-slate-600 border-r border-slate-200">{formatDateOnly(v.createdAt)}</td>
                     <td className="py-2 px-4 font-bold text-slate-900 uppercase border-r border-slate-200">{v.partyName}</td>
-                    <td className="py-2 px-4 text-center border-r border-slate-200">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${v.entrySide === 'CR' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
-                        {v.entrySide}
-                      </span>
+                    <td className="py-2 px-4 text-center font-semibold text-slate-800 border-r border-slate-200">
+                      {v.entrySide === 'CR' ? 'Cr' : 'Dr'}
                     </td>
                     <td className="py-2 px-4 text-right font-mono font-bold text-slate-900 border-r border-slate-200">
-                      {v.totalAmount.toLocaleString('en-IN')}
+                      {Number.isInteger(v.totalAmount) ? v.totalAmount : v.totalAmount.toFixed(2)}
                     </td>
-                    <td className="py-2 px-4 font-semibold uppercase text-slate-800 border-r border-slate-200">{v.oppositePartyName}</td>
+                    <td className="py-2 px-4 font-bold uppercase text-slate-900 border-r border-slate-200">{v.oppositePartyName}</td>
                     <td className="py-2 px-4 text-slate-600 border-r border-slate-200 whitespace-normal max-w-xs">{v.narration || '-'}</td>
-                    <td className="py-1 px-4 border-r border-slate-200 leading-snug">
+                    <td className="py-1 px-4 border-r border-slate-200 leading-snug text-center">
                       <div className="font-bold text-slate-900 uppercase text-[11px]">{v.createdByUsername}</div>
-                      <div className="font-mono text-slate-500 text-[10px]">{formatTimestamp(v.createdAt)}</div>
+                      <div className="font-mono text-slate-500 text-[10px]">{formatTimestamp(v.addedAt || v.createdAt)}</div>
                     </td>
-                    <td className="py-1 px-4 border-r border-slate-200 leading-snug">
+                    <td className="py-1 px-4 border-r border-slate-200 leading-snug text-center">
                       <div className="font-bold text-slate-900 uppercase text-[11px]">{v.updatedBy}</div>
                       <div className="font-mono text-slate-500 text-[10px]">{formatTimestamp(v.updatedAt)}</div>
                     </td>
                     <td className="py-2 px-4 text-center">
-                      <div className="flex items-center justify-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => openEditModal(v)}
-                          title="Edit"
-                          className="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors"
-                        >
-                          <Edit2 className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(v.id)}
-                          title="Delete"
-                          className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
+                      {listMode === 'DELETED' ? (
+                        // A deleted voucher no longer exists to edit / delete
+                        <span className="text-slate-400">-</span>
+                      ) : (
+                        <div className="flex items-center justify-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => openEditModal(v)}
+                            title="Edit"
+                            className="px-2.5 py-0.5 bg-[#1662c6] hover:bg-[#1354ab] text-white font-semibold text-[11px] rounded shadow-xs transition-colors"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(v.id)}
+                            title="Delete"
+                            className="px-2.5 py-0.5 bg-[#dc3545] hover:bg-[#bb2d3b] text-white font-semibold text-[11px] rounded shadow-xs transition-colors"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))
               )}
             </tbody>
+            {/* Footer repeats the headers; Sr shows the row count */}
+            <tfoot className="sticky bottom-0 z-20 bg-[#152847]">
+              <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
+                <td className="py-2.5 px-3 text-center border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">{filteredList.length}</td>
+                <td className="py-2.5 px-4 border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Date</td>
+                <td className="py-2.5 px-4 border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Party</td>
+                <td className="py-2.5 px-3 text-center border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Cr/Dr</td>
+                <td className="py-2.5 px-4 text-right border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Amount</td>
+                <td className="py-2.5 px-4 border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Opposite Party</td>
+                <td className="py-2.5 px-4 border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Remark</td>
+                <td className="py-2.5 px-4 text-center border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Added</td>
+                <td className="py-2.5 px-4 text-center border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Updated</td>
+                <td className="py-2.5 px-4 text-center border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Action</td>
+              </tr>
+            </tfoot>
           </table>
         </div>
+      </div>
+
+      {/* Bottom bar: Need Help? + yellow Active / Deleted switch (as live) */}
+      <div className="mt-2 shrink-0 bg-[#1f3a63] rounded-md px-4 py-2 flex items-center justify-between">
+        <span className="text-amber-400 text-xs font-medium">Need Help?</span>
+        <select
+          value={listMode}
+          onChange={(e) => setListMode(e.target.value as 'ACTIVE' | 'DELETED')}
+          className="w-24 px-2.5 py-1.5 bg-[#fde68a] border border-amber-300 rounded text-xs font-bold text-slate-900 cursor-pointer focus:outline-none"
+        >
+          <option value="ACTIVE">Active</option>
+          <option value="DELETED">Deleted</option>
+        </select>
       </div>
 
       {showModal && (
