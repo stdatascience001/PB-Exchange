@@ -4,6 +4,8 @@ import { apiRequest } from '../api/client.js';
 import { ArrowLeft } from 'lucide-react';
 import { DateDMYInput } from '../components/DateDMYInput.js';
 import { toast } from 'react-toastify';
+import { PartyJantriModal } from '../components/PartyJantriModal.js';
+import { HissaCutsModal, HissaCut } from '../components/HissaCutsModal.js';
 
 interface DailyReportPageProps {
   shifts?: ShiftDto[];
@@ -32,11 +34,15 @@ interface DailyReportRow {
   hissa: number;
   debit: number;
   credit: number;
+  // Ledgers that receive Hissa (HP A/C …): every party cut into them
+  hissaCuts?: HissaCut[];
 }
 
 interface DailyReportData {
   shiftId: number;
   shiftName: string;
+  // the day the report was worked out for (YYYY-MM-DD)
+  date?: string;
   // false: the shift's result isn't declared for that day (no rows)
   isDeclared?: boolean;
   partyCount: number;
@@ -66,6 +72,10 @@ export const DailyReportPage: React.FC<DailyReportPageProps> = ({ shifts = [], o
   const [agentId, setAgentId] = useState<string>('');
   const [data, setData] = useState<DailyReportData | null>(null);
   const [loading, setLoading] = useState(false);
+  // Party name click (live): that party's jantri for the report's shift and day
+  const [partyJantri, setPartyJantri] = useState<{ partyId: number; partyName: string } | null>(null);
+  // HP A/C (a Hissa receiver with no sale of its own) click: the list of parties cut into it
+  const [cutsRow, setCutsRow] = useState<DailyReportRow | null>(null);
 
   // Only active shifts belong in this dropdown — a disabled shift (Shift Manage's
   // Enable/Disable tab) shouldn't still be selectable here. Same guard the other shift
@@ -269,7 +279,27 @@ export const DailyReportPage: React.FC<DailyReportPageProps> = ({ shifts = [], o
                         Verify
                       </button>
                     </td>
-                    <td className="py-1.5 px-3 font-bold text-slate-900 uppercase border-r border-slate-200">{r.partyName}</td>
+                    <td className="py-1.5 px-3 font-bold text-slate-900 uppercase border-r border-slate-200">
+                      {r.hissaCuts && r.hissaCuts.length > 0 && !r.totalSale ? (
+                        <button
+                          type="button"
+                          onClick={() => setCutsRow(r)}
+                          title="View the parties' Hissa cut into this ledger"
+                          className="font-bold uppercase text-slate-900 hover:text-[#1662c6] hover:underline cursor-pointer text-left"
+                        >
+                          {r.partyName}
+                        </button>
+                      ) : r.partyId ? (
+                        <button
+                          type="button"
+                          onClick={() => setPartyJantri({ partyId: r.partyId, partyName: r.partyName })}
+                          title="View this party's jantri"
+                          className="font-bold uppercase text-slate-900 hover:text-[#1662c6] hover:underline cursor-pointer text-left"
+                        >
+                          {r.partyName}
+                        </button>
+                      ) : r.partyName}
+                    </td>
                     <td className="py-1.5 px-3 font-semibold uppercase text-slate-700 border-r border-slate-200">{r.agentName}</td>
                     <td className="py-1.5 px-2 text-right font-mono text-slate-700 border-r border-slate-200">{fmt(r.cap)}</td>
                     <td className="py-1.5 px-2 text-center font-mono text-slate-700 border-r border-slate-200">{r.rate}</td>
@@ -310,6 +340,24 @@ export const DailyReportPage: React.FC<DailyReportPageProps> = ({ shifts = [], o
           </table>
         </div>
       </div>
+
+      <PartyJantriModal
+        open={!!partyJantri && !!data}
+        onClose={() => setPartyJantri(null)}
+        shiftId={data ? String(data.shiftId) : ''}
+        date={data?.date || date}
+        partyId={partyJantri?.partyId || 0}
+        partyName={partyJantri?.partyName || ''}
+      />
+      <HissaCutsModal
+        open={!!cutsRow}
+        onClose={() => setCutsRow(null)}
+        receiverName={cutsRow?.partyName || ''}
+        shiftName={data?.shiftName || ''}
+        date={data?.date || date}
+        cuts={cutsRow?.hissaCuts || []}
+        rowHissa={cutsRow?.hissa || 0}
+      />
     </div>
   );
 };

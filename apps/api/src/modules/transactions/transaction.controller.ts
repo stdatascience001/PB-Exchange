@@ -139,6 +139,8 @@ export class TransactionController {
       const hpl = req.query.hpl === 'true';
       // Main Jantri (F7): Amount Less / Less %age taken off before the round-up to 50
       const mainJantri = req.query.mainJantri === 'true';
+      // Daily Report party popup: the party's exact amounts, each cell rounded up to 50
+      const round50 = req.query.round50 === 'true';
       const amtLess = req.query.amtLess ? parseFloat(req.query.amtLess as string) : undefined;
       const lessPercent = req.query.lessPercent ? parseFloat(req.query.lessPercent as string) : undefined;
       // Repeatable ?partyIds=1&partyIds=2, or a single comma-separated value — both forms
@@ -148,7 +150,7 @@ export class TransactionController {
         .flatMap(v => String(v).split(','))
         .map(v => parseInt(v.trim(), 10))
         .filter(n => Number.isInteger(n) && n > 0);
-      const result = await TransactionService.getCollectionView({ shiftId, date, commission, hissa, dibba, akhMix, amtLess, lessPercent, partyIds, hpl, mainJantri });
+      const result = await TransactionService.getCollectionView({ shiftId, date, commission, hissa, dibba, akhMix, amtLess, lessPercent, partyIds, hpl, mainJantri, round50 });
       return sendSuccess(res, result, 'Collection view retrieved');
     } catch (err) {
       next(err);

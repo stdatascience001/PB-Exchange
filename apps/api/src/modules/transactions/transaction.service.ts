@@ -807,6 +807,11 @@ export class TransactionService {
     // Less 10 -> 7: 710 -> 750 (book 1,100); Less 20 -> 7: 700 -> 700 (1,050);
     // Less 30 -> 5: 42 -> 50, 7: 690 -> 700 (1,000).
     mainJantri?: boolean;
+    // Daily Report → Party popup (live): the party's own amounts as entered (no Commission /
+    // Hissa off), each cell rounded up to whole 50s. Live JAI LUXMI 12-10: ANKUSH KUMAR 15/85
+    // 5..35 a number -> 50 each (book 4,700); GANGA NAGAR 20,400 -> 20,400; HANUMANGARH B9
+    // 117 -> 150.
+    round50?: boolean;
   }) {
     const conditions = [
       eq(transactions.shiftId, filters.shiftId),
@@ -920,7 +925,7 @@ export class TransactionService {
     // rounded up, as on live: 720 -> 750 (Commission + Hissa on DK ROHIT 20%), book 6,450;
     // Akh-Mix 210 -> 250, book 9,100 -> 9,500. An untouched book keeps its exact amounts.
     // HPL keeps its cells exact (live: 72, 90 — not rounded up to 50)
-    const deducted = !filters.hpl && !!(filters.commission || filters.hissa || filters.akhMix);
+    const deducted = (!filters.hpl && !!(filters.commission || filters.hissa || filters.akhMix)) || !!filters.round50;
     const roundUp50 = (v: number) => (v > 0 ? Math.ceil(Math.round(v * 100) / 100 / 50) * 50 : 0);
     const applyLess = (raw: number): number => {
       if (filters.mainJantri) {
@@ -1559,6 +1564,8 @@ export class TransactionService {
     // Book of each party (Sale + Comm − Payout) — the base the Hissa rows to OTHER ledgers
     // (e.g. "50 | HP A/C") are cut from, below
     const bookByParty = new Map<number, number>();
+    // Each party's book parts, for the receiver popup's cut list (HP A/C → who was cut, how much)
+    const bookPartsByParty = new Map<number, { totalSale: number; comm: number; payout: number }>();
     // Live rounds Debit / Credit half away from zero (RAM HBD −725 × 50% -> Credit 363,
     // YAMUNANAGAR 2799 × 50% -> Debit 1400) and the Hissa column half up (−1399.5 -> −1399,
     // +362.5 -> 363). `+ 0` turns −0 into 0.
@@ -1579,6 +1586,7 @@ export class TransactionService {
       // 472.5 -> Hissa −236, Debit 236; RAM HBD 3775 − 4500 = −725 -> Hissa 363, Credit 363.
       const book = agg.totalSale + commExact - agg.payout;
       bookByParty.set(partyId, book);
+      bookPartsByParty.set(partyId, { totalSale: agg.totalSale, comm: Math.round(commExact * 100) / 100, payout: agg.payout });
       const hissa = roundHalfUp(-(book * hissaPct / 100));
       const closing = roundAway(book * (100 - hissaPct) / 100);
 
@@ -1611,6 +1619,9 @@ export class TransactionService {
     // Live JAI LUXMI 13-09: ANKUSH KUMAR 15/85 book 1728 × 50% -> HP A/C Hissa −864, Credit 864;
     // KSG SANTOSH 90/10 482 × 40% -> ZZ ASLAM 40 −193, Credit 193.
     const sharesByReceiver = new Map<string, number>();
+    // Per receiver: every party cut into it (Daily Report → click HP A/C)
+    type HissaCut = { partyId: number; partyName: string; agentName: string; totalSale: number; comm: number; payout: number; book: number; percent: number; cutAmount: number };
+    const cutsByReceiver = new Map<string, HissaCut[]>();
     for (const l of dailyHissaLinks) {
       const giver = partyById.get(l.ledgerId);
       const receiverName = (l.partyName || '').trim().toUpperCase();
@@ -1624,6 +1635,20 @@ export class TransactionService {
       const share = book * pct / 100;
       if (!share) continue;
       sharesByReceiver.set(receiverName, (sharesByReceiver.get(receiverName) || 0) + share);
+      const parts = bookPartsByParty.get(l.ledgerId);
+      const cuts = cutsByReceiver.get(receiverName) || [];
+      cuts.push({
+        partyId: giver.id,
+        partyName: giver.partyName,
+        agentName: giver.agentId ? (agentNameById.get(giver.agentId) || '-') : '-',
+        totalSale: parts?.totalSale || 0,
+        comm: parts?.comm || 0,
+        payout: Math.round((parts?.payout || 0) * 100) / 100,
+        book: Math.round(book * 100) / 100,
+        percent: pct,
+        cutAmount: Math.round(share * 100) / 100,
+      });
+      cutsByReceiver.set(receiverName, cuts);
     }
     for (const [name, total] of sharesByReceiver) sharesByReceiver.set(name, roundAway(total));
     if (sharesByReceiver.size > 0) {
@@ -1649,7 +1674,9 @@ export class TransactionService {
         if (!share) continue;
         const ledger = receiverLedgers.find(r => (r.partyName || '').trim().toUpperCase() === name);
         const existing = rows.find(r => (ledger && r.partyId === ledger.id) || r.partyName.trim().toUpperCase() === name);
+        const hissaCuts = (cutsByReceiver.get(name) || []).sort((a, b) => a.partyName.localeCompare(b.partyName));
         if (existing) {
+          (existing as typeof existing & { hissaCuts?: HissaCut[] }).hissaCuts = hissaCuts;
           existing.hissa += -share;
           const closing = existing.debit - existing.credit - share;
           existing.debit = closing > 0 ? closing : 0;
@@ -1674,7 +1701,8 @@ export class TransactionService {
           hissa: -share,
           debit: share < 0 ? -share : 0,
           credit: share > 0 ? share : 0,
-        });
+          hissaCuts,
+        } as typeof rows[number]);
       }
     }
 
