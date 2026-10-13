@@ -1524,14 +1524,19 @@ export class TransactionService {
       return self;
     };
 
-    const declaredNumber = shift.declaredNumber ? shift.declaredNumber.padStart(2, '0') : null;
+    // The result of the day being reported: that day's cycle number (a past day must not use
+    // the shift's current result), else the shift's own number for its current day
+    const dayResult = cycle?.declaredNumber || (dateFilter === shift.openDate ? shift.declaredNumber : null);
+    const declaredNumber = dayResult ? dayResult.padStart(2, '0') : null;
     const tensDigit = declaredNumber?.[0];
     const unitsDigit = declaredNumber?.[1];
 
-    const perParty = new Map<number, { totalSale: number; dSale: number; aSale: number; oDara: number; oAkhar: number }>();
+    // O-Dara / O-Akhar (live) show the AMOUNT played on the result (ANKUSH KUMAR 5, GANGA NAGAR
+    // 150); the payout (amount × the entry's rate, 5 × 90 = 450) is what comes off the book.
+    const perParty = new Map<number, { totalSale: number; dSale: number; aSale: number; oDara: number; oAkhar: number; payout: number }>();
 
     for (const tx of txRows) {
-      if (!perParty.has(tx.partyId)) perParty.set(tx.partyId, { totalSale: 0, dSale: 0, aSale: 0, oDara: 0, oAkhar: 0 });
+      if (!perParty.has(tx.partyId)) perParty.set(tx.partyId, { totalSale: 0, dSale: 0, aSale: 0, oDara: 0, oAkhar: 0, payout: 0 });
       const agg = perParty.get(tx.partyId)!;
       agg.totalSale += parseFloat(tx.totalAmount);
 
@@ -1540,29 +1545,42 @@ export class TransactionService {
         const rate = parseFloat(e.rate);
         if (e.entryType === 'DARA') {
           agg.dSale += amt;
-          if (declaredNumber && e.numberValue === declaredNumber) agg.oDara += amt * rate;
+          if (declaredNumber && e.numberValue === declaredNumber) { agg.oDara += amt; agg.payout += amt * rate; }
         } else {
           agg.aSale += amt;
           if (declaredNumber) {
-            if (e.entryType === 'HARUF_ANDAR' && e.numberValue === tensDigit) agg.oAkhar += amt * rate;
-            else if (e.entryType === 'HARUF_BAHAR' && e.numberValue === unitsDigit) agg.oAkhar += amt * rate;
+            if (e.entryType === 'HARUF_ANDAR' && e.numberValue === tensDigit) { agg.oAkhar += amt; agg.payout += amt * rate; }
+            else if (e.entryType === 'HARUF_BAHAR' && e.numberValue === unitsDigit) { agg.oAkhar += amt; agg.payout += amt * rate; }
           }
         }
       }
     }
 
+    // Book of each party (Sale + Comm − Payout) — the base the Hissa rows to OTHER ledgers
+    // (e.g. "50 | HP A/C") are cut from, below
+    const bookByParty = new Map<number, number>();
+    // Live rounds Debit / Credit half away from zero (RAM HBD −725 × 50% -> Credit 363,
+    // YAMUNANAGAR 2799 × 50% -> Debit 1400) and the Hissa column half up (−1399.5 -> −1399,
+    // +362.5 -> 363). `+ 0` turns −0 into 0.
+    const roundAway = (v: number) => Math.sign(v) * Math.round(Math.abs(v)) + 0;
+    const roundHalfUp = (v: number) => Math.round(v) + 0;
     let rows = Array.from(perParty.entries()).map(([partyId, agg]) => {
       const party = partyById.get(partyId);
       const commissionRate = parseFloat(party?.commissionRate || '0');
       const hissaPct = selfHissaOf(party);
-      const comm = -(agg.totalSale * commissionRate / 100);
+      const commExact = -(agg.totalSale * commissionRate / 100);
+      // Shown rounded (live ANSHIKA 525 -> −52, HANUMANGARH 7087 -> −709); the book keeps the exact cut
+      const comm = Math.round(commExact) + 0;
       // Live: Book = Sale + Comm − Payout (O-Dara + O-Akhar); Hissa = −Book × S-Hissa%;
       // Closing = Book + Hissa -> Debit when above 0, Credit when below. AGARTALA EXPRESS
       // 12270 − 1227 − 9000 = 2043 -> Hissa −1021, Debit 1022; ABHISHEK RAWLA (S-Hissa 0)
       // 8100 − 810 − 9000 -> Credit 1710; ANUPGARH 3000 − 600 -> Debit 2400.
-      const book = agg.totalSale + comm - agg.oDara - agg.oAkhar;
-      const hissa = Math.round(-(book * hissaPct / 100));
-      const closing = Math.round(book + hissa);
+      // Live JAI LUXMI 13-09: ANKUSH KUMAR 2420 − 242 − 450 -> Debit 1728; ANSHIKA 525 − 52.5 =
+      // 472.5 -> Hissa −236, Debit 236; RAM HBD 3775 − 4500 = −725 -> Hissa 363, Credit 363.
+      const book = agg.totalSale + commExact - agg.payout;
+      bookByParty.set(partyId, book);
+      const hissa = roundHalfUp(-(book * hissaPct / 100));
+      const closing = roundAway(book * (100 - hissaPct) / 100);
 
       return {
         partyId,
@@ -1570,7 +1588,8 @@ export class TransactionService {
         agentId: party?.agentId ?? null,
         agentName: party?.agentId ? (agentNameById.get(party.agentId) || '-') : '-',
         cap: parseFloat(party?.capping || '0'),
-        rate: `${Math.round(parseFloat(party?.daraRate || '0'))}/10-${Math.round(parseFloat(party?.akharRate || '0'))}/10`,
+        // Rate / commission, as live: "90/10-9/10", RAM HBD (no commission) "100/0-10/0"
+        rate: `${Math.round(parseFloat(party?.daraRate || '0'))}/${Math.round(commissionRate)}-${Math.round(parseFloat(party?.akharRate || '0'))}/${Math.round(commissionRate)}`,
         sHissa: hissaPct,
         totalSale: agg.totalSale,
         dSale: agg.dSale,
@@ -1585,6 +1604,80 @@ export class TransactionService {
       };
     });
 
+    // Hissa cut to another ledger (live): a party's Hissa Party row naming a DIFFERENT ledger
+    // (Ledger Update → Re-Config → "HP A/C 20") sends that % of the party's book to it. The
+    // receiver gets its own row (even with no sales of its own): Hissa −share, and the share
+    // lands in its Credit (or nets against its own book). The giving party's row is unchanged.
+    // Live JAI LUXMI 13-09: ANKUSH KUMAR 15/85 book 1728 × 50% -> HP A/C Hissa −864, Credit 864;
+    // KSG SANTOSH 90/10 482 × 40% -> ZZ ASLAM 40 −193, Credit 193.
+    const sharesByReceiver = new Map<string, number>();
+    for (const l of dailyHissaLinks) {
+      const giver = partyById.get(l.ledgerId);
+      const receiverName = (l.partyName || '').trim().toUpperCase();
+      if (!giver || !receiverName) continue;
+      if (receiverName === (giver.partyName || '').trim().toUpperCase()) continue; // own share = S-Hissa
+      const book = bookByParty.get(l.ledgerId);
+      const pct = parseFloat(l.percent) || 0;
+      if (book === undefined || !pct) continue;
+      // Exact shares are added up and rounded once per receiver (live 12-10: ANKUSH 551.25 +
+      // DAKSH 589.5 = 1140.75 -> HP A/C 1141, not 552 + 590)
+      const share = book * pct / 100;
+      if (!share) continue;
+      sharesByReceiver.set(receiverName, (sharesByReceiver.get(receiverName) || 0) + share);
+    }
+    for (const [name, total] of sharesByReceiver) sharesByReceiver.set(name, roundAway(total));
+    if (sharesByReceiver.size > 0) {
+      const receiverNames = Array.from(sharesByReceiver.keys());
+      const receiverLedgers = await db.select({
+        id: ledgers.id,
+        partyName: ledgers.partyName,
+        agentId: ledgers.agentId,
+        capping: ledgers.capping,
+        daraRate: ledgers.daraRate,
+        akharRate: ledgers.akharRate,
+        commissionRate: ledgers.commissionRate,
+      }).from(ledgers).where(inArray(sql`UPPER(TRIM(${ledgers.partyName}))`, receiverNames));
+      const receiverAgentIds = receiverLedgers
+        .map(r => r.agentId)
+        .filter((id): id is number => id != null && !agentNameById.has(id));
+      if (receiverAgentIds.length > 0) {
+        const more = await db.select({ id: agents.id, agentName: agents.agentName }).from(agents).where(inArray(agents.id, receiverAgentIds));
+        for (const a of more) agentNameById.set(a.id, a.agentName);
+      }
+      for (const name of receiverNames) {
+        const share = sharesByReceiver.get(name) || 0;
+        if (!share) continue;
+        const ledger = receiverLedgers.find(r => (r.partyName || '').trim().toUpperCase() === name);
+        const existing = rows.find(r => (ledger && r.partyId === ledger.id) || r.partyName.trim().toUpperCase() === name);
+        if (existing) {
+          existing.hissa += -share;
+          const closing = existing.debit - existing.credit - share;
+          existing.debit = closing > 0 ? closing : 0;
+          existing.credit = closing < 0 ? -closing : 0;
+          continue;
+        }
+        rows.push({
+          partyId: ledger?.id ?? 0,
+          partyName: ledger?.partyName || name,
+          agentId: ledger?.agentId ?? null,
+          agentName: ledger?.agentId ? (agentNameById.get(ledger.agentId) || 'NA') : 'NA',
+          cap: parseFloat(ledger?.capping || '0'),
+          rate: `${Math.round(parseFloat(ledger?.daraRate || '0'))}/${Math.round(parseFloat(ledger?.commissionRate || '0'))}-${Math.round(parseFloat(ledger?.akharRate || '0'))}/${Math.round(parseFloat(ledger?.commissionRate || '0'))}`,
+          sHissa: 0,
+          totalSale: 0,
+          dSale: 0,
+          aSale: 0,
+          comm: 0,
+          oDara: 0,
+          oAkhar: 0,
+          tpc: 0,
+          hissa: -share,
+          debit: share < 0 ? -share : 0,
+          credit: share > 0 ? share : 0,
+        });
+      }
+    }
+
     if (filters.agentId) {
       rows = rows.filter(r => r.agentId === filters.agentId);
     }
@@ -1593,8 +1686,6 @@ export class TransactionService {
     const sum = (key: 'totalSale' | 'dSale' | 'aSale' | 'comm' | 'oDara' | 'oAkhar' | 'hissa' | 'debit' | 'credit') =>
       rows.reduce((s, r) => s + r[key], 0);
 
-    const totalCollected = sum('totalSale');
-    const totalPayout = sum('oDara') + sum('oAkhar');
 
     return {
       shiftId: shift.id,
@@ -1602,7 +1693,9 @@ export class TransactionService {
       date: dateFilter,
       isDeclared: true,
       partyCount: rows.length,
-      profit: totalCollected - totalPayout,
+      // Live: Profit = Debit − Credit of the rows (Sale + Comm − Payout + Hissa), e.g. JAI
+      // LUXMI 13-09 14095 − 5245 = 8850
+      profit: Math.round(sum('debit') - sum('credit')),
       rows,
       masterTotal: {
         totalSale: sum('totalSale'),
