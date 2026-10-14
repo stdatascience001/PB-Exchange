@@ -448,8 +448,10 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
     const activeParties = parties.filter(p => (p as { accountActive?: boolean }).accountActive !== false);
     // The list only appears once something is typed (an empty box shows no list, as live)
     if (!partySearch.trim()) return [];
+    // Only names that START with the typed text, as live: "DK" -> DK ROHIT 20%, DK ROHIT 50%,
+    // DKR 2 (not ATT DK / RIMPA FARIDKOT, which merely contain it) — same rule as PartyPicker
     return activeParties.filter(p =>
-      p.partyName.toLowerCase().includes(partySearch.trim().toLowerCase())
+      p.partyName.toLowerCase().startsWith(partySearch.trim().toLowerCase())
     );
   }, [parties, partySearch]);
 

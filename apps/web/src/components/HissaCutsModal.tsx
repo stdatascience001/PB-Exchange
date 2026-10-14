@@ -10,6 +10,8 @@ export interface HissaCut {
   payout: number;
   // Sale + Comm − Payout
   book: number;
+  // the party's own S-Hissa % — the cut is taken from what is left after it
+  sHissa?: number;
   // the Hissa Party % (Ledger Update → Re-Config) the party gives this receiver
   percent: number;
   // Book × % (exact)
@@ -77,7 +79,7 @@ export const HissaCutsModal: React.FC<HissaCutsModalProps> = ({ open, onClose, r
           <span className="text-slate-600">Parties: <b className="text-slate-900">{cuts.length}</b></span>
           <span className="text-slate-600">Total Cut: <b className={totalCut >= 0 ? 'text-emerald-700' : 'text-rose-700'}>{fmt(totalCut)}</b></span>
           <span className="text-slate-600">On report (rounded): Hissa <b className="text-slate-900">{fmt(rowHissa)}</b>, {totalCut >= 0 ? 'Credit' : 'Debit'} <b className="text-slate-900">{fmt(Math.abs(rowHissa))}</b></span>
-          <span className="text-slate-500">Cut = Book (Sale + Comm − Payout) × Hissa %</span>
+          <span className="text-slate-500">Cut = Book (Sale + Comm − Payout) × (100 − S-Hissa)% × Hissa %</span>
         </div>
 
         <div className="overflow-auto">
@@ -91,13 +93,14 @@ export const HissaCutsModal: React.FC<HissaCutsModalProps> = ({ open, onClose, r
                 <th className={`${th} text-right`}>Comm</th>
                 <th className={`${th} text-right`}>Payout</th>
                 <th className={`${th} text-right`}>Book</th>
+                <th className={`${th} text-right`}>S-Hissa</th>
                 <th className={`${th} text-right`}>Hissa %</th>
                 <th className="py-2 px-3 text-right whitespace-nowrap">Cut Amount</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200">
               {cuts.length === 0 ? (
-                <tr><td colSpan={9} className="py-8 text-center text-slate-400">Record not avaliable!</td></tr>
+                <tr><td colSpan={10} className="py-8 text-center text-slate-400">Record not avaliable!</td></tr>
               ) : (
                 cuts.map((c, i) => (
                   <tr key={`${c.partyId}-${i}`} className="hover:bg-slate-50 even:bg-slate-50/60">
@@ -108,6 +111,7 @@ export const HissaCutsModal: React.FC<HissaCutsModalProps> = ({ open, onClose, r
                     <td className={`${td} text-right font-mono text-rose-700`}>{fmt(c.comm)}</td>
                     <td className={`${td} text-right font-mono`}>{fmt(c.payout)}</td>
                     <td className={`${td} text-right font-mono font-semibold ${c.book >= 0 ? 'text-slate-900' : 'text-rose-700'}`}>{fmt(c.book)}</td>
+                    <td className={`${td} text-right font-mono`}>{c.sHissa || 0}%</td>
                     <td className={`${td} text-right font-mono`}>{c.percent}%</td>
                     <td className={`py-1.5 px-3 text-right font-mono font-bold whitespace-nowrap ${c.cutAmount >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{fmt(c.cutAmount)}</td>
                   </tr>
@@ -123,6 +127,7 @@ export const HissaCutsModal: React.FC<HissaCutsModalProps> = ({ open, onClose, r
                   <td className={`${th} text-right font-mono`}>{fmt(sum('comm'))}</td>
                   <td className={`${th} text-right font-mono`}>{fmt(sum('payout'))}</td>
                   <td className={`${th} text-right font-mono`}>{fmt(sum('book'))}</td>
+                  <td className={`${th} text-right`}>-</td>
                   <td className={`${th} text-right`}>-</td>
                   <td className="py-2 px-3 text-right font-mono">{fmt(totalCut)}</td>
                 </tr>

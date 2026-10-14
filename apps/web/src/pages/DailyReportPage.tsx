@@ -268,7 +268,7 @@ export const DailyReportPage: React.FC<DailyReportPageProps> = ({ shifts = [], o
                 <tr><td colSpan={17} className="py-14 text-center text-slate-400 font-medium">No records found for this filter.</td></tr>
               ) : (
                 data.rows.map((r, idx) => (
-                  <tr key={r.partyId} className="hover:bg-slate-50 transition-colors">
+                  <tr key={`${r.partyId}-${idx}`} className="hover:bg-slate-50 transition-colors">
                     <td className="py-1.5 px-2 text-center font-mono text-slate-600 border-r border-slate-200">{idx + 1}</td>
                     <td className="py-1.5 px-2 text-center border-r border-slate-200">
                       <button
