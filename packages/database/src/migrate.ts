@@ -212,6 +212,8 @@ export async function runMigrations() {
     CREATE INDEX IF NOT EXISTS user_sessions_user_ip_idx ON user_sessions(user_id, ip_address);
     -- Live ledger "AddedBy": who created the party (null for rows made before this column)
     ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS added_by VARCHAR(100);
+    -- Re-Config: Akhar Commission typed on its own (NULL = the same as the Dara commission)
+    ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS akhar_commission_rate NUMERIC(5, 2);
 
     CREATE TABLE IF NOT EXISTS ledger_third_party_links (
       id SERIAL PRIMARY KEY,

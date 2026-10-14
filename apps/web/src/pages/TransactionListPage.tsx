@@ -7,6 +7,7 @@ import { isOwnDataOnlyRole } from '../config/roleAccess.js';
 import { X, Search as SearchIcon, Eye, Copy, Trash2, Plus, Edit } from 'lucide-react';
 import { CopyTransactionsModal } from '../components/CopyTransactionsModal.js';
 import { HplJantriModal } from '../components/HplJantriModal.js';
+import { onTransactionsChanged } from '../utils/txSync.js';
 
 export interface TransactionItem {
   id: number;
@@ -621,6 +622,14 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
       setLoading(false);
     }
   };
+
+  // A slip saved / edited in the Add (F2) or Edit tab, or that tab closed with its back arrow:
+  // reload this shift's list (as Search (F5) does) so the new slip shows at once
+  const fetchTransactionsRef = useRef(fetchTransactions);
+  fetchTransactionsRef.current = fetchTransactions;
+  useEffect(() => onTransactionsChanged((shiftIds) => {
+    if (shiftIds.length === 0 || shiftIds.includes(selectedShiftId)) fetchTransactionsRef.current();
+  }), [selectedShiftId]);
 
   const fetchParties = async () => {
     try {

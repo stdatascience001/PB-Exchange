@@ -6,6 +6,7 @@ import { X, Search as SearchIcon, Eye, Copy, Trash2, Plus, Edit } from 'lucide-r
 import { TransactionItem } from './TransactionListPage.js';
 import { JantriViewModal } from '../components/JantriViewModal.js';
 import { CopyTransactionsModal } from '../components/CopyTransactionsModal.js';
+import { onTransactionsChanged } from '../utils/txSync.js';
 import { HplJantriModal } from '../components/HplJantriModal.js';
 import { toast } from 'react-toastify';
 
@@ -331,6 +332,10 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
   // "is declared" state) — F5 then reloaded the wrong day or cleared the list.
   const fetchTransactionsRef = React.useRef(fetchTransactions);
   fetchTransactionsRef.current = fetchTransactions;
+  // A slip edited in its Edit tab (or that tab closed): reload this shift's list at once
+  useEffect(() => onTransactionsChanged((shiftIds) => {
+    if (shiftIds.length === 0 || shiftIds.includes(selectedShiftId)) fetchTransactionsRef.current();
+  }), [selectedShiftId]);
 
   // Keyboard Shortcuts: F2 -> Add Transaction New Tab, F3 -> Jantri, F5 -> Search Refresh
   useEffect(() => {

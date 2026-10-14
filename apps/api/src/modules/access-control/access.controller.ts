@@ -25,7 +25,7 @@ export class AccessControlController {
   static async unblock(req: Request, res: Response, next: NextFunction) {
     try {
       const id = parseInt(req.params.id as string, 10);
-      const unblocked = await AccessControlService.unblockIp(id);
+      const unblocked = await AccessControlService.unblockIp(id, req.user?.username);
       return sendSuccess(res, unblocked, 'IP address successfully unblocked');
     } catch (err) {
       next(err);

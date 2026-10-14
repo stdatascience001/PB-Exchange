@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { notifyTransactionsChanged } from '../utils/txSync.js';
 import { ShiftDto, LedgerDto, UserSession } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { displayNumber, harufOf } from '../utils/entryDisplay.js';
@@ -749,6 +750,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
         });
         setSuccessMsg('Transaction updated successfully!');
         setSubmitting(false);
+        // the list open in the first tab reloads with the edited slip
+        notifyTransactionsChanged([editShiftId, resolvedShift?.id]);
         // Edit from Live Transactions: once saved, go back to Transaction List opened on this
         // slip's shift, so the updated slip is listed straight away. (Declare edits stay put.)
         if (!declareEdit && onNavigate) {
@@ -795,8 +798,17 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
       }
 
       setSuccessMsg('Transaction slip saved successfully!');
+      // the Live Transactions list open in the first tab reloads with the new slip
+      notifyTransactionsChanged([shiftIdToUse, ...selectedCopyShiftIds]);
       setTimeout(() => {
         handleClear();
+        // A new slip is saved: the Party box empties too and takes the cursor, ready for the
+        // next party (the Clear button alone still keeps the party)
+        setSelectedParty(null);
+        setPartySearch('');
+        setShowPartyDropdown(false);
+        setActivePartyIndex(0);
+        requestAnimationFrame(() => partyInputRef.current?.focus());
       }, 1200);
     } catch (err: any) {
       setErrorMsg(err?.message || 'Failed to save transaction slip');
@@ -1426,6 +1438,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
       if (e.shiftKey && e.key === 'Escape') {
         e.preventDefault();
         if (window.opener && !openedFromDashboard()) {
+          // back to the list tab: it reloads so every slip saved here shows
+          notifyTransactionsChanged([resolvedShift?.id]);
           window.close();
         } else if (onNavigate) {
           onNavigate(declareEdit ? 'declare-transactions' : 'transaction-list', declareEdit ? undefined : (resolvedShift ? String(resolvedShift.id) : undefined));
@@ -1501,6 +1515,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
             type="button"
             onClick={() => {
               if (window.opener && !openedFromDashboard()) {
+                // back to the list tab: it reloads so every slip saved here shows
+                notifyTransactionsChanged([resolvedShift?.id]);
                 window.close();
               } else if (onNavigate) {
                 onNavigate(declareEdit ? 'declare-transactions' : 'transaction-list', declareEdit ? undefined : (resolvedShift ? String(resolvedShift.id) : undefined));

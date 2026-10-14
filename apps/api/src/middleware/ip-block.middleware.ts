@@ -53,6 +53,23 @@ export function extractClientIp(req: Request): string {
   return raw.startsWith('::ffff:') ? raw.slice(7) : raw;
 }
 
+// A request carrying a valid DEVELOPER / SUPER ADMIN session token. Those two roles manage
+// Access Block, so a block on their own IP (e.g. 3 wrong logins on a shared office IP) must not
+// lock them out of the list where they delete it. Only an already signed-in session passes —
+// the login page itself, anonymous requests and every other role stay blocked, and each route's
+// own authenticate() still fully checks the token / session.
+const BLOCK_MANAGER_ROLES = new Set(['DEVELOPER', 'SUPER ADMIN']);
+function isBlockManagerSession(req: Request): boolean {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith('Bearer ')) return false;
+  try {
+    const decoded = jwt.verify(auth.slice(7), env.JWT_SECRET) as { roleName?: string };
+    return BLOCK_MANAGER_ROLES.has(String(decoded.roleName || '').toUpperCase());
+  } catch {
+    return false;
+  }
+}
+
 export async function checkIpBlocked(req: Request, res: Response, next: NextFunction) {
   const clientIp = extractClientIp(req);
   await refreshBlockedCache();
@@ -61,7 +78,7 @@ export async function checkIpBlocked(req: Request, res: Response, next: NextFunc
     const until = blockExpiry.get(clientIp);
     if (until && until <= Date.now()) {
       invalidateBlockedCache();
-    } else {
+    } else if (!isBlockManagerSession(req)) {
       // code IP_BLOCKED: the web app swaps the whole screen for its "access blocked" page.
       return next(new AppError(`Your IP address (${clientIp}) is blocked by the administrator.`, 403, 'IP_BLOCKED'));
     }
