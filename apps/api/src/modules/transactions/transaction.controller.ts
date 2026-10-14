@@ -45,6 +45,11 @@ export class TransactionController {
       const groupName = req.query.groupName as string | undefined;
       const partyId = req.query.partyId ? parseInt(req.query.partyId as string, 10) : undefined;
       const search = req.query.search as string | undefined;
+      // view=party: the "ALL SHIFT REPORT" popup for one party (click on its name)
+      if (req.query.view === 'party') {
+        const detail = await TransactionService.getAllShiftPartyDetail({ partyId: partyId || 0, fromDate, toDate });
+        return sendSuccess(res, detail, 'All shift party report retrieved');
+      }
       // view=full: the All Shift Report page's complete live column set over every ledger.
       if (req.query.view === 'full') {
         const mode = req.query.searchMode as string | undefined;

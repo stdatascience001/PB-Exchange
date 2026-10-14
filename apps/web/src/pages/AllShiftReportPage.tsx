@@ -3,6 +3,9 @@ import { apiRequest } from '../api/client.js';
 import { ArrowLeft, ListOrdered } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { DateDMYInput } from '../components/DateDMYInput.js';
+import { AllShiftPartyModal } from '../components/AllShiftPartyModal.js';
+import { SaleDaysModal } from '../components/SaleDaysModal.js';
+import { RebateHrModal, HrRow } from '../components/RebateHrModal.js';
 
 interface AllShiftReportPageProps {
   onNavigate?: (page: string) => void;
@@ -36,9 +39,13 @@ interface PartyRow {
   payment: number;
   closing: number;
   dayAv: number;
+  // the days the party had a sale (YYYY-MM-DD) — listed by the DayAv click popup
+  saleDays?: string[];
+  // month-end HR rows booked to this party — listed by the Rebate click popup
+  hrRows?: HrRow[];
 }
 
-type NumKey = Exclude<keyof PartyRow, 'partyId' | 'partyName' | 'mobile' | 'agentName'>;
+type NumKey = Exclude<keyof PartyRow, 'partyId' | 'partyName' | 'mobile' | 'agentName' | 'saleDays' | 'hrRows'>;
 type SortKey = NumKey | 'partyName';
 type SearchMode = 'START_WITH' | 'CONTAINS' | 'END_WITH';
 
@@ -96,6 +103,13 @@ export const AllShiftReportPage: React.FC<AllShiftReportPageProps> = ({ onNaviga
   const [assigned, setAssigned] = useState<Set<number>>(new Set());
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  // Party name click (live "ALL SHIFT REPORT" popup) — on the range the table was loaded for
+  const [loadedRange, setLoadedRange] = useState<{ fromDate: string; toDate: string } | null>(null);
+  const [partyReport, setPartyReport] = useState<{ partyId: number; partyName: string } | null>(null);
+  // DayAv click (live): the dates the party played in the range
+  const [daysRow, setDaysRow] = useState<PartyRow | null>(null);
+  // Rebate / HP-Amt click (live): the party's month-end HR breakdown (same popup for both)
+  const [hrRow, setHrRow] = useState<PartyRow | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -120,6 +134,7 @@ export const AllShiftReportPage: React.FC<AllShiftReportPageProps> = ({ onNaviga
       if (search.trim()) params.append('search', search.trim());
       const res = await apiRequest<{ rows: PartyRow[]; dealOptions?: string[] }>(`/transactions/all-shift-report?${params.toString()}`);
       setRows(res.data?.rows || []);
+      setLoadedRange({ fromDate, toDate });
       if (res.data?.dealOptions) setDealOptions(res.data.dealOptions);
       setSelected(new Set());
       setAssigned(new Set());
@@ -353,13 +368,43 @@ export const AllShiftReportPage: React.FC<AllShiftReportPageProps> = ({ onNaviga
                     <td style={pin(3)} className={`${td} z-20 bg-white group-hover:bg-slate-50 text-center`}>
                       <input type="checkbox" checked={selected.has(r.partyId)} onChange={() => toggleSet(setSelected, r.partyId)} className="h-3.5 w-3.5 cursor-pointer" />
                     </td>
-                    <td style={pin(4)} className={`${td} z-20 font-bold text-slate-800 uppercase bg-[#f1f1f1] truncate`} title={r.partyName}>{r.partyName}</td>
+                    <td style={pin(4)} className={`${td} z-20 font-bold text-slate-800 uppercase bg-[#f1f1f1] truncate`} title={r.partyName}>
+                      <button
+                        type="button"
+                        onClick={() => setPartyReport({ partyId: r.partyId, partyName: r.partyName })}
+                        className="font-bold uppercase text-slate-800 hover:text-[#1662c6] hover:underline cursor-pointer text-left truncate max-w-full"
+                      >
+                        {r.partyName}
+                      </button>
+                    </td>
                     <td className={`${td} text-center font-semibold text-slate-700`}>{r.mobile}</td>
                     <td className={`${td} text-center font-semibold uppercase text-slate-700`}>{r.agentName}</td>
                     {MONEY_COLS.map(c => (
-                      <td key={c.key} className={`${td} text-right font-semibold text-slate-800 ${c.tint || ''}`}>{fmt(r[c.key])}</td>
+                      <td key={c.key} className={`${td} text-right font-semibold text-slate-800 ${c.tint || ''}`}>
+                        {(c.key === 'rebate' || c.key === 'hpAmt') && (r.hrRows?.length || Math.round(r[c.key]) !== 0) ? (
+                          <button
+                            type="button"
+                            onClick={() => setHrRow(r)}
+                            title="View the Rebate / HP breakdown"
+                            className="font-semibold text-slate-800 hover:text-[#1662c6] hover:underline cursor-pointer"
+                          >
+                            {fmt(r[c.key])}
+                          </button>
+                        ) : fmt(r[c.key])}
+                      </td>
                     ))}
-                    <td className={`${td} text-center font-semibold text-slate-800 bg-[#f0f5c4]`}>{r.dayAv}</td>
+                    <td className={`${td} text-center font-semibold text-slate-800 bg-[#f0f5c4]`}>
+                      {r.dayAv > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => setDaysRow(r)}
+                          title="View the days played"
+                          className="font-semibold text-slate-800 hover:text-[#1662c6] hover:underline cursor-pointer"
+                        >
+                          {r.dayAv}
+                        </button>
+                      ) : r.dayAv}
+                    </td>
                     <td className="py-1.5 px-2 font-bold text-slate-800 uppercase bg-[#f1f1f1]">{r.partyName}</td>
                   </tr>
                 ))
@@ -384,6 +429,30 @@ export const AllShiftReportPage: React.FC<AllShiftReportPageProps> = ({ onNaviga
           </table>
         </div>
       </div>
+      <AllShiftPartyModal
+        open={!!partyReport && !!loadedRange}
+        onClose={() => setPartyReport(null)}
+        partyId={partyReport?.partyId || 0}
+        partyName={partyReport?.partyName || ''}
+        fromDate={loadedRange?.fromDate || fromDate}
+        toDate={loadedRange?.toDate || toDate}
+      />
+      <SaleDaysModal
+        open={!!daysRow}
+        onClose={() => setDaysRow(null)}
+        partyName={daysRow?.partyName || ''}
+        days={daysRow?.saleDays || []}
+      />
+      <RebateHrModal
+        open={!!hrRow}
+        onClose={() => setHrRow(null)}
+        partyName={hrRow?.partyName || ''}
+        opening={hrRow?.opening || 0}
+        closing={hrRow?.closing || 0}
+        rows={hrRow?.hrRows || []}
+        fromDate={loadedRange?.fromDate || fromDate}
+        toDate={loadedRange?.toDate || toDate}
+      />
     </div>
   );
 };

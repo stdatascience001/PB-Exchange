@@ -86,6 +86,15 @@ export class TransactionService {
     return e.numberValue;
   }
 
+  // The slip's Rate as live prints it: Dara rate / Comm% - Akhar rate / Comm% from the party's
+  // ledger, decimals only when there are any — "90/10-9/10", "100/0-10/0", "95/5-9.5/5", "50/50-5/50".
+  static readonly DEFAULT_RATE_STR = '90/10-9/10';
+  static partyRateStr(p: { daraRate?: string | null; akharRate?: string | null; commissionRate?: string | null }): string {
+    const num = (v?: string | null) => String(parseFloat(v || '0') || 0);
+    const comm = num(p.commissionRate);
+    return `${num(p.daraRate)}/${comm}-${num(p.akharRate)}/${comm}`;
+  }
+
   static async createTransaction(input: TransactionCreateInput, user: UserSession) {
     // 1. Enforce shift cutoff for this role
     await ShiftService.assertShiftOpenForRole(input.shiftId, user.roleId, user.roleName, user.userId);
@@ -173,6 +182,8 @@ export class TransactionService {
         // added slip carries the same name and time in both columns).
         addedBy: actorName,
         updatedBy: actorName,
+        // The party's rate at the time of entry (the column default was left on every slip)
+        rateStr: this.partyRateStr(party),
       }).returning();
 
       const entriesToInsert = preparedEntries.map(e => ({
@@ -365,6 +376,9 @@ export class TransactionService {
       totalAmount: transactions.totalAmount,
       status: transactions.status,
       rateStr: transactions.rateStr,
+      partyDaraRate: ledgers.daraRate,
+      partyAkharRate: ledgers.akharRate,
+      partyCommissionRate: ledgers.commissionRate,
       ujType: transactions.ujType,
       addedBy: transactions.addedBy,
       updatedBy: transactions.updatedBy,
@@ -424,14 +438,18 @@ export class TransactionService {
       : [];
     const editedIds = new Set(editedRows.map(r => r.entityId));
 
-    return list.map(t => ({
+    return list.map(({ partyDaraRate, partyAkharRate, partyCommissionRate, ...t }) => ({
       ...t,
       isEdited: editedIds.has(String(t.id)),
       addedBy: (placeholder(t.addedBy) ? nameByUser.get(t.createdBy) : t.addedBy) || t.addedBy || 'SYSTEM',
       updatedBy: (placeholder(t.updatedBy) ? nameByUser.get(t.createdBy) : t.updatedBy) || t.updatedBy || 'SYSTEM',
       shiftName: t.shiftName || 'UNKNOWN',
       partyName: t.partyName || 'UNKNOWN',
-      rateStr: t.rateStr || '90/10-9/10',
+      // Slips saved before the rate was written carry the column default — show the party's
+      // own rate for those (live: AJNALA JLD "100/0-10/0", VINAY KAMAL HBD "95/5-9.5/5")
+      rateStr: (t.rateStr && t.rateStr !== this.DEFAULT_RATE_STR)
+        ? t.rateStr
+        : this.partyRateStr({ daraRate: partyDaraRate, akharRate: partyAkharRate, commissionRate: partyCommissionRate }),
       ujType: t.ujType || 'J',
       isD: t.isD ?? true,
       auditStatus: t.auditStatus || 'NOT-AUDIT',
@@ -453,6 +471,9 @@ export class TransactionService {
       totalAmount: transactions.totalAmount,
       status: transactions.status,
       rateStr: transactions.rateStr,
+      partyDaraRate: ledgers.daraRate,
+      partyAkharRate: ledgers.akharRate,
+      partyCommissionRate: ledgers.commissionRate,
       ujType: transactions.ujType,
       addedBy: transactions.addedBy,
       updatedBy: transactions.updatedBy,
@@ -468,8 +489,12 @@ export class TransactionService {
 
     if (t) {
       const entries = await this.getTransactionEntries(id);
+      const { partyDaraRate, partyAkharRate, partyCommissionRate, ...rest } = t;
       return {
-        ...t,
+        ...rest,
+        rateStr: (t.rateStr && t.rateStr !== this.DEFAULT_RATE_STR)
+          ? t.rateStr
+          : this.partyRateStr({ daraRate: partyDaraRate, akharRate: partyAkharRate, commissionRate: partyCommissionRate }),
         shiftName: t.shiftName || 'UNKNOWN',
         partyName: t.partyName || 'UNKNOWN',
         totalAmount: parseFloat(t.totalAmount),
@@ -621,6 +646,7 @@ export class TransactionService {
           totalAmount: totalAmount.toFixed(2),
           updatedAt: new Date(),
           updatedBy: editorName,
+          rateStr: this.partyRateStr(party),
           // Editing a slip the auditor marked MISTAKE flags it, so its Updated column turns red
           mistakeEdited: existing.auditStatus === 'MISTAKE' ? true : existing.mistakeEdited,
         })
@@ -860,6 +886,14 @@ export class TransactionService {
         if (filters.hpl && !filters.hissa) {
           const sys = await db.select({ partyName: ledgers.partyName }).from(ledgers).where(eq(ledgers.groupName, 'SYSTEM'));
           for (const r of sys) systemNames.add((r.partyName || '').trim().toUpperCase());
+          // …and the HP Ledgers (any ledger set as a party's Info → HP Ledger, e.g. ZZ BHARAT HPT
+          // A/C): live HYDRABAD 13-10 keeps KR HBD's "ZZ BHARAT HPT A/C 10" share in (519 × 0.9),
+          // the same as its "HP A/C 50" share.
+          const hpLedgers = await pgSql<Array<{ party_name: string }>>`
+            SELECT DISTINCT h.party_name FROM ledgers l JOIN ledgers h ON h.id = l.hp_ledger_id
+            WHERE l.hp_ledger_id IS NOT NULL AND l.hp_ledger_id <> l.id
+          `;
+          for (const r of hpLedgers) systemNames.add((r.party_name || '').trim().toUpperCase());
         }
         for (const l of hissaLinks) {
           if (systemNames.has((l.partyName || '').trim().toUpperCase())) continue;
@@ -900,7 +934,9 @@ export class TransactionService {
         // each — Andar d over d0..d9, Bahar d over 0d..9d — and the B / A rows read 0.
         // Live HYDRABAD NIGHT 06-10: B8 2000 -> 200 on 8, 18 .. 98; A9 2000 -> 200 on 90..99
         // (98 with both = 400); A2 100 -> 10 on 20..29, shown 50 (cells round up, below).
-        if (filters.akhMix && isHaruf) {
+        // HPL-Jantri and Main Jantri (live) do the same: HYDRABAD 13-10 shows their B / A rows
+        // empty, every haruf a tenth on its ten numbers (all 100 cells then match live).
+        if ((filters.akhMix || filters.hpl || filters.mainJantri) && isHaruf) {
           const digit = String(e.numberValue).trim().slice(-1);
           for (let o = 0; o < 10; o++) {
             const numKey = e.entryType === 'HARUF_ANDAR' ? `${digit}${o}` : `${o}${digit}`;
@@ -932,7 +968,9 @@ export class TransactionService {
         let exact = raw;
         if (filters.amtLess && filters.amtLess > 0) exact = Math.max(0, exact - filters.amtLess);
         if (filters.lessPercent && filters.lessPercent > 0) exact = exact * (1 - filters.lessPercent / 100);
-        return deducted ? roundUp50(exact) : exact;
+        // Live rounds the cell to whole rupees first, then up to 50: HYDRABAD 13-10 cell 18
+        // 150.25 -> 150 (not 200); cell 25 101.42 -> 101 -> 150.
+        return deducted ? roundUp50(Math.round(exact)) : exact;
       }
       let amt = deducted ? roundUp50(raw) : raw;
       if (filters.amtLess && filters.amtLess > 0) amt = Math.max(0, amt - filters.amtLess);
@@ -2087,17 +2125,87 @@ export class TransactionService {
   // All Shift Report page (rpt_all_shift) — the live report's full column set, for EVERY
   // ledger (parties with no sale in the range show with zeros, as on the live list).
   // getAllShiftPartyReport above is left untouched: HVS Process builds on its dOpen/hissa.
-  // Formulas, checked against the live report's rows (ABDUL, AHAAN 50%, AARIT, AGARTALA):
+  // Every money column is a party balance, Dr − Cr (positive = the party owes), checked against
+  // the live report 12-10-2026:
+  //   Total / Dara / Akhar Sale  the party's slips in the range (Dara = number entries)
   //   Comm       = −Total Sale × party Comm%
-  //   Dara/Akhar Open = stake on the declared number / its Andar+Bahar haruf (not payout)
-  //   Payout     = Σ winning stake × that entry's rate
-  //   Book       = (Total Sale + Comm) − Payout
-  //   Hissa      = −Book × party S-Hissa%
-  //   T-Profit   = Book + Hissa
-  //   Kist / HP-Amt / Payment = the ledger's KIST / HAWA_PATTI / CASH vouchers in the range
-  //   Rebate     = −T-Profit × party Rebate% when the party lost (T-Profit > 0), else 0
+  //   Dara/Akhar Open = stake on that day's declared number / its Andar+Bahar haruf (not payout)
+  //   Payout     = Σ winning stake × that entry's rate  (each day judged on its OWN result)
+  //   Book       = Total Sale + Comm − Payout
+  //   Hissa      = −Book × S-Hissa% (Self Hissa + Hissa Party rows naming the party itself), plus
+  //                for a ledger that RECEIVES Hissa (another party's Hissa Party row names it,
+  //                e.g. ZZ ASLAM 40) −Σ that party's Book × %. Shares to HP A/C are not added here:
+  //                HP A/C is settled for the whole month by Hawa Patti (HP-Amt below).
+  //   TPC        = −Σ commission the party earns through other ledgers' 3rd Party Comm rows
+  //                (their Dara Sale × D-Comm% + Akhar Sale × A-Comm%)
+  //   T-Profit   = Book + Hissa + TPC
+  //   Kist / Rebate / HP-Amt / Payment = the ledger's KIST / VAPSI / HAWA_PATTI / cash + other
+  //                vouchers in the range (Dr − Cr; LIMIT vouchers are a credit limit, not money)
+  //   Opening    = the same balance up to the day before From (every earlier voucher + every
+  //                earlier day's T-Profit), i.e. the previous day's Closing
   //   Closing    = Opening + T-Profit + Kist + Rebate + HP-Amt + Payment
   //   DayAv      = days in the range the party had a sale
+  // Live AARIT KARNAL: 901960 − 90196 − 8030×90 = 89064; −533607 + 89064 − 100000 = −544543.
+  // Live AHAAN 25%: 136460 − 13646 − 370×90 − 500×9 = 85014, Hissa −21253 → 63761;
+  //   −13524 + 63761 − 49000 = 1237.
+  private static async allShiftGame(fromDate: string | null, toDate: string) {
+    const fromCond = fromDate ? pgSql`AND t.created_at::date >= ${fromDate}::date` : pgSql``;
+    const saleRows = await pgSql<Array<{ party_id: number; day: string; sale: string }>>`
+      SELECT t.party_id, t.created_at::date::text AS day, SUM(t.total_amount) AS sale
+      FROM transactions t
+      WHERE t.status <> 'VOIDED' ${fromCond} AND t.created_at::date <= ${toDate}::date
+      GROUP BY t.party_id, t.created_at::date
+    `;
+    // Each (shift, day) is judged on that day's own result: its cycle's number, else the
+    // shift's current number when the day is the shift's open day.
+    const entryRows = await pgSql<Array<{ party_id: number; d_sale: string; a_sale: string; d_open: string; a_open: string; payout: string }>>`
+      SELECT x.party_id,
+        SUM(CASE WHEN x.entry_type = 'DARA' THEN x.amount ELSE 0 END) AS d_sale,
+        SUM(CASE WHEN x.entry_type <> 'DARA' THEN x.amount ELSE 0 END) AS a_sale,
+        SUM(CASE WHEN x.entry_type = 'DARA' AND x.number_value = x.dn THEN x.amount ELSE 0 END) AS d_open,
+        SUM(CASE WHEN (x.entry_type = 'HARUF_ANDAR' AND x.number_value = substr(x.dn, 1, 1))
+                   OR (x.entry_type = 'HARUF_BAHAR' AND x.number_value = substr(x.dn, 2, 1)) THEN x.amount ELSE 0 END) AS a_open,
+        SUM(CASE WHEN (x.entry_type = 'DARA' AND x.number_value = x.dn)
+                   OR (x.entry_type = 'HARUF_ANDAR' AND x.number_value = substr(x.dn, 1, 1))
+                   OR (x.entry_type = 'HARUF_BAHAR' AND x.number_value = substr(x.dn, 2, 1)) THEN x.amount * x.rate ELSE 0 END) AS payout
+      FROM (
+        SELECT t.party_id, e.entry_type, e.number_value, e.amount, e.rate,
+          lpad(COALESCE(
+            CASE WHEN c.status IN ('DECLARED', 'AUDITED') OR c.declared_number IS NOT NULL THEN c.declared_number END,
+            CASE WHEN s.open_date = t.created_at::date::text THEN s.declared_number END
+          ), 2, '0') AS dn
+        FROM transaction_entries e
+        JOIN transactions t ON t.id = e.transaction_id
+        JOIN shifts s ON s.id = t.shift_id
+        LEFT JOIN shift_cycles c ON c.shift_id = t.shift_id AND c.cycle_date = t.created_at::date::text
+        WHERE t.status <> 'VOIDED' ${fromCond} AND t.created_at::date <= ${toDate}::date
+      ) x
+      GROUP BY x.party_id
+    `;
+
+    type Agg = { totalSale: number; dSale: number; aSale: number; dOpen: number; aOpen: number; payout: number; days: Set<string> };
+    const agg = new Map<number, Agg>();
+    const get = (id: number) => {
+      let a = agg.get(id);
+      if (!a) { a = { totalSale: 0, dSale: 0, aSale: 0, dOpen: 0, aOpen: 0, payout: 0, days: new Set() }; agg.set(id, a); }
+      return a;
+    };
+    for (const r of saleRows) {
+      const a = get(r.party_id);
+      a.totalSale += parseFloat(r.sale) || 0;
+      a.days.add(r.day);
+    }
+    for (const r of entryRows) {
+      const a = get(r.party_id);
+      a.dSale += parseFloat(r.d_sale) || 0;
+      a.aSale += parseFloat(r.a_sale) || 0;
+      a.dOpen += parseFloat(r.d_open) || 0;
+      a.aOpen += parseFloat(r.a_open) || 0;
+      a.payout += parseFloat(r.payout) || 0;
+    }
+    return agg;
+  }
+
   static async getAllShiftReport(filters: {
     fromDate: string;
     toDate: string;
@@ -2117,9 +2225,6 @@ export class TransactionService {
       mobile: ledgers.mobile,
       agentId: ledgers.agentId,
       betLimit: ledgers.betLimit,
-      hissaPercentage: ledgers.hissaPercentage,
-      commissionRate: ledgers.commissionRate,
-      rebate: ledgers.rebate,
     }).from(ledgers).where(and(...ledgerConds));
 
     if (filters.search && filters.search.trim()) {
@@ -2136,37 +2241,151 @@ export class TransactionService {
       .from(ledgers).where(isNull(ledgers.deletedAt));
     const dealOptions = dealRows.map(d => d.dealing).filter(Boolean).sort();
 
-    const partyIds = partyRows.map(p => p.id);
-    if (partyIds.length === 0) return { rows: [], dealOptions };
+    if (partyRows.length === 0) return { rows: [], dealOptions };
 
-    const txRows = await db.select({
-      id: transactions.id,
-      partyId: transactions.partyId,
-      shiftId: transactions.shiftId,
-      totalAmount: transactions.totalAmount,
-      day: sql<string>`${transactions.createdAt}::date::text`,
-    }).from(transactions).where(and(
-      ne(transactions.status, 'VOIDED'),
-      inArray(transactions.partyId, partyIds),
-      sql`${transactions.createdAt}::date >= ${filters.fromDate}::date`,
-      sql`${transactions.createdAt}::date <= ${filters.toDate}::date`,
-    ));
+    // Every ledger's rates and Hissa / 3rd Party Comm set-up — a party's T-Profit can come from
+    // other ledgers' links, so this is not limited to the listed rows.
+    const allLedgers = await db.select({
+      id: ledgers.id,
+      partyName: ledgers.partyName,
+      commissionRate: ledgers.commissionRate,
+      hissaPercentage: ledgers.hissaPercentage,
+      rebate: ledgers.rebate,
+      hpLedgerId: ledgers.hpLedgerId,
+    }).from(ledgers);
+    const ledgerById = new Map(allLedgers.map(l => [l.id, l]));
+    const idByName = new Map<string, number>();
+    for (const l of allLedgers) idByName.set((l.partyName || '').trim().toUpperCase(), l.id);
+    const links = await db.select({
+      ledgerId: ledgerThirdPartyLinks.ledgerId,
+      linkType: ledgerThirdPartyLinks.linkType,
+      partyName: ledgerThirdPartyLinks.partyName,
+      percent: ledgerThirdPartyLinks.percent,
+      dComm: ledgerThirdPartyLinks.dComm,
+      aComm: ledgerThirdPartyLinks.aComm,
+    }).from(ledgerThirdPartyLinks).where(inArray(ledgerThirdPartyLinks.linkType, ['HISSA', 'TPC']));
 
-    const txIds = txRows.map(t => t.id);
-    const entryRows = txIds.length > 0
-      ? await db.select().from(transactionEntries).where(inArray(transactionEntries.transactionId, txIds))
-      : [];
-    const entriesByTx = new Map<number, typeof entryRows>();
-    for (const e of entryRows) {
-      if (!entriesByTx.has(e.transactionId)) entriesByTx.set(e.transactionId, []);
-      entriesByTx.get(e.transactionId)!.push(e);
+    // Comm / Book / Hissa / TPC per ledger from a game aggregate (see the comment above)
+    type Game = Awaited<ReturnType<typeof TransactionService.allShiftGame>>;
+    const tProfitOf = (game: Game) => {
+      const out = new Map<number, { comm: number; book: number; hissa: number; tpc: number }>();
+      const get = (id: number) => {
+        let o = out.get(id);
+        if (!o) { o = { comm: 0, book: 0, hissa: 0, tpc: 0 }; out.set(id, o); }
+        return o;
+      };
+      for (const [id, a] of game) {
+        const l = ledgerById.get(id);
+        const comm = -(a.totalSale * parseFloat(l?.commissionRate || '0') / 100);
+        const o = get(id);
+        o.comm = comm;
+        o.book = a.totalSale + comm - a.payout;
+        o.hissa += -(o.book * parseFloat(l?.hissaPercentage || '0') / 100);
+      }
+      for (const k of links) {
+        const giver = game.get(k.ledgerId);
+        if (!giver) continue;
+        const name = (k.partyName || '').trim().toUpperCase();
+        const ownName = (ledgerById.get(k.ledgerId)?.partyName || '').trim().toUpperCase();
+        if (k.linkType === 'HISSA') {
+          const pct = parseFloat(k.percent) || 0;
+          const book = out.get(k.ledgerId)?.book || 0;
+          if (!pct || !book) continue;
+          if (name === ownName) {
+            get(k.ledgerId).hissa += -(book * pct / 100);
+          } else if (name !== TransactionService.HP_ACCOUNT) {
+            const receiverId = idByName.get(name);
+            if (receiverId) get(receiverId).hissa += -(book * pct / 100);
+          }
+        } else {
+          const receiverId = idByName.get(name);
+          if (!receiverId) continue;
+          const earned = giver.dSale * (parseFloat(k.dComm) || 0) / 100 + giver.aSale * (parseFloat(k.aComm) || 0) / 100;
+          if (earned) get(receiverId).tpc += -earned;
+        }
+      }
+      return out;
+    };
+
+    const dayBefore = new Date(`${filters.fromDate}T00:00:00Z`);
+    dayBefore.setUTCDate(dayBefore.getUTCDate() - 1);
+    const dayBeforeStr = dayBefore.toISOString().slice(0, 10);
+
+    const [gameNow, gameBefore] = await Promise.all([
+      this.allShiftGame(filters.fromDate, filters.toDate),
+      this.allShiftGame(null, dayBeforeStr),
+    ]);
+    const nowByParty = tProfitOf(gameNow);
+    const beforeByParty = tProfitOf(gameBefore);
+
+    // Month-end HR (live: Rebate / HP-Amt are worked out when the range ends on a month's last
+    // day — a single day mid-month shows 0, 01-09 → 30-09 shows them). For every party with a
+    // game in the range, booked to its HP party (Info → HP Ledger, else itself):
+    //   HP-Base = T-Profit when it has a Hissa Party row to HP A/C, HP-% that row's %, HP-Amt = Base × %
+    //   RBT-Base = T-Profit when above 0, RBT-% = ledger Rebate, RBT-Amt = (T-Profit − HP-Amt) × %
+    //   T-HR = HP-Amt + RBT-Amt; the HP party's Rebate / HP-Amt columns = −Σ (Cr to it)
+    // Live AARAV JLD HBD Sep: 3812 × 20% = 762 → HP-Amt −762, (3812 − 762.4) × 10% → Rebate −305;
+    // MIRJA WASIM: 756819 × 15% = 113523, (756819 − 113523) × 10% = 64330, plus MIRJA WASIM 40%
+    // (HP Ledger MIRJA WASIM) −17910 × 50% = −8955 → HR 168898.
+    const toD = new Date(`${filters.toDate}T00:00:00Z`);
+    const nextD = new Date(toD); nextD.setUTCDate(nextD.getUTCDate() + 1);
+    const monthEnd = nextD.getUTCDate() === 1;
+    type HrRow = { partyId: number; partyName: string; hpBase: number; hpPct: number; hpAmt: number; rbtBase: number; rbtPct: number; rbtAmt: number; tHr: number; settleAmt: number };
+    const hrByHpParty = new Map<number, HrRow[]>();
+    if (monthEnd) {
+      const hpPct = new Map<number, number>();
+      for (const k of links) {
+        if (k.linkType !== 'HISSA') continue;
+        if ((k.partyName || '').trim().toUpperCase() !== TransactionService.HP_ACCOUNT) continue;
+        hpPct.set(k.ledgerId, (hpPct.get(k.ledgerId) || 0) + (parseFloat(k.percent) || 0));
+      }
+      for (const [id, o] of nowByParty) {
+        if (!gameNow.has(id)) continue;
+        const l = ledgerById.get(id);
+        const tp = o.book + o.hissa + o.tpc;
+        const pct = hpPct.get(id) || 0;
+        const hpBase = pct ? tp : 0;
+        const hpAmt = hpBase * pct / 100;
+        const rbtPct = parseFloat(l?.rebate || '0') || 0;
+        const rbtBase = tp > 0 ? tp : 0;
+        const rbtAmt = rbtPct && tp - hpAmt > 0 ? (tp - hpAmt) * rbtPct / 100 : 0;
+        if (!hpAmt && !rbtAmt) continue;
+        const hpParty = l?.hpLedgerId || id;
+        const list = hrByHpParty.get(hpParty) || [];
+        list.push({ partyId: id, partyName: l?.partyName || '', hpBase, hpPct: pct, hpAmt, rbtBase, rbtPct, rbtAmt, tHr: hpAmt + rbtAmt, settleAmt: 0 });
+        hrByHpParty.set(hpParty, list);
+      }
     }
 
-    const shiftIds = Array.from(new Set(txRows.map(t => t.shiftId)));
-    const shiftRows = shiftIds.length > 0
-      ? await db.select({ id: shifts.id, declaredNumber: shifts.declaredNumber }).from(shifts).where(inArray(shifts.id, shiftIds))
-      : [];
-    const declaredByShift = new Map(shiftRows.map(s => [s.id, s.declaredNumber ? s.declaredNumber.padStart(2, '0') : null]));
+    // Vouchers, Dr − Cr (positive = the party owes); LIMIT vouchers are a credit limit, not money
+    const voucherRows = await pgSql<Array<{ ledger_id: number; bucket: string; net: string }>>`
+      SELECT e.ledger_id,
+        CASE WHEN v.created_at::date < ${filters.fromDate}::date THEN 'OPENING'
+             WHEN v.voucher_type = 'KIST' THEN 'KIST'
+             WHEN v.voucher_type = 'VAPSI' THEN 'REBATE'
+             WHEN v.voucher_type = 'HAWA_PATTI' THEN 'HP'
+             ELSE 'PAYMENT' END AS bucket,
+        SUM(CASE WHEN e.entry_side = 'DR' THEN e.amount ELSE -e.amount END) AS net
+      FROM voucher_entries e
+      JOIN vouchers v ON v.id = e.voucher_id
+      WHERE v.voucher_type <> 'LIMIT' AND v.created_at::date <= ${filters.toDate}::date
+      GROUP BY 1, 2
+    `;
+    const moves = new Map<number, { opening: number; kist: number; rebate: number; hpAmt: number; payment: number }>();
+    // Month-end: the range's VAPSI / HAWA_PATTI vouchers are the posting of the HR worked out
+    // above, so they show as SETTEL in its popup instead of being counted a second time
+    const settleByLedger = new Map<number, number>();
+    for (const m of voucherRows) {
+      if (!moves.has(m.ledger_id)) moves.set(m.ledger_id, { opening: 0, kist: 0, rebate: 0, hpAmt: 0, payment: 0 });
+      const mv = moves.get(m.ledger_id)!;
+      const amt = parseFloat(m.net) || 0;
+      if (m.bucket === 'OPENING') mv.opening += amt;
+      else if (m.bucket === 'KIST') mv.kist += amt;
+      else if (monthEnd && (m.bucket === 'REBATE' || m.bucket === 'HP')) settleByLedger.set(m.ledger_id, (settleByLedger.get(m.ledger_id) || 0) - amt);
+      else if (m.bucket === 'REBATE') mv.rebate += amt;
+      else if (m.bucket === 'HP') mv.hpAmt += amt;
+      else mv.payment += amt;
+    }
 
     const agentIds = Array.from(new Set(partyRows.map(p => p.agentId).filter((id): id is number => id != null)));
     const agentRows = agentIds.length > 0
@@ -2174,75 +2393,17 @@ export class TransactionService {
       : [];
     const agentNameById = new Map(agentRows.map(a => [a.id, a.agentName]));
 
-    // Opening: voucher balance up to the day before fromDate — same source/sign (Cr − Dr) as
-    // getAllShiftPartyReport's Opening, so the two reports agree.
-    const dayBefore = new Date(`${filters.fromDate}T00:00:00Z`);
-    dayBefore.setUTCDate(dayBefore.getUTCDate() - 1);
-    const openingBalances = await VoucherService.getLedgerBalances({ toDate: dayBefore.toISOString().slice(0, 10) });
-    const openingByLedger = new Map(openingBalances.map(b => [b.ledgerId, b.balance]));
-
-    // In-range voucher movements per ledger and type, same Cr − Dr sign as Opening.
-    const movementRows = await db.select({
-      ledgerId: voucherEntries.ledgerId,
-      voucherType: vouchers.voucherType,
-      net: sql<string>`COALESCE(SUM(CASE WHEN ${voucherEntries.entrySide} = 'CR' THEN ${voucherEntries.amount}::numeric ELSE -${voucherEntries.amount}::numeric END), 0)`,
-    })
-      .from(voucherEntries)
-      .innerJoin(vouchers, eq(voucherEntries.voucherId, vouchers.id))
-      .where(and(
-        inArray(voucherEntries.ledgerId, partyIds),
-        inArray(vouchers.voucherType, ['KIST', 'HAWA_PATTI', 'CASH_RECEIPT', 'CASH_PAYMENT']),
-        sql`${vouchers.createdAt}::date >= ${filters.fromDate}::date`,
-        sql`${vouchers.createdAt}::date <= ${filters.toDate}::date`,
-      ))
-      .groupBy(voucherEntries.ledgerId, vouchers.voucherType);
-    const moves = new Map<number, { kist: number; hpAmt: number; payment: number }>();
-    for (const m of movementRows) {
-      if (!moves.has(m.ledgerId)) moves.set(m.ledgerId, { kist: 0, hpAmt: 0, payment: 0 });
-      const mv = moves.get(m.ledgerId)!;
-      const amt = parseFloat(m.net);
-      if (m.voucherType === 'KIST') mv.kist += amt;
-      else if (m.voucherType === 'HAWA_PATTI') mv.hpAmt += amt;
-      else mv.payment += amt;
-    }
-
-    type Agg = { totalSale: number; dSale: number; aSale: number; dOpen: number; aOpen: number; payout: number; days: Set<string> };
-    const perParty = new Map<number, Agg>();
-    for (const tx of txRows) {
-      if (!perParty.has(tx.partyId)) perParty.set(tx.partyId, { totalSale: 0, dSale: 0, aSale: 0, dOpen: 0, aOpen: 0, payout: 0, days: new Set() });
-      const agg = perParty.get(tx.partyId)!;
-      agg.totalSale += parseFloat(tx.totalAmount);
-      agg.days.add(tx.day);
-
-      const declared = declaredByShift.get(tx.shiftId);
-      for (const e of entriesByTx.get(tx.id) || []) {
-        const amt = parseFloat(e.amount);
-        const rate = parseFloat(e.rate);
-        if (e.entryType === 'DARA') {
-          agg.dSale += amt;
-          if (declared && e.numberValue === declared) { agg.dOpen += amt; agg.payout += amt * rate; }
-        } else {
-          agg.aSale += amt;
-          const wins = declared && (
-            (e.entryType === 'HARUF_ANDAR' && e.numberValue === declared[0]) ||
-            (e.entryType === 'HARUF_BAHAR' && e.numberValue === declared[1])
-          );
-          if (wins) { agg.aOpen += amt; agg.payout += amt * rate; }
-        }
-      }
-    }
-
+    const zero = { comm: 0, book: 0, hissa: 0, tpc: 0 };
     let rows = partyRows.map(p => {
-      const agg = perParty.get(p.id);
-      const totalSale = agg?.totalSale || 0;
-      const comm = -(totalSale * parseFloat(p.commissionRate || '0') / 100);
-      const book = (totalSale + comm) - (agg?.payout || 0);
-      const hissa = -(book * parseFloat(p.hissaPercentage || '0') / 100);
-      const tProfit = book + hissa;
-      const rebatePct = parseFloat(p.rebate || '0');
-      const rebate = tProfit > 0 ? -(tProfit * rebatePct / 100) : 0;
-      const mv = moves.get(p.id) || { kist: 0, hpAmt: 0, payment: 0 };
-      const opening = openingByLedger.get(p.id) || 0;
+      const a = gameNow.get(p.id);
+      const now = nowByParty.get(p.id) || zero;
+      const before = beforeByParty.get(p.id) || zero;
+      const mv = moves.get(p.id) || { opening: 0, kist: 0, rebate: 0, hpAmt: 0, payment: 0 };
+      const tProfit = now.book + now.hissa + now.tpc;
+      const opening = mv.opening + before.book + before.hissa + before.tpc;
+      const hrRows = (hrByHpParty.get(p.id) || []).map(h => ({ ...h, settleAmt: settleByLedger.get(h.partyId) || 0 }));
+      const rebate = monthEnd ? -hrRows.reduce((s2, h) => s2 + h.rbtAmt, 0) + 0 : mv.rebate;
+      const hpAmt = monthEnd ? -hrRows.reduce((s2, h) => s2 + h.hpAmt, 0) + 0 : mv.hpAmt;
       return {
         partyId: p.id,
         partyName: p.partyName,
@@ -2250,21 +2411,25 @@ export class TransactionService {
         agentName: p.agentId ? (agentNameById.get(p.agentId) || '-') : '-',
         limit: parseFloat(p.betLimit || '0'),
         opening,
-        totalSale,
-        dSale: agg?.dSale || 0,
-        aSale: agg?.aSale || 0,
-        comm,
-        dOpen: agg?.dOpen || 0,
-        aOpen: agg?.aOpen || 0,
-        tpc: 0,
-        hissa,
+        totalSale: a?.totalSale || 0,
+        dSale: a?.dSale || 0,
+        aSale: a?.aSale || 0,
+        comm: now.comm,
+        dOpen: a?.dOpen || 0,
+        aOpen: a?.aOpen || 0,
+        tpc: now.tpc,
+        hissa: now.hissa,
         tProfit,
         kist: mv.kist,
         rebate,
-        hpAmt: mv.hpAmt,
+        hpAmt,
         payment: mv.payment,
-        closing: opening + tProfit + mv.kist + rebate + mv.hpAmt + mv.payment,
-        dayAv: agg?.days.size || 0,
+        closing: opening + tProfit + mv.kist + rebate + hpAmt + mv.payment,
+        dayAv: a?.days.size || 0,
+        // the days behind DayAv (YYYY-MM-DD, oldest first) — DayAv click popup
+        saleDays: a ? Array.from(a.days).sort() : [],
+        // Rebate click popup (month-end HR): every party booked to this one, with its HP / RBT parts
+        hrRows,
       };
     });
 
@@ -2274,6 +2439,118 @@ export class TransactionService {
 
     rows.sort((a, b) => a.partyName.localeCompare(b.partyName));
     return { rows, dealOptions };
+  }
+
+  // All Shift Report → click a Party (live "ALL SHIFT REPORT" popup): that party's range broken
+  // down by shift — one row per shift it played, each with the Daily Report columns summed over
+  // the range (every day judged on its own result) — and underneath the party's balance line
+  // from the main report: OPENING, P&L (= T-Profit), HP-AMT, REBATE, TPC, PAYMENT, CLOSING.
+  // Live AARAV JLD HBD 01-09 → 30-09: HYDRABAD 11185 − 1118 − 80×90 → Debit 2867; FARIDABAD 45;
+  // GALI 900; P&L 3812; 41468 + 3812 − 762 − 305 − 44212 = 0 (Closing).
+  static async getAllShiftPartyDetail(filters: { partyId: number; fromDate: string; toDate: string }) {
+    const [party] = await db.select().from(ledgers).where(eq(ledgers.id, filters.partyId));
+    if (!party) throw new NotFoundError('Party not found');
+
+    const ownLinks = await db.select({ partyName: ledgerThirdPartyLinks.partyName, percent: ledgerThirdPartyLinks.percent })
+      .from(ledgerThirdPartyLinks)
+      .where(and(eq(ledgerThirdPartyLinks.linkType, 'HISSA'), eq(ledgerThirdPartyLinks.ledgerId, party.id)));
+    const ownName = (party.partyName || '').trim().toUpperCase();
+    let sHissa = parseFloat(party.hissaPercentage || '0') || 0;
+    for (const l of ownLinks) if ((l.partyName || '').trim().toUpperCase() === ownName) sHissa += parseFloat(l.percent) || 0;
+    const commPct = parseFloat(party.commissionRate || '0') || 0;
+    const rate = `${Math.round(parseFloat(party.daraRate || '0'))}/${Math.round(commPct)}-${Math.round(parseFloat(party.akharRate || '0'))}/${Math.round(commPct)}`;
+
+    // Per shift: sale, Dara / Akhar sale, winning stakes and payout — each day on its own result
+    const saleRows = await pgSql<Array<{ shift_id: number; shift_name: string; sale: string }>>`
+      SELECT t.shift_id, s.name AS shift_name, SUM(t.total_amount) AS sale
+      FROM transactions t JOIN shifts s ON s.id = t.shift_id
+      WHERE t.party_id = ${party.id} AND t.status <> 'VOIDED'
+        AND t.created_at::date >= ${filters.fromDate}::date AND t.created_at::date <= ${filters.toDate}::date
+      GROUP BY t.shift_id, s.name
+    `;
+    const entryRows = await pgSql<Array<{ shift_id: number; d_sale: string; a_sale: string; d_open: string; a_open: string; payout: string }>>`
+      SELECT x.shift_id,
+        SUM(CASE WHEN x.entry_type = 'DARA' THEN x.amount ELSE 0 END) AS d_sale,
+        SUM(CASE WHEN x.entry_type <> 'DARA' THEN x.amount ELSE 0 END) AS a_sale,
+        SUM(CASE WHEN x.entry_type = 'DARA' AND x.number_value = x.dn THEN x.amount ELSE 0 END) AS d_open,
+        SUM(CASE WHEN (x.entry_type = 'HARUF_ANDAR' AND x.number_value = substr(x.dn, 1, 1))
+                   OR (x.entry_type = 'HARUF_BAHAR' AND x.number_value = substr(x.dn, 2, 1)) THEN x.amount ELSE 0 END) AS a_open,
+        SUM(CASE WHEN (x.entry_type = 'DARA' AND x.number_value = x.dn)
+                   OR (x.entry_type = 'HARUF_ANDAR' AND x.number_value = substr(x.dn, 1, 1))
+                   OR (x.entry_type = 'HARUF_BAHAR' AND x.number_value = substr(x.dn, 2, 1)) THEN x.amount * x.rate ELSE 0 END) AS payout
+      FROM (
+        SELECT t.shift_id, e.entry_type, e.number_value, e.amount, e.rate,
+          lpad(COALESCE(
+            CASE WHEN c.status IN ('DECLARED', 'AUDITED') OR c.declared_number IS NOT NULL THEN c.declared_number END,
+            CASE WHEN s.open_date = t.created_at::date::text THEN s.declared_number END
+          ), 2, '0') AS dn
+        FROM transaction_entries e
+        JOIN transactions t ON t.id = e.transaction_id
+        JOIN shifts s ON s.id = t.shift_id
+        LEFT JOIN shift_cycles c ON c.shift_id = t.shift_id AND c.cycle_date = t.created_at::date::text
+        WHERE t.party_id = ${party.id} AND t.status <> 'VOIDED'
+          AND t.created_at::date >= ${filters.fromDate}::date AND t.created_at::date <= ${filters.toDate}::date
+      ) x
+      GROUP BY x.shift_id
+    `;
+    const entryByShift = new Map(entryRows.map(r => [r.shift_id, r]));
+
+    const roundAway = (v: number) => Math.sign(v) * Math.round(Math.abs(v)) + 0;
+    const rows = saleRows.map(r => {
+      const e = entryByShift.get(r.shift_id);
+      const totalSale = parseFloat(r.sale) || 0;
+      const commExact = -(totalSale * commPct / 100);
+      const payout = parseFloat(e?.payout || '0') || 0;
+      const book = totalSale + commExact - payout;
+      const closing = roundAway(book * (100 - sHissa) / 100);
+      return {
+        shiftId: r.shift_id,
+        shiftName: r.shift_name,
+        rate,
+        sHissa,
+        totalSale,
+        dSale: parseFloat(e?.d_sale || '0') || 0,
+        aSale: parseFloat(e?.a_sale || '0') || 0,
+        comm: Math.round(commExact) + 0,
+        oDara: parseFloat(e?.d_open || '0') || 0,
+        oAkhar: parseFloat(e?.a_open || '0') || 0,
+        tpc: 0,
+        hissa: Math.round(-(book * sHissa / 100)) + 0,
+        debit: closing > 0 ? closing : 0,
+        credit: closing < 0 ? -closing : 0,
+      };
+    }).sort((a, b) => a.shiftId - b.shiftId);
+
+    const sum = (k: 'totalSale' | 'dSale' | 'aSale' | 'comm' | 'oDara' | 'oAkhar' | 'tpc' | 'hissa' | 'debit' | 'credit') =>
+      rows.reduce((s, r) => s + r[k], 0);
+
+    // The party's balance line — the same figures as its row on the All Shift Report
+    const full = await this.getAllShiftReport({ fromDate: filters.fromDate, toDate: filters.toDate });
+    const line = full.rows.find(r => r.partyId === party.id);
+
+    return {
+      partyId: party.id,
+      partyName: party.partyName,
+      userName: party.userName || '',
+      fromDate: filters.fromDate,
+      toDate: filters.toDate,
+      rows,
+      masterTotal: {
+        totalSale: sum('totalSale'), dSale: sum('dSale'), aSale: sum('aSale'), comm: sum('comm'),
+        oDara: sum('oDara'), oAkhar: sum('oAkhar'), tpc: sum('tpc'), hissa: sum('hissa'),
+        debit: sum('debit'), credit: sum('credit'),
+      },
+      summary: {
+        opening: line?.opening || 0,
+        pnl: line?.tProfit || 0,
+        hpAmt: line?.hpAmt || 0,
+        rebate: line?.rebate || 0,
+        tpc: line?.tpc || 0,
+        kist: line?.kist || 0,
+        payment: line?.payment || 0,
+        closing: line?.closing || 0,
+      },
+    };
   }
 
   // TPC Report (rpt_tpc): Third Party Commission earned by each party named in a ledger's
