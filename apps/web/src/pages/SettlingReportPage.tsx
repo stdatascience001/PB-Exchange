@@ -272,7 +272,7 @@ export const SettlingReportPage: React.FC<SettlingReportPageProps> = ({ onNaviga
           </div>
           <div className="flex gap-2">
             <span className={`${badge} bg-[#ee6a6a]`}>Balance: {data ? crDr(data.balance) : 0}</span>
-            <span className={`${badge} bg-[#ee6a6a]`}>Limit: {data ? `${Math.round(data.limit)} Cr` : 0}</span>
+            <span className={`${badge} bg-[#ee6a6a]`}>Limit: {data ? crDr(data.limit) : 0}</span>
           </div>
         </div>
       </div>
@@ -324,7 +324,7 @@ export const SettlingReportPage: React.FC<SettlingReportPageProps> = ({ onNaviga
                     <td className="py-2 px-3 text-center">
                       <button
                         type="button"
-                        onClick={() => notify('success', `OP-Bal ${fmt(r.opBal)} + P&L ${fmt(r.pnl)} - Payment ${fmt(r.payment)} = Balance ${fmt(r.balance)} (${crDr(r.balance)})`, `settling-check-${r.date}`)}
+                        onClick={() => notify('success', `OP-Bal ${fmt(r.opBal)} + P&L ${fmt(r.pnl)} + Payment ${fmt(r.payment)} = Balance ${fmt(r.balance)} (${crDr(r.balance)})`, `settling-check-${r.date}`)}
                         className="w-6 h-5 bg-[#1e3a8a] hover:bg-[#172554] text-white text-[10px] font-bold rounded-xs"
                         title="How this balance adds up"
                       >

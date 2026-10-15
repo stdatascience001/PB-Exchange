@@ -53,11 +53,23 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
     () => shifts.find(s => String(s.id) === selectedShiftId),
     [shifts, selectedShiftId]
   );
-  const isSelectedShiftDeclared = !!(
-    selectedShift?.declaredNumber ||
-    selectedShift?.status === 'DECLARED' ||
-    selectedShift?.status === 'AUDITED'
-  );
+  // "Declared" is judged for the DATE on screen, not only the shift's current cycle: a day before
+  // the shift's open date has been declared (a shift only moves on to the next day after its
+  // result), so an old date (JAI LUXMI 14-10 while its 15-10 cycle is still open) lists its
+  // slips; the open date follows the shift's own state as before; a later day isn't reached yet.
+  const isSelectedShiftDeclared = (() => {
+    if (!selectedShift) return false;
+    const openDate = selectedShift.openDate;
+    if (openDate && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      if (dateStr < openDate) return true;
+      if (dateStr > openDate) return false;
+    }
+    return !!(
+      selectedShift.declaredNumber ||
+      selectedShift.status === 'DECLARED' ||
+      selectedShift.status === 'AUDITED'
+    );
+  })();
 
   const [searchParty, setSearchParty] = useState('');
   const [selectedStaff, setSelectedStaff] = useState('');

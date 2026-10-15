@@ -140,18 +140,30 @@ export const HplJantriModal: React.FC<HplJantriModalProps> = ({ open, onClose, s
     document.body.removeChild(link);
   };
 
+  // Whole rupees with an exact .5 going to the even rupee, as live does: PUNJAB DAY 15-10
+  // 13.5 -> 14, 33.5 -> 34 but 210.5 -> 210, 238.5 -> 238, 22.5 -> 22 (grand total 3,755).
+  // Main Jantri cells are already whole 50s, so they are unchanged by this.
+  const roundHalfEven = (v: number) => {
+    const x = Math.round(v * 1e6) / 1e6; // drop float noise (15 x 0.9 = 13.500000000000002)
+    const f = Math.floor(x);
+    const diff = x - f;
+    if (diff > 0.5) return f + 1;
+    if (diff < 0.5) return f;
+    return f % 2 === 0 ? f : f + 1;
+  };
+
   // number "1".."100" / haruf "A0".."B9" -> the server's HPL amount (whole rupees)
   const cells = useMemo(() => {
     const map = new Map<string, number>();
     if (!result) return map;
     for (const g of result.grid) {
       const n = g.number === '00' ? 100 : parseInt(g.number, 10);
-      const v = Math.round(g.totalAmount || 0);
+      const v = roundHalfEven(g.totalAmount || 0);
       if (n >= 1 && n <= 100 && v > 0) map.set(String(n), v);
     }
     for (const h of result.haruf) {
-      const a = Math.round(h.andarAmount || 0);
-      const b = Math.round(h.baharAmount || 0);
+      const a = roundHalfEven(h.andarAmount || 0);
+      const b = roundHalfEven(h.baharAmount || 0);
       if (a > 0) map.set(`A${h.digit}`, a);
       if (b > 0) map.set(`B${h.digit}`, b);
     }

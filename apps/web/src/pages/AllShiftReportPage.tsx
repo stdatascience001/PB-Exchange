@@ -122,6 +122,9 @@ export const AllShiftReportPage: React.FC<AllShiftReportPageProps> = ({ onNaviga
     })();
   }, []);
 
+  // The Search text the table on screen was loaded for — leaving the box with a different text
+  // reloads (live: type AVTAR, click outside -> AVTAR's row)
+  const loadedSearchRef = React.useRef('');
   const fetchReport = async () => {
     if (!fromDate || !toDate) return messageToast('error', 'Please select both Dates!', 'all-shift-date');
     if (fromDate > toDate) return messageToast('error', 'From Date cannot be after To Date!', 'all-shift-date');
@@ -132,6 +135,7 @@ export const AllShiftReportPage: React.FC<AllShiftReportPageProps> = ({ onNaviga
       if (dealing) params.append('dealing', dealing);
       if (partyStatus) params.append('partyStatus', partyStatus);
       if (search.trim()) params.append('search', search.trim());
+      loadedSearchRef.current = search.trim();
       const res = await apiRequest<{ rows: PartyRow[]; dealOptions?: string[] }>(`/transactions/all-shift-report?${params.toString()}`);
       setRows(res.data?.rows || []);
       setLoadedRange({ fromDate, toDate });
@@ -170,6 +174,19 @@ export const AllShiftReportPage: React.FC<AllShiftReportPageProps> = ({ onNaviga
     setHasSearched(true);
     fetchReport();
   };
+
+  // ALL PARTY / ACTIVE / INACTIVE (live): picking one reloads the report straight away, with
+  // the spinner on Search, for the dates / agent / deal on screen — no Search click needed.
+  // Only a real change reloads, so the page still opens with an empty table (StrictMode's
+  // double effect run included).
+  const prevPartyStatusRef = React.useRef(partyStatus);
+  useEffect(() => {
+    if (prevPartyStatusRef.current === partyStatus) return;
+    prevPartyStatusRef.current = partyStatus;
+    setHasSearched(true);
+    fetchReport();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [partyStatus]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir(prev => (prev === 'asc' ? 'desc' : 'asc'));
@@ -306,8 +323,15 @@ export const AllShiftReportPage: React.FC<AllShiftReportPageProps> = ({ onNaviga
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            // Clicking outside the box (live) loads the report for the typed party name, the same
+            // as Search — only when the text differs from what the table was loaded for
+            onBlur={() => {
+              if (loading || search.trim() === loadedSearchRef.current) return;
+              setHasSearched(true);
+              fetchReport();
+            }}
             placeholder="SEARCH"
-            className="w-48 px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-900 uppercase placeholder:text-slate-400"
+            className="w-48 px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-900 uppercase placeholder:text-slate-400 focus:outline-none focus:bg-[#fde68a] focus:border-amber-300"
           />
 
           <button type="button" onClick={handleSms} className="ml-auto px-7 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded shadow-xs transition-colors">

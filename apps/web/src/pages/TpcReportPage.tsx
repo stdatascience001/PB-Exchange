@@ -3,6 +3,7 @@ import { ShiftDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { toast } from 'react-toastify';
 import { DateDMYInput } from '../components/DateDMYInput.js';
+import { X } from 'lucide-react';
 
 interface TpcReportPageProps {
   shifts?: ShiftDto[];
@@ -14,6 +15,8 @@ interface TpcRow {
   partyName: string;
   amount: number;
   agentName: string;
+  // the parties whose 3rd Party Comm pays it (Party name click popup)
+  givers?: { partyId: number; partyName: string; agentName: string; amount: number }[];
 }
 
 // Browser-local today (toISOString() is UTC and gave yesterday before 05:30 IST).
@@ -38,6 +41,15 @@ export const TpcReportPage: React.FC<TpcReportPageProps> = () => {
   const [loading, setLoading] = useState(false);
   const [fromDate, setFromDate] = useState(todayInputDate());
   const [toDate, setToDate] = useState(todayInputDate());
+  // Party name click (live): who paid this party its commission
+  const [detailRow, setDetailRow] = useState<TpcRow | null>(null);
+  const detailDownRef = React.useRef(false);
+  useEffect(() => {
+    if (!detailRow) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDetailRow(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [detailRow]);
 
   const fetchList = async () => {
     if (!fromDate || !toDate) return messageToast('Please select both Dates!', 'tpc-date');
@@ -140,7 +152,16 @@ export const TpcReportPage: React.FC<TpcReportPageProps> = () => {
                 list.map((r, idx) => (
                   <tr key={r.partyName} className="hover:bg-slate-50 transition-colors even:bg-slate-50/60">
                     <td className="py-2 px-3 text-slate-600 border-r border-slate-200">{idx + 1}</td>
-                    <td className="py-2 px-3 font-semibold text-slate-700 uppercase border-r border-slate-200">{r.partyName}</td>
+                    <td className="py-2 px-3 font-semibold text-slate-700 uppercase border-r border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => setDetailRow(r)}
+                        title="View the parties that pay this commission"
+                        className="font-semibold uppercase text-slate-700 hover:text-[#1662c6] hover:underline cursor-pointer text-left"
+                      >
+                        {r.partyName}
+                      </button>
+                    </td>
                     <td className="py-2 px-3 text-right font-semibold text-slate-700 border-r border-slate-200">{fmt(r.amount)}</td>
                     <td className="py-2 px-3 font-semibold text-slate-700 uppercase">{r.agentName}</td>
                   </tr>
@@ -160,6 +181,62 @@ export const TpcReportPage: React.FC<TpcReportPageProps> = () => {
           </table>
         </div>
       </div>
+
+      {/* Party name click (live): the parties whose 3rd Party Comm pays this one — Party (the
+          paying ledger), Amount exact as live prints it (10728.900268554688), its Agent;
+          the footer total rounded */}
+      {detailRow && (
+        <div
+          onMouseDown={(e) => { detailDownRef.current = e.target === e.currentTarget; }}
+          onClick={(e) => { if (detailDownRef.current && e.target === e.currentTarget) setDetailRow(null); detailDownRef.current = false; }}
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-start justify-center p-2 sm:p-4 pt-16 z-50 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-4xl overflow-hidden border border-slate-300 max-h-[85vh] flex flex-col">
+            <div className="bg-[#24497e] text-white px-4 py-3 flex items-center justify-between">
+              <h2 className="text-sm sm:text-base font-bold tracking-tight uppercase">{detailRow.partyName}</h2>
+              <button type="button" onClick={() => setDetailRow(null)} className="text-white hover:text-slate-200 p-0.5" title="Close (Esc)">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="overflow-auto p-1">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="sticky top-0">
+                  <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
+                    <th className={`${th} w-12`}>Sr.</th>
+                    <th className={`${th} w-56`}>Party</th>
+                    <th className={`${th} w-32 text-right`}>Amount</th>
+                    <th className="py-2.5 px-3">Agent</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 whitespace-nowrap">
+                  {(detailRow.givers || []).length === 0 ? (
+                    <tr><td colSpan={4} className="py-6 text-center text-slate-400">Record not avaliable!</td></tr>
+                  ) : (
+                    (detailRow.givers || []).map((g, i) => (
+                      <tr key={g.partyId} className="even:bg-slate-50/60">
+                        <td className="py-2 px-3 text-slate-600 border-r border-slate-200">{i + 1}</td>
+                        <td className="py-2 px-3 font-semibold text-slate-700 uppercase border-r border-slate-200">{g.partyName}</td>
+                        <td className="py-2 px-3 text-right font-semibold text-slate-700 border-r border-slate-200">{String(g.amount)}</td>
+                        <td className="py-2 px-3 font-semibold text-slate-700 uppercase">{g.agentName}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+                {(detailRow.givers || []).length > 0 && (
+                  <tfoot>
+                    <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
+                      <td className={th}>{(detailRow.givers || []).length}</td>
+                      <td className={th}>Party</td>
+                      <td className={`${th} text-right`}>{fmt((detailRow.givers || []).reduce((a, g) => a + g.amount, 0))}</td>
+                      <td className="py-2.5 px-3">Agent</td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

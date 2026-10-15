@@ -95,6 +95,43 @@ export class TransactionService {
     return `${num(p.daraRate)}/${comm}-${num(p.akharRate)}/${comm}`;
   }
 
+  // Company ledgers (group "Company", e.g. X RK KHANNA) take the book's lay-off: their slips are
+  // kept as MINUS amounts, so the sale, commission and payout come off the book everywhere
+  // (live Daily Report NEW FARIDABAD 14-10: X RK KHANNA −10600, Comm +1060, O-Dara −150,
+  // Hissa −1980, Debit 1980). The amounts are typed as usual; every other party is unchanged.
+  static isCompanyLedger(p: { groupName?: string | null }): boolean {
+    return (p.groupName || '').trim().toUpperCase() === 'COMPANY';
+  }
+  private static signedAmount(amount: number, isCompany: boolean): number {
+    return isCompany ? -Math.abs(amount) : Math.max(0, amount);
+  }
+
+  // 3rd Party Comm (Ledger → Re-Config → "3rd Party Comm": party, D-Comm %, A-Comm %) is paid
+  // OUT OF the party's own commission: the party keeps Comm% − D-Comm% on its Dara sale and
+  // Comm% − A-Comm% on its Akhar sale, the rest goes to the 3rd party (TPC Report). Live Settling
+  // GARG KUNAL (Comm 10, "ZZ SHANKY HPT" 10/10): Comm column 0, 16820 − 500×90 = −28180; and the
+  // TPC Report pays ZZ SHANKY HPT 16820 × 10% = 1682 from it.
+  static async tpcPctByLedger(ledgerIds?: number[]): Promise<Map<number, { d: number; a: number }>> {
+    const out = new Map<number, { d: number; a: number }>();
+    if (ledgerIds && ledgerIds.length === 0) return out;
+    const conds = [eq(ledgerThirdPartyLinks.linkType, 'TPC')];
+    if (ledgerIds) conds.push(inArray(ledgerThirdPartyLinks.ledgerId, ledgerIds));
+    const rows = await db.select({ ledgerId: ledgerThirdPartyLinks.ledgerId, dComm: ledgerThirdPartyLinks.dComm, aComm: ledgerThirdPartyLinks.aComm })
+      .from(ledgerThirdPartyLinks).where(and(...conds));
+    for (const r of rows) {
+      const cur = out.get(r.ledgerId) || { d: 0, a: 0 };
+      cur.d += parseFloat(r.dComm || '0') || 0;
+      cur.a += parseFloat(r.aComm || '0') || 0;
+      out.set(r.ledgerId, cur);
+    }
+    return out;
+  }
+  // The party's Comm (minus) after its 3rd Party Comm share; no 3rd Party Comm -> as before
+  static partyComm(totalSale: number, dSale: number, aSale: number, commPct: number, tpc?: { d: number; a: number }): number {
+    if (!tpc || (!tpc.d && !tpc.a)) return -(totalSale * commPct / 100);
+    return -((dSale * (commPct - tpc.d) + aSale * (commPct - tpc.a)) / 100);
+  }
+
   static async createTransaction(input: TransactionCreateInput, user: UserSession) {
     // 1. Enforce shift cutoff for this role
     await ShiftService.assertShiftOpenForRole(input.shiftId, user.roleId, user.roleName, user.userId);
@@ -134,7 +171,7 @@ export class TransactionService {
 
     let totalAmount = 0;
     const preparedEntries = input.entries.map((entry) => {
-      const amt = Math.max(0, entry.amount);
+      const amt = this.signedAmount(entry.amount, this.isCompanyLedger(party));
       totalAmount += amt;
       // "9999" / "888" typed as numbers are Andar / Bahar haruf (live panel), so they get the
       // Akhar rate and land in the A / B rows.
@@ -600,7 +637,7 @@ export class TransactionService {
 
     let totalAmount = 0;
     const preparedEntries = entries.map((entry) => {
-      const amt = Math.max(0, entry.amount);
+      const amt = this.signedAmount(entry.amount, this.isCompanyLedger(party));
       totalAmount += amt;
       // "9999" / "888" typed as numbers are Andar / Bahar haruf (live panel), so they get the
       // Akhar rate and land in the A / B rows.
@@ -1532,6 +1569,7 @@ export class TransactionService {
           akharRate: ledgers.akharRate,
           hissaPercentage: ledgers.hissaPercentage,
           commissionRate: ledgers.commissionRate,
+          groupName: ledgers.groupName,
         }).from(ledgers).where(inArray(ledgers.id, partyIds))
       : [];
     const partyById = new Map(partyRows.map(p => [p.id, p]));
@@ -1559,12 +1597,16 @@ export class TransactionService {
     const selfHissaOf = (party: typeof partyRows[number] | undefined): number => {
       if (!party) return 0;
       const ownName = (party.partyName || '').trim().toUpperCase();
-      let self = parseFloat(party.hissaPercentage || '0') || 0;
+      // Re-Config's Self Hissa box and a Hissa Party row naming the party itself are the same
+      // share on live (X RK KHANNA: Self Hissa 50 + "X RK KHANNA 50" -> 50%, not 100%), so the
+      // larger of the two counts — with only one of them set, nothing changes
+      const field = parseFloat(party.hissaPercentage || '0') || 0;
+      let links = 0;
       for (const l of dailyHissaLinks) {
         if (l.ledgerId !== party.id) continue;
-        if ((l.partyName || '').trim().toUpperCase() === ownName) self += parseFloat(l.percent) || 0;
+        if ((l.partyName || '').trim().toUpperCase() === ownName) links += parseFloat(l.percent) || 0;
       }
-      return self;
+      return Math.max(field, links);
     };
 
     // The result of the day being reported: that day's cycle number (a past day must not use
@@ -1601,6 +1643,7 @@ export class TransactionService {
 
     // Book of each party (Sale + Comm − Payout) — the base the Hissa rows to OTHER ledgers
     // (e.g. "50 | HP A/C") are cut from, below
+    const dailyTpc = await TransactionService.tpcPctByLedger(partyIds);
     const bookByParty = new Map<number, number>();
     // Each party's book parts, for the receiver popup's cut list (HP A/C → who was cut, how much)
     const bookPartsByParty = new Map<number, { totalSale: number; comm: number; payout: number }>();
@@ -1613,7 +1656,7 @@ export class TransactionService {
       const party = partyById.get(partyId);
       const commissionRate = parseFloat(party?.commissionRate || '0');
       const hissaPct = selfHissaOf(party);
-      const commExact = -(agg.totalSale * commissionRate / 100);
+      const commExact = TransactionService.partyComm(agg.totalSale, agg.dSale, agg.aSale, commissionRate, dailyTpc.get(partyId));
       // Shown rounded (live ANSHIKA 525 -> −52, HANUMANGARH 7087 -> −709); the book keeps the exact cut
       const comm = Math.round(commExact) + 0;
       // Live: Book = Sale + Comm − Payout (O-Dara + O-Akhar); Hissa = −Book × S-Hissa%;
@@ -1628,16 +1671,18 @@ export class TransactionService {
       const hissa = roundHalfUp(-(book * hissaPct / 100));
       const closing = roundAway(book * (100 - hissaPct) / 100);
 
+      // A Company ledger's row (live): Agent NA, Rate blank, S-Hissa 0 — its Hissa still applies
+      const isCompany = !!party && TransactionService.isCompanyLedger(party);
       return {
         partyId,
         partyName: party?.partyName || 'UNKNOWN',
         agentId: party?.agentId ?? null,
-        agentName: party?.agentId ? (agentNameById.get(party.agentId) || '-') : '-',
+        agentName: party?.agentId ? (agentNameById.get(party.agentId) || '-') : (isCompany ? 'NA' : '-'),
         cap: parseFloat(party?.capping || '0'),
         // Rate / commission, as live: "90/10-9/10", RAM HBD (no commission) "100/0-10/0",
         // VINAY KAMAL HBD "95/5-9.5/5" (decimals kept)
-        rate: party ? TransactionService.partyRateStr(party) : '0/0-0/0',
-        sHissa: hissaPct,
+        rate: isCompany ? '' : (party ? TransactionService.partyRateStr(party) : '0/0-0/0'),
+        sHissa: isCompany ? 0 : hissaPct,
         totalSale: agg.totalSale,
         dSale: agg.dSale,
         aSale: agg.aSale,
@@ -1866,11 +1911,35 @@ export class TransactionService {
     const partyRows = partyIds.length > 0
       ? await db.select({
           id: ledgers.id,
+          partyName: ledgers.partyName,
           hissaPercentage: ledgers.hissaPercentage,
           commissionRate: ledgers.commissionRate,
+          akharRate: ledgers.akharRate,
         }).from(ledgers).where(inArray(ledgers.id, partyIds))
       : [];
     const partyById = new Map(partyRows.map(p => [p.id, p]));
+
+    // Hissa Party rows (Ledger → Re-Config): the party's own share (S-Hissa — the larger of the
+    // Self Hissa box and the rows naming the party itself) and every share cut to another ledger
+    // (HP A/C, ZZ ASLAM 40 …), the same Hissa the Daily Report's Master Total adds up per day.
+    const plHissaLinks = partyIds.length > 0
+      ? await db.select({ ledgerId: ledgerThirdPartyLinks.ledgerId, partyName: ledgerThirdPartyLinks.partyName, percent: ledgerThirdPartyLinks.percent })
+          .from(ledgerThirdPartyLinks)
+          .where(and(eq(ledgerThirdPartyLinks.linkType, 'HISSA'), inArray(ledgerThirdPartyLinks.ledgerId, partyIds)))
+      : [];
+    const hissaSplitByParty = new Map<number, { self: number; others: number[] }>();
+    for (const p of partyRows) {
+      const own = (p.partyName || '').trim().toUpperCase();
+      let selfLinks = 0;
+      const others: number[] = [];
+      for (const l of plHissaLinks) {
+        if (l.ledgerId !== p.id) continue;
+        const pct = parseFloat(l.percent) || 0;
+        if ((l.partyName || '').trim().toUpperCase() === own) selfLinks += pct;
+        else others.push(pct);
+      }
+      hissaSplitByParty.set(p.id, { self: Math.max(parseFloat(p.hissaPercentage || '0') || 0, selfLinks), others });
+    }
 
     // TPC links (Ledger → Hissa/TPC tab): a party's D-Comm% / A-Comm% paid out to a third
     // party — same source the TPC Report sums, shown here as a cost (negative).
@@ -1911,15 +1980,28 @@ export class TransactionService {
 
       for (const e of entriesByTx.get(tx.id) || []) {
         const amt = parseFloat(e.amount);
-        const rate = parseFloat(e.rate);
-        if (e.entryType === 'DARA') {
+        let rate = parseFloat(e.rate);
+        // Older slips saved haruf as a "number": 4 of the same digit (5555) is Andar 5, 3 (555)
+        // is Bahar 5 — Akhar sale at the party's Akhar rate, as every slip page shows them
+        let entryType = e.entryType;
+        let numberValue = e.numberValue;
+        if (entryType === 'DARA') {
+          const v = (numberValue || '').trim();
+          const legacy = /^(\d){3}$/.test(v) ? 'HARUF_ANDAR' : /^(\d){2}$/.test(v) ? 'HARUF_BAHAR' : null;
+          if (legacy) {
+            entryType = legacy;
+            numberValue = v[0];
+            rate = parseFloat(partyById.get(tx.partyId)?.akharRate || String(rate)) || rate;
+          }
+        }
+        if (entryType === 'DARA') {
           agg.dSale += amt;
-          if (declaredNumber && e.numberValue === declaredNumber) { agg.oDara += amt; agg.payout += amt * rate; }
+          if (declaredNumber && numberValue === declaredNumber) { agg.oDara += amt; agg.payout += amt * rate; }
         } else {
           agg.aSale += amt;
           if (declaredNumber) {
-            if (e.entryType === 'HARUF_ANDAR' && e.numberValue === tensDigit) { agg.oAkhar += amt; agg.payout += amt * rate; }
-            else if (e.entryType === 'HARUF_BAHAR' && e.numberValue === unitsDigit) { agg.oAkhar += amt; agg.payout += amt * rate; }
+            if (entryType === 'HARUF_ANDAR' && numberValue === tensDigit) { agg.oAkhar += amt; agg.payout += amt * rate; }
+            else if (entryType === 'HARUF_BAHAR' && numberValue === unitsDigit) { agg.oAkhar += amt; agg.payout += amt * rate; }
           }
         }
       }
@@ -1935,10 +2017,13 @@ export class TransactionService {
       const partyId = parseInt(key.split(':')[1], 10);
       const party = partyById.get(partyId);
       const commissionRate = parseFloat(party?.commissionRate || '0');
-      const hissaPct = parseFloat(party?.hissaPercentage || '0');
       const comm = -(agg.totalSale * commissionRate / 100);
       const book = agg.totalSale + comm - agg.payout;
-      const hissa = -(book * hissaPct / 100);
+      // Hissa = own share + every share cut to another ledger, each taken from what is left after
+      // the party's S-Hissa — the Daily Report's per-day Hissa (live HYDRABAD 13-10: SHERA BHARAT
+      // S-Hissa 30, "HP A/C 20": 594 × 30% + 594 × 0.7 × 20% = 178.2 + 83.2)
+      const split = hissaSplitByParty.get(partyId) || { self: 0, others: [] };
+      const hissa = -(book * split.self / 100) - split.others.reduce((sum, pct) => sum + book * (1 - split.self / 100) * pct / 100, 0);
       const tpcPct = tpcPctByParty.get(partyId);
       const tpc = tpcPct ? -(agg.dSale * tpcPct.d / 100 + agg.aSale * tpcPct.a / 100) : 0;
 
@@ -2292,6 +2377,7 @@ export class TransactionService {
 
     // Comm / Book / Hissa / TPC per ledger from a game aggregate (see the comment above)
     type Game = Awaited<ReturnType<typeof TransactionService.allShiftGame>>;
+    const allShiftTpc = await TransactionService.tpcPctByLedger();
     const tProfitOf = (game: Game) => {
       const out = new Map<number, { comm: number; book: number; hissa: number; tpc: number }>();
       const get = (id: number) => {
@@ -2301,11 +2387,23 @@ export class TransactionService {
       };
       for (const [id, a] of game) {
         const l = ledgerById.get(id);
-        const comm = -(a.totalSale * parseFloat(l?.commissionRate || '0') / 100);
+        const comm = TransactionService.partyComm(a.totalSale, a.dSale, a.aSale, parseFloat(l?.commissionRate || '0'), allShiftTpc.get(id));
         const o = get(id);
         o.comm = comm;
         o.book = a.totalSale + comm - a.payout;
-        o.hissa += -(o.book * parseFloat(l?.hissaPercentage || '0') / 100);
+      }
+      // Self share: the larger of Re-Config's Self Hissa box and the Hissa Party rows naming the
+      // party itself (the same share on live — see getDailyReport)
+      const selfLinkPct = new Map<number, number>();
+      for (const k2 of links) {
+        if (k2.linkType !== 'HISSA') continue;
+        const own = (ledgerById.get(k2.ledgerId)?.partyName || '').trim().toUpperCase();
+        if ((k2.partyName || '').trim().toUpperCase() === own) selfLinkPct.set(k2.ledgerId, (selfLinkPct.get(k2.ledgerId) || 0) + (parseFloat(k2.percent) || 0));
+      }
+      for (const [id] of game) {
+        const o = get(id);
+        const selfPct = Math.max(parseFloat(ledgerById.get(id)?.hissaPercentage || '0') || 0, selfLinkPct.get(id) || 0);
+        o.hissa += -(o.book * selfPct / 100);
       }
       for (const k of links) {
         const giver = game.get(k.ledgerId);
@@ -2317,7 +2415,7 @@ export class TransactionService {
           const book = out.get(k.ledgerId)?.book || 0;
           if (!pct || !book) continue;
           if (name === ownName) {
-            get(k.ledgerId).hissa += -(book * pct / 100);
+            continue; // counted above as the self share
           } else if (name !== TransactionService.HP_ACCOUNT) {
             const receiverId = idByName.get(name);
             if (receiverId) get(receiverId).hissa += -(book * pct / 100);
@@ -2480,8 +2578,10 @@ export class TransactionService {
       .from(ledgerThirdPartyLinks)
       .where(and(eq(ledgerThirdPartyLinks.linkType, 'HISSA'), eq(ledgerThirdPartyLinks.ledgerId, party.id)));
     const ownName = (party.partyName || '').trim().toUpperCase();
-    let sHissa = parseFloat(party.hissaPercentage || '0') || 0;
-    for (const l of ownLinks) if ((l.partyName || '').trim().toUpperCase() === ownName) sHissa += parseFloat(l.percent) || 0;
+    // the larger of Self Hissa and the Hissa Party rows naming the party itself (see getDailyReport)
+    let selfLinks = 0;
+    for (const l of ownLinks) if ((l.partyName || '').trim().toUpperCase() === ownName) selfLinks += parseFloat(l.percent) || 0;
+    const sHissa = Math.max(parseFloat(party.hissaPercentage || '0') || 0, selfLinks);
     const commPct = parseFloat(party.commissionRate || '0') || 0;
     const rate = `${Math.round(parseFloat(party.daraRate || '0'))}/${Math.round(commPct)}-${Math.round(parseFloat(party.akharRate || '0'))}/${Math.round(commPct)}`;
 
@@ -2519,12 +2619,13 @@ export class TransactionService {
       GROUP BY x.shift_id
     `;
     const entryByShift = new Map(entryRows.map(r => [r.shift_id, r]));
+    const partyTpc = await TransactionService.tpcPctByLedger([party.id]);
 
     const roundAway = (v: number) => Math.sign(v) * Math.round(Math.abs(v)) + 0;
     const rows = saleRows.map(r => {
       const e = entryByShift.get(r.shift_id);
       const totalSale = parseFloat(r.sale) || 0;
-      const commExact = -(totalSale * commPct / 100);
+      const commExact = TransactionService.partyComm(totalSale, parseFloat(e?.d_sale || '0') || 0, parseFloat(e?.a_sale || '0') || 0, commPct, partyTpc.get(party.id));
       const payout = parseFloat(e?.payout || '0') || 0;
       const book = totalSale + commExact - payout;
       const closing = roundAway(book * (100 - sHissa) / 100);
@@ -2584,6 +2685,7 @@ export class TransactionService {
   //   Row per receiving party = Σ its links; Agent = the receiving party's own agent.
   static async getTpcReport(filters: { fromDate: string; toDate: string }) {
     const links = await db.select({
+      id: ledgerThirdPartyLinks.id,
       ledgerId: ledgerThirdPartyLinks.ledgerId,
       partyName: ledgerThirdPartyLinks.partyName,
       dComm: ledgerThirdPartyLinks.dComm,
@@ -2591,7 +2693,8 @@ export class TransactionService {
     })
       .from(ledgerThirdPartyLinks)
       .innerJoin(ledgers, eq(ledgerThirdPartyLinks.ledgerId, ledgers.id))
-      .where(and(eq(ledgerThirdPartyLinks.linkType, 'TPC'), isNull(ledgers.deletedAt)));
+      .where(and(eq(ledgerThirdPartyLinks.linkType, 'TPC'), isNull(ledgers.deletedAt)))
+      .orderBy(asc(ledgerThirdPartyLinks.id));
     if (links.length === 0) return { rows: [] };
 
     const sourceIds = Array.from(new Set(links.map(l => l.ledgerId)));
@@ -2611,15 +2714,30 @@ export class TransactionService {
       .groupBy(transactions.partyId);
     const saleByLedger = new Map(sales.map(s => [s.partyId, { d: parseFloat(s.dSale), a: parseFloat(s.aSale) }]));
 
-    const byReceiver = new Map<string, { partyName: string; amount: number }>();
+    // The giving parties (click on a row, live): their names and agents
+    const giverRows = await db.select({ id: ledgers.id, partyName: ledgers.partyName, agentName: agents.agentName })
+      .from(ledgers)
+      .leftJoin(agents, eq(ledgers.agentId, agents.id))
+      .where(inArray(ledgers.id, sourceIds));
+    const giverById = new Map(giverRows.map(g => [g.id, g]));
+
+    // Receivers in the order their 3rd Party Comm rows were set up (live lists ZZ HARRY OJLA,
+    // ZZ SHANKY HPT, ZZ HARRY TULSIDAS … — not A-Z), each with the parties that paid it
+    type Giver = { partyId: number; partyName: string; agentName: string; amount: number };
+    const byReceiver = new Map<string, { partyName: string; amount: number; givers: Giver[] }>();
     for (const l of links) {
       const sale = saleByLedger.get(l.ledgerId);
       if (!sale) continue;
       const amount = sale.d * parseFloat(l.dComm || '0') / 100 + sale.a * parseFloat(l.aComm || '0') / 100;
       if (!amount) continue;
       const key = l.partyName.trim().toUpperCase();
-      if (!byReceiver.has(key)) byReceiver.set(key, { partyName: l.partyName.trim(), amount: 0 });
-      byReceiver.get(key)!.amount += amount;
+      if (!byReceiver.has(key)) byReceiver.set(key, { partyName: l.partyName.trim(), amount: 0, givers: [] });
+      const rec = byReceiver.get(key)!;
+      rec.amount += amount;
+      const g = giverById.get(l.ledgerId);
+      const prev = rec.givers.find(x => x.partyId === l.ledgerId);
+      if (prev) prev.amount += amount;
+      else rec.givers.push({ partyId: l.ledgerId, partyName: g?.partyName || '-', agentName: g?.agentName || '-', amount });
     }
     if (byReceiver.size === 0) return { rows: [] };
 
@@ -2631,8 +2749,7 @@ export class TransactionService {
     const agentByName = new Map(receiverLedgers.map(r => [r.partyName.toUpperCase(), r.agentName || '-']));
 
     const rows = Array.from(byReceiver.entries())
-      .map(([key, r]) => ({ partyName: r.partyName, amount: r.amount, agentName: agentByName.get(key) || '-' }))
-      .sort((a, b) => a.partyName.localeCompare(b.partyName));
+      .map(([key, r]) => ({ partyName: r.partyName, amount: r.amount, agentName: agentByName.get(key) || '-', givers: r.givers }));
     return { rows };
   }
 
@@ -3714,10 +3831,19 @@ export class TransactionService {
     // day regardless of the server's local timezone offset.
     const dayBefore = new Date(`${filters.fromDate}T00:00:00Z`);
     dayBefore.setUTCDate(dayBefore.getUTCDate() - 1);
-    const openingBalances = await VoucherService.getLedgerBalances({ toDate: dayBefore.toISOString().slice(0, 10) });
-    // Live sign: positive = Dr (party owes), negative = Cr — "Balance: 592278 Cr" for a
-    // -592279 row. getLedgerBalances is Cr − Dr, so it's flipped here.
-    let runningBalance = -(openingBalances.find(b => b.ledgerId === filters.partyId)?.balance || 0);
+    void dayBefore;
+    // OP-Bal on From = the party's balance up to the day before: every earlier voucher (LIMIT
+    // vouchers are the credit limit, not money) plus every earlier day's game result — the same
+    // Opening the All Shift Report shows for the party (positive = Dr, the party owes).
+    const allShift = await this.getAllShiftReport({ fromDate: filters.fromDate, toDate: filters.toDate });
+    let runningBalance = allShift.rows.find(r => r.partyId === filters.partyId)?.opening || 0;
+    // Live "Limit: 141725 Dr": the party's LIMIT vouchers up to To (Dr − Cr)
+    const [limitRow] = await pgSql<Array<{ net: string | null }>>`
+      SELECT SUM(CASE WHEN e.entry_side = 'DR' THEN e.amount ELSE -e.amount END) AS net
+      FROM voucher_entries e JOIN vouchers v ON v.id = e.voucher_id
+      WHERE e.ledger_id = ${filters.partyId} AND v.voucher_type = 'LIMIT' AND v.created_at::date <= ${filters.toDate}::date
+    `;
+    const limitBalance = parseFloat(limitRow?.net || '0') || 0;
 
     // day: the slip's date as stored (wall clock) — createdAt.toISOString() is UTC and put
     // slips made before 05:30 IST on the previous day.
@@ -3746,9 +3872,26 @@ export class TransactionService {
 
     const shiftIds = Array.from(new Set(txRows.map(t => t.shiftId)));
     const shiftRows = shiftIds.length > 0
-      ? await db.select({ id: shifts.id, declaredNumber: shifts.declaredNumber }).from(shifts).where(inArray(shifts.id, shiftIds))
+      ? await db.select({ id: shifts.id, declaredNumber: shifts.declaredNumber, openDate: shifts.openDate }).from(shifts).where(inArray(shifts.id, shiftIds))
       : [];
-    const declaredByShift = new Map(shiftRows.map(s => [s.id, s.declaredNumber ? s.declaredNumber.padStart(2, '0') : null]));
+    // Each day is judged on that day's own result (its cycle's number; the shift's current number
+    // only for its open day) — a past day must not use today's result.
+    const cycleRows = shiftIds.length > 0
+      ? await db.select({ shiftId: shiftCycles.shiftId, cycleDate: shiftCycles.cycleDate, status: shiftCycles.status, declaredNumber: shiftCycles.declaredNumber })
+          .from(shiftCycles).where(inArray(shiftCycles.shiftId, shiftIds))
+      : [];
+    const cycleResult = new Map<string, string | null>();
+    for (const c of cycleRows) {
+      const n = (c.status === 'DECLARED' || c.status === 'AUDITED' || c.declaredNumber) ? c.declaredNumber : null;
+      cycleResult.set(`${c.shiftId}|${c.cycleDate}`, n ? n.padStart(2, '0') : null);
+    }
+    const shiftById = new Map(shiftRows.map(s => [s.id, s]));
+    const declaredFor = (shiftId: number, day: string): string | null => {
+      const key = `${shiftId}|${day}`;
+      if (cycleResult.has(key) && cycleResult.get(key)) return cycleResult.get(key)!;
+      const sh = shiftById.get(shiftId);
+      return sh && sh.openDate === day && sh.declaredNumber ? sh.declaredNumber.padStart(2, '0') : null;
+    };
 
     const settleEntries = await db.select({
       entrySide: voucherEntries.entrySide,
@@ -3765,7 +3908,16 @@ export class TransactionService {
       ));
 
     const commissionRate = parseFloat(party.commissionRate);
-    const hissaPct = parseFloat(party.hissaPercentage);
+    const settlingTpc = await TransactionService.tpcPctByLedger([party.id]);
+    // S-Hissa: the larger of Re-Config's Self Hissa and the Hissa Party rows naming the party
+    // itself (live DK ROHIT 20%: "DK ROHIT 20% 20" -> 105900 − 10590 − 300×90 = 68310, Hissa −13662)
+    const selfLinks = await db.select({ partyName: ledgerThirdPartyLinks.partyName, percent: ledgerThirdPartyLinks.percent })
+      .from(ledgerThirdPartyLinks)
+      .where(and(eq(ledgerThirdPartyLinks.linkType, 'HISSA'), eq(ledgerThirdPartyLinks.ledgerId, party.id)));
+    const ownName = (party.partyName || '').trim().toUpperCase();
+    const selfLinkPct = selfLinks.filter(l => (l.partyName || '').trim().toUpperCase() === ownName)
+      .reduce((a, l) => a + (parseFloat(l.percent) || 0), 0);
+    const hissaPct = Math.max(parseFloat(party.hissaPercentage) || 0, selfLinkPct);
 
     const days: string[] = [];
     const cursor = new Date(`${filters.fromDate}T00:00:00Z`);
@@ -3782,7 +3934,7 @@ export class TransactionService {
 
       for (const tx of dayTx) {
         totalSale += parseFloat(tx.totalAmount);
-        const declaredNumber = declaredByShift.get(tx.shiftId);
+        const declaredNumber = declaredFor(tx.shiftId, day);
         const tensDigit = declaredNumber?.[0];
         const unitsDigit = declaredNumber?.[1];
         for (const e of entriesByTx.get(tx.id) || []) {
@@ -3803,16 +3955,18 @@ export class TransactionService {
 
       // Checked against the live row: 171650 sale, Comm −17165, D-Open 1900 (×90 = 171000)
       // → book −16515, Hissa 20% = +3303, P&L −13212, Balance −579067 − 13212 = −592279.
-      const comm = -(totalSale * commissionRate / 100);
+      const comm = TransactionService.partyComm(totalSale, dSale, aSale, commissionRate, settlingTpc.get(party.id));
       const book = totalSale + comm - payout;
-      const hissa = -(book * hissaPct / 100);
+      const hissa = -(book * hissaPct / 100) + 0;
       const pnl = book + hissa;
 
+      // Payment as live shows it, Dr − Cr: money the party paid in is minus and brings the
+      // balance down (live DAKSH JAI LUXMI 13-10: 43825 + 3277 + (−50000) = −2898)
       const dayPayments = settleEntries.filter(s => s.day === day);
-      const payment = dayPayments.reduce((sum, s) => sum + (s.entrySide === 'CR' ? parseFloat(s.amount) : -parseFloat(s.amount)), 0);
+      const payment = dayPayments.reduce((sum, s) => sum + (s.entrySide === 'DR' ? parseFloat(s.amount) : -parseFloat(s.amount)), 0) + 0;
 
       const opBal = runningBalance;
-      const balance = opBal + pnl - payment;
+      const balance = opBal + pnl + payment;
       runningBalance = balance;
 
       return {
@@ -3834,14 +3988,21 @@ export class TransactionService {
       };
     });
 
+    // Live lists only the days the party played or paid (DAKSH JAI LUXMI: no 02-10 row); the
+    // balance still runs through every day (an empty day changes nothing)
+    const shownRows = rows.filter(r => r.totalSale !== 0 || r.payment !== 0);
+
     return {
       partyId: party.id,
       partyName: party.partyName,
       agentName,
       rate: rateStr,
-      limit: parseFloat(party.betLimit),
+      // Live "Limit": the balance with the party's LIMIT vouchers on top — DAKSH JAI LUXMI (no
+      // LIMIT voucher) Limit 3351 Cr = Balance 3351 Cr; DK ROHIT 20% Balance 225725 Dr, Limit 141725 Dr
+      limit: runningBalance + limitBalance,
+      betLimit: parseFloat(party.betLimit),
       balance: runningBalance,
-      rows,
+      rows: shownRows,
     };
   }
 }
