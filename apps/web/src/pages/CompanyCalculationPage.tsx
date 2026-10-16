@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { ShiftDto, JantriViewDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
+import { declaredCellKeys, useDeclaredNumber, hlCls } from '../utils/declaredHighlight.js';
 import { ArrowLeft, RotateCw } from 'lucide-react';
 import { toast } from 'react-toastify';
 
@@ -46,7 +47,9 @@ const JantriPanel: React.FC<{
   noTotals?: boolean;
   signed?: boolean;
   headerAction?: React.ReactNode;
-}> = ({ title, getValue, editable = false, onEdit, noTotals = false, signed = false, headerAction }) => {
+  // declared number + haruf cells, shown in green
+  hl?: Set<string>;
+}> = ({ title, getValue, editable = false, onEdit, noTotals = false, signed = false, headerAction, hl }) => {
   const sum = (keys: CellKey[]): number => (noTotals ? 0 : keys.reduce<number>((s, k) => s + getValue(k), 0));
   const rowKeys = (r: number) => Array.from({ length: 10 }, (_, c) => r * 10 + c + 1);
   const colKeys = (c: number) => Array.from({ length: 10 }, (_, r) => r * 10 + c);
@@ -58,7 +61,7 @@ const JantriPanel: React.FC<{
   const cell = (key: CellKey, label: string) => {
     const val = getValue(key);
     return (
-      <td key={String(key)} className="relative h-[22px] border border-[#1f3558] bg-white text-right px-1 align-bottom">
+      <td key={String(key)} className={hlCls(hl || new Set<string>(), key, "relative h-[22px] border border-[#1f3558] bg-white text-right px-1 align-bottom")}>
         <span className="absolute top-0 left-0 text-[7px] font-bold px-[2px] bg-[#fef9c3] text-[#854d0e] leading-tight">{label}</span>
         {editable ? (
           <input
@@ -162,6 +165,8 @@ export const CompanyCalculationPage: React.FC<CompanyCalculationPageProps> = ({ 
     [shifts]
   );
   const selectedShift = shiftOptions.find(s => s.id === activeShift?.id) || shiftOptions[0] || null;
+  // declared number + its Andar / Bahar haruf shown in green on every panel
+  const declaredKeys = declaredCellKeys(useDeclaredNumber(selectedShift?.id, fromDate));
 
   // Fall back to the first active shift when the app-wide selection is an inactive one.
   useEffect(() => {
@@ -386,6 +391,7 @@ export const CompanyCalculationPage: React.FC<CompanyCalculationPageProps> = ({ 
             <div className="flex-1 overflow-y-auto p-1.5 space-y-1.5">
               <div className="flex flex-col xl:flex-row gap-1.5">
                 <JantriPanel
+                  hl={declaredKeys}
                   title="MAIN JANTRI - EDIT MODE"
                   getValue={getEdit}
                   editable
@@ -401,11 +407,11 @@ export const CompanyCalculationPage: React.FC<CompanyCalculationPageProps> = ({ 
                     </button>
                   }
                 />
-                <JantriPanel title="MAIN JANTRI - PROFIT & LOSS" getValue={getProfitLoss} noTotals signed />
+                <JantriPanel hl={declaredKeys} title="MAIN JANTRI - PROFIT & LOSS" getValue={getProfitLoss} noTotals signed />
               </div>
               <div className="flex flex-col xl:flex-row gap-1.5">
-                <JantriPanel title="MAIN JANTRI - DEFAULT" getValue={getDefault} />
-                <JantriPanel title="MAIN JANTRI - DIFFRANCE" getValue={getDifference} signed />
+                <JantriPanel hl={declaredKeys} title="MAIN JANTRI - DEFAULT" getValue={getDefault} />
+                <JantriPanel hl={declaredKeys} title="MAIN JANTRI - DIFFRANCE" getValue={getDifference} signed />
               </div>
             </div>
 

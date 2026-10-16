@@ -13,6 +13,9 @@ export interface TransactionCreateInput {
   partyId: number;
   idempotencyKey?: string;
   entries: TransactionEntryInput[];
+  // ms from the moment the slip was started on the Add page to Save — kept as started_at for the
+  // Productivity Report (Start Time / Time Taken / Free Time). Optional; absent = started on save.
+  elapsedMs?: number;
 }
 
 export interface TransactionEntryDto {

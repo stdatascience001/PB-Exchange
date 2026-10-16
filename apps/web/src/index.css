@@ -69,3 +69,9 @@
   -webkit-appearance: none;
   margin: 0;
 }
+
+/* Declared result cell in a jantri grid (number + its Andar / Bahar haruf), shown in green */
+td.hl-declared { background-color: #16a34a !important; }
+td.hl-declared > span:not(:first-child),
+td.hl-declared > span:not(:first-child) *,
+td.hl-declared input { color: #fff !important; }

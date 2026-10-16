@@ -74,6 +74,8 @@ export const VapsiVoucherPage: React.FC = () => {
   const [fromMonth, setFromMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
   const [fromYear, setFromYear] = useState(new Date().getFullYear());
   const [pnl, setPnl] = useState('');
+  // The month P&L before Hawa Patti (summary pnl) — the Vapsi Report's Base-Amt
+  const [basePnl, setBasePnl] = useState<number | null>(null);
   const [payment, setPayment] = useState('');
   const [vapsiPercent, setVapsiPercent] = useState('');
   const [vapsiOn, setVapsiOn] = useState<'PL' | 'PAYMENT'>('PL');
@@ -255,6 +257,7 @@ export const VapsiVoucherPage: React.FC = () => {
         const r = res.data?.rows?.[0];
         if (cancelled) return;
         setPnl(r ? String(Math.round(r.finalPl * 100) / 100) : '0');
+        setBasePnl(r ? r.pnl : null);
         setPayment(r ? String(Math.round(r.payment * 100) / 100) : '0');
         setVapsiPercent(r ? String(r.vapsiPct) : '');
         setThirdParties((r?.thirdParties || [])
@@ -327,7 +330,10 @@ export const VapsiVoucherPage: React.FC = () => {
             items: [{
               partyId,
               amount: amt > 0 ? amt : 0,
-              thirdParties: thirdParties.map(t => ({ ledgerId: t.ledgerId, amount: thirdPartyAmount(t.vapsiPercent) })),
+              // Base-Amt / Vapsi-% kept with each line for the Vapsi Report
+              baseAmt: vapsiOn === 'PL' ? (basePnl ?? (parseFloat(pnl) || 0)) : (parseFloat(payment) || 0),
+              vapsiPct: parseFloat(vapsiPercent) || 0,
+              thirdParties: thirdParties.map(t => ({ ledgerId: t.ledgerId, amount: thirdPartyAmount(t.vapsiPercent), percent: parseFloat(t.vapsiPercent) || 0 })),
             }],
           }),
         });

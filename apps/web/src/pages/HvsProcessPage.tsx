@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { apiRequest } from '../api/client.js';
 import { ArrowLeft } from 'lucide-react';
+import { toast } from 'react-toastify';
+import { DateDMYInput } from '../components/DateDMYInput.js';
 
 interface HvsProcessPageProps {
   onNavigate?: (page: string) => void;
@@ -11,21 +13,41 @@ interface AgentDto {
   agentName: string;
 }
 
+// GET /transactions/hvs-process (TransactionService.getHvsProcessData) — live 11 columns:
+// P&L, HP-Amt, Vapsi-Amt, Total = HP + Vapsi, Closing (month-end balance, Dr − Cr),
+// T-Settle-Amt = Closing − Total
 interface HvsRow {
   partyId: number;
   partyName: string;
   agentName: string;
   mobile: string;
   pnl: number;
+  hpAmt: number;
+  vapsiAmt: number;
   total: number;
   closing: number;
   tSettleAmt: number;
 }
 
 const CALENDAR_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+// Live Year list: 2020 up to next year
+const HVS_YEARS = Array.from({ length: new Date().getFullYear() + 1 - 2020 + 1 }, (_, i) => 2020 + i);
 const MONTH_INDEX: Record<string, number> = { January: 0, February: 1, March: 2, April: 3, May: 4, June: 5, July: 6, August: 7, September: 8, October: 9, November: 10, December: 11 };
-const todayInputDate = () => new Date().toISOString().slice(0, 10);
-const fmt = (n: number) => Math.round(Math.abs(n || 0)).toLocaleString('en-IN');
+// Browser-local today (toISOString() is UTC and gave yesterday before 05:30 IST)
+const todayInputDate = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+// Whole numbers without grouping, signed, as the live page prints them (11751, 208054)
+const fmt = (n: number) => String(Math.round(n || 0) + 0);
+const notify = (kind: 'success' | 'error', text: string, toastId?: string) =>
+  toast[kind](
+    <div>
+      <div className="font-bold text-base">{kind === 'error' ? 'Error' : 'Message'}</div>
+      <div className="text-sm mt-0.5">{text}</div>
+    </div>,
+    toastId ? { toastId } : undefined
+  );
 
 function monthRange(month: string, year: number) {
   const m = MONTH_INDEX[month] ?? new Date().getMonth();
@@ -37,15 +59,22 @@ function monthRange(month: string, year: number) {
 export const HvsProcessPage: React.FC<HvsProcessPageProps> = ({ onNavigate }) => {
   const now = new Date();
   const [month, setMonth] = useState(CALENDAR_MONTHS[now.getMonth()]);
-  const [year, setYear] = useState(now.getFullYear());
+  // Year opens on the list's first year (2020), as the live page does
+  const [year, setYear] = useState(HVS_YEARS[0]);
   const [agents, setAgents] = useState<AgentDto[]>([]);
   const [agentId, setAgentId] = useState<number | ''>('');
-  const [rows, setRows] = useState<HvsRow[]>([]);
+  // every row Load Data returned; `rows` below is what the Party filter leaves of them
+  const [allRows, setRows] = useState<HvsRow[]>([]);
   const [checked, setChecked] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [processDate, setProcessDate] = useState(todayInputDate());
   const [processing, setProcessing] = useState(false);
+  // Only the latest Load Data may fill the table (Month / Agent switched while one is loading)
+  const reqRef = useRef(0);
+
+  // the loaded rows (the live page has no Party filter on top of them)
+  const rows = allRows;
 
   useEffect(() => {
     (async () => {
@@ -71,21 +100,36 @@ export const HvsProcessPage: React.FC<HvsProcessPageProps> = ({ onNavigate }) =>
 
   const handleLoadData = async () => {
     if (loading) return;
+    const reqId = ++reqRef.current;
     setLoading(true);
     try {
       const { fromDate, toDate } = monthRange(month, year);
       const params = new URLSearchParams({ fromDate, toDate });
       if (agentId) params.append('agentId', String(agentId));
       const res = await apiRequest<HvsRow[]>(`/transactions/hvs-process?${params.toString()}`);
-      if (res.data) setRows(res.data);
+      if (reqId !== reqRef.current) return;
+      setRows(res.data || []);
       setChecked(new Set());
       setLoaded(true);
-    } catch (err) {
+      if (!res.data || res.data.length === 0) notify('error', 'Record not avaliable!', 'hvs-empty');
+    } catch (err: any) {
+      if (reqId !== reqRef.current) return;
       console.warn('Failed to load HVS process data:', err);
+      notify('error', err?.message || 'Failed to load HVS data', 'hvs-load');
     } finally {
-      setLoading(false);
+      if (reqId === reqRef.current) setLoading(false);
     }
   };
+
+  // Footer sums (live: count, P&L, HP-Amt, Vapsi-Amt, Total, Closing, T-Settle-Amt)
+  const totals = useMemo(() => rows.reduce((t, r) => ({
+    pnl: t.pnl + r.pnl,
+    hpAmt: t.hpAmt + r.hpAmt,
+    vapsiAmt: t.vapsiAmt + r.vapsiAmt,
+    total: t.total + r.total,
+    closing: t.closing + r.closing,
+    tSettleAmt: t.tSettleAmt + r.tSettleAmt,
+  }), { pnl: 0, hpAmt: 0, vapsiAmt: 0, total: 0, closing: 0, tSettleAmt: 0 }), [rows]);
 
   const toggleCheck = (partyId: number) => {
     setChecked(prev => {
@@ -106,8 +150,9 @@ export const HvsProcessPage: React.FC<HvsProcessPageProps> = ({ onNavigate }) =>
       return;
     }
     const csvContent = 'data:text/csv;charset=utf-8,' +
-      ['Party,Agent,Mobile,P&L,Total,Closing,T-Settle-Amt'].concat(
-        rows.map(r => `"${r.partyName}","${r.agentName}","${r.mobile}",${r.pnl},${r.total},${r.closing},${r.tSettleAmt}`)
+      ['SR,Party Name,Agent,Mobile,P&L,HP-Amt,Vapsi-Amt,Total,Closing,T-Settle-Amt'].concat(
+        rows.map((r, i) => `${i + 1},"${r.partyName}","${r.agentName}","${r.mobile}",${fmt(r.pnl)},${fmt(r.hpAmt)},${fmt(r.vapsiAmt)},${fmt(r.total)},${fmt(r.closing)},${fmt(r.tSettleAmt)}`),
+        [`${rows.length},,,,${fmt(totals.pnl)},${fmt(totals.hpAmt)},${fmt(totals.vapsiAmt)},${fmt(totals.total)},${fmt(totals.closing)},${fmt(totals.tSettleAmt)}`]
       ).join('\n');
     const link = document.createElement('a');
     link.setAttribute('href', encodeURI(csvContent));
@@ -117,35 +162,39 @@ export const HvsProcessPage: React.FC<HvsProcessPageProps> = ({ onNavigate }) =>
     document.body.removeChild(link);
   };
 
+  // Go-Process: every checked party's T-Settle-Amt posted as one settlement entry, all in a
+  // single database transaction (POST /transactions/hvs-process) — every entry or none
   const handleGoProcess = async () => {
-    const targets = rows.filter(r => checked.has(r.partyId) && r.closing !== 0);
+    if (processing) return;
+    const targets = rows.filter(r => checked.has(r.partyId) && Math.round(r.tSettleAmt) !== 0);
     if (targets.length === 0) {
-      alert('Please check at least one party with a non-zero closing amount.');
+      notify('error', 'Please check at least one party with a T-Settle amount!', 'hvs-tick');
       return;
     }
-    if (!window.confirm(`Settle ${targets.length} checked part(ies) for their Closing amount?`)) return;
+    if (!processDate) return notify('error', 'Please select Date!', 'hvs-date');
+    if (!window.confirm(`Settle ${targets.length} checked part(ies) for their T-Settle-Amt?`)) return;
     setProcessing(true);
     try {
-      for (const t of targets) {
-        await apiRequest('/vouchers/settlement', {
-          method: 'POST',
-          body: JSON.stringify({
-            partyLedgerId: t.partyId,
-            entrySide: t.closing >= 0 ? 'CR' : 'DR',
-            amount: Math.abs(t.closing),
-            narration: `HVS Process ${month} ${year}`,
-            voucherDate: processDate,
-          }),
-        });
-      }
-      alert('Selected parties processed successfully.');
+      const res = await apiRequest<{ posted: number }>('/transactions/hvs-process', {
+        method: 'POST',
+        body: JSON.stringify({
+          month: (MONTH_INDEX[month] ?? 0) + 1,
+          year,
+          voucherDate: processDate,
+          items: targets.map(t => ({ partyId: t.partyId, amount: Math.round(t.tSettleAmt) })),
+        }),
+      });
+      notify('success', `${res.data?.posted || targets.length} part(ies) processed successfully!`, `hvs-ok-${Date.now()}`);
       handleLoadData();
     } catch (err: any) {
-      alert(err.message || 'Failed to process selected parties');
+      notify('error', err.message || 'Failed to process selected parties');
     } finally {
       setProcessing(false);
     }
   };
+
+  const th = 'py-2.5 px-3 border-r border-[#223b63]';
+  const td = 'py-2 px-3 font-semibold text-slate-700 border-r border-slate-200';
 
   return (
     <div className="min-h-full bg-[#eaedf2] p-2.5 sm:p-3 flex flex-col gap-2.5 text-slate-800 select-none font-sans text-xs">
@@ -160,7 +209,7 @@ export const HvsProcessPage: React.FC<HvsProcessPageProps> = ({ onNavigate }) =>
           {Object.keys(MONTH_INDEX).map(m => <option key={m} value={m}>{m}</option>)}
         </select>
         <select id="hvs-year" value={year} onChange={(e) => setYear(parseInt(e.target.value, 10))} onKeyDown={enterTo('hvs-load-btn')} className="px-2 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-400">
-          {Array.from({ length: 8 }, (_, i) => now.getFullYear() - i).map(y => <option key={y} value={y}>{y}</option>)}
+          {HVS_YEARS.map(y => <option key={y} value={y}>{y}</option>)}
         </select>
 
         <button
@@ -189,55 +238,76 @@ export const HvsProcessPage: React.FC<HvsProcessPageProps> = ({ onNavigate }) =>
       </div>
 
       <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden flex-1 flex flex-col">
-        <div className="overflow-auto flex-1">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap sticky top-0 z-10">
-                <th className="py-2.5 px-3 border-r border-[#223b63] w-10 text-center">SR</th>
-                <th className="py-2.5 px-3 border-r border-[#223b63] w-10 text-center">
+        <div className="overflow-auto flex-1 max-h-[calc(100vh-230px)]">
+          <table className="w-full text-left text-xs border-separate border-spacing-0">
+            <thead className="sticky top-0 z-10">
+              <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
+                <th className={`${th} w-10 text-center`}>SR</th>
+                <th className={`${th} w-10 text-center`}>
                   <input type="checkbox" checked={rows.length > 0 && checked.size === rows.length} onChange={toggleAll} />
                 </th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Party Name</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Agent</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Mobile</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63] text-right">P&amp;L</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63] text-right">Total</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63] text-right">Closing</th>
-                <th className="py-2.5 px-4 text-right">T-Settle-Amt</th>
+                <th className={`${th}`}>Party Name</th>
+                <th className={`${th} text-center`}>Agent</th>
+                <th className={`${th} text-center`}>Mobile</th>
+                <th className={`${th} text-right`}>P&amp;L</th>
+                <th className={`${th} text-right`}>HP-Amt</th>
+                <th className={`${th} text-right`}>Vapsi-Amt</th>
+                <th className={`${th} text-right`}>Total</th>
+                <th className={`${th} text-right`}>Closing</th>
+                <th className={`${th} text-right`}>T-Settle-Amt</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-200 font-sans text-xs whitespace-nowrap">
+            <tbody className="font-sans text-xs whitespace-nowrap">
               {loading ? (
-                <tr><td colSpan={9} className="py-14 text-center text-slate-400 font-medium">Loading...</td></tr>
+                <tr><td colSpan={11} className="py-14 text-center text-slate-400 font-medium">Loading...</td></tr>
               ) : !loaded ? (
-                <tr><td colSpan={9} className="py-14 text-center text-slate-400 font-medium">Choose Month/Year and click Load Data.</td></tr>
+                <tr><td colSpan={11} className="py-14 text-center text-slate-400 font-medium">Choose Month/Year and click Load Data.</td></tr>
               ) : rows.length === 0 ? (
-                <tr><td colSpan={9} className="py-14 text-center text-slate-400 font-medium">No records found for this period.</td></tr>
+                <tr><td colSpan={11} className="py-14 text-center text-slate-400 font-medium">No records found for this period.</td></tr>
               ) : (
                 rows.map((r, idx) => (
-                  <tr key={r.partyId} className="hover:bg-slate-50 transition-colors">
-                    <td className="py-2 px-3 text-center font-mono text-slate-600 border-r border-slate-200">{idx + 1}</td>
-                    <td className="py-2 px-3 text-center border-r border-slate-200">
+                  <tr key={r.partyId} className="even:bg-slate-50/60 hover:bg-slate-50 [&>td]:border-b [&>td]:border-slate-200">
+                    <td className={`${td} text-center`}>{idx + 1}</td>
+                    <td className={`${td} text-center`}>
                       <input type="checkbox" checked={checked.has(r.partyId)} onChange={() => toggleCheck(r.partyId)} />
                     </td>
-                    <td className="py-2 px-4 font-bold text-slate-900 uppercase border-r border-slate-200">{r.partyName}</td>
-                    <td className="py-2 px-4 font-semibold uppercase text-slate-700 border-r border-slate-200">{r.agentName}</td>
-                    <td className="py-2 px-4 font-mono text-slate-600 border-r border-slate-200">{r.mobile}</td>
-                    <td className={`py-2 px-4 text-right font-mono font-bold border-r border-slate-200 ${r.pnl >= 0 ? 'text-emerald-800' : 'text-rose-800'}`}>{fmt(r.pnl)}</td>
-                    <td className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200">{fmt(r.total)}</td>
-                    <td className={`py-2 px-4 text-right font-mono font-bold border-r border-slate-200 ${r.closing >= 0 ? 'text-emerald-800' : 'text-rose-800'}`}>{fmt(r.closing)}</td>
-                    <td className="py-2 px-4 text-right font-mono text-slate-700">{fmt(r.tSettleAmt)}</td>
+                    <td className={`${td} uppercase bg-[#f1f1f1]`}>{r.partyName}</td>
+                    <td className={`${td} text-center uppercase`}>{r.agentName}</td>
+                    <td className={`${td} text-center`}>{r.mobile}</td>
+                    <td className={`${td} text-right`}>{fmt(r.pnl)}</td>
+                    <td className={`${td} text-right`}>{fmt(r.hpAmt)}</td>
+                    <td className={`${td} text-right`}>{fmt(r.vapsiAmt)}</td>
+                    <td className={`${td} text-right`}>{fmt(r.total)}</td>
+                    <td className={`${td} text-right`}>{fmt(r.closing)}</td>
+                    <td className={`${td} text-right`}>{fmt(r.tSettleAmt)}</td>
                   </tr>
                 ))
               )}
             </tbody>
+            {!loading && loaded && rows.length > 0 && (
+              <tfoot className="sticky bottom-0 z-10">
+                <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
+                  <td className={`${th} text-center`}>{rows.length}</td>
+                  <td className={`${th} text-center`}>-</td>
+                  <td className={th}>Party Name</td>
+                  <td className={`${th} text-center`}>Agent</td>
+                  <td className={`${th} text-center`}>Mobile</td>
+                  <td className={`${th} text-right`}>{fmt(totals.pnl)}</td>
+                  <td className={`${th} text-right`}>{fmt(totals.hpAmt)}</td>
+                  <td className={`${th} text-right`}>{fmt(totals.vapsiAmt)}</td>
+                  <td className={`${th} text-right`}>{fmt(totals.total)}</td>
+                  <td className={`${th} text-right`}>{fmt(totals.closing)}</td>
+                  <td className={`${th} text-right`}>{fmt(totals.tSettleAmt)}</td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
 
         <div className="border-t border-slate-300 p-2.5 flex flex-wrap items-end gap-3 bg-white">
           <div>
             <label className="block text-slate-600 font-semibold mb-1">Date</label>
-            <input type="date" value={processDate} onChange={(e) => setProcessDate(e.target.value)} className="px-2 py-1.5 bg-white border border-slate-300 rounded text-xs" />
+            <DateDMYInput value={processDate} onChange={setProcessDate} idPrefix="hvs-pdate" />
           </div>
           <button
             type="button"

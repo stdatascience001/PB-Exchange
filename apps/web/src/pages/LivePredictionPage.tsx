@@ -3,6 +3,7 @@ import { ShiftDto, UserSession, PredictionDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { toast } from 'react-toastify';
 import { DateDMYInput } from '../components/DateDMYInput.js';
+import { declaredCellKeys, useDeclaredNumber, hlCls } from '../utils/declaredHighlight.js';
 import { ArrowLeft, ArrowUpDown } from 'lucide-react';
 
 interface LivePredictionPageProps {
@@ -85,6 +86,8 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
   const [loading, setLoading] = useState(false);
 
   const selectedShift = shifts.find(s => String(s.id) === shiftId);
+  // declared number + its Andar / Bahar haruf shown in green in the Jantri popup
+  const declaredKeys = declaredCellKeys(useDeclaredNumber(shiftId, dateStr));
 
   const fetchPrediction = async (id: string, date: string, number?: string) => {
     if (!id) return;
@@ -764,7 +767,7 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
                           const num = r * 10 + (c + 1);
                           const amt = partyCell(num);
                           return (
-                            <td key={num} className="relative h-8 bg-white border border-slate-300 text-right px-1 align-middle">
+                            <td key={num} className={hlCls(declaredKeys, num, "relative h-8 bg-white border border-slate-300 text-right px-1 align-middle")}>
                               <span className="absolute top-0.5 left-0.5 text-[9px] font-bold px-1 rounded-xs bg-[#fef9c3] text-[#854d0e] leading-tight select-none">
                                 {num}
                               </span>
@@ -791,7 +794,7 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
                         const digit = c + 1 === 10 ? 0 : c + 1;
                         const amt = partyHaruf(digit, 'bahar');
                         return (
-                          <td key={`b${digit}`} className="relative h-8 bg-white border border-slate-300 text-right px-1 align-middle">
+                          <td key={`b${digit}`} className={hlCls(declaredKeys, `B${digit}`, "relative h-8 bg-white border border-slate-300 text-right px-1 align-middle")}>
                             <span className="absolute top-0.5 left-0.5 text-[9px] font-bold px-1 rounded-xs bg-[#fef9c3] text-[#854d0e] leading-tight select-none">
                               B{digit}
                             </span>
@@ -810,7 +813,7 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
                         const digit = c + 1 === 10 ? 0 : c + 1;
                         const amt = partyHaruf(digit, 'andar');
                         return (
-                          <td key={`a${digit}`} className="relative h-8 bg-white border border-slate-300 text-right px-1 align-middle">
+                          <td key={`a${digit}`} className={hlCls(declaredKeys, `A${digit}`, "relative h-8 bg-white border border-slate-300 text-right px-1 align-middle")}>
                             <span className="absolute top-0.5 left-0.5 text-[9px] font-bold px-1 rounded-xs bg-[#fef9c3] text-[#854d0e] leading-tight select-none">
                               A{digit}
                             </span>

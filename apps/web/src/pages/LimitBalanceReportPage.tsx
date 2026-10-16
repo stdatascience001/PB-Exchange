@@ -25,6 +25,8 @@ export const LimitBalanceReportPage: React.FC = () => {
   const [list, setList] = useState<LimitBalanceRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<FilterMode>('ALL');
+  // Party search: narrows the loaded list by party name as you type (blank = every party)
+  const [partySearch, setPartySearch] = useState('');
 
   const fetchList = async () => {
     setLoading(true);
@@ -65,10 +67,12 @@ export const LimitBalanceReportPage: React.FC = () => {
   };
 
   // Filter narrows the loaded list: Sufficient = FinalLimit ≤ 0, Insufficient = FinalLimit > 0.
-  const rows = useMemo(
-    () => (filter === 'ALL' ? list : list.filter(r => r.status === filter)),
-    [list, filter]
-  );
+  // Party search then keeps the parties whose name contains the typed text (any case).
+  const rows = useMemo(() => {
+    const byStatus = filter === 'ALL' ? list : list.filter(r => r.status === filter);
+    const q = partySearch.trim().toUpperCase();
+    return q ? byStatus.filter(r => (r.partyName || '').toUpperCase().includes(q)) : byStatus;
+  }, [list, filter, partySearch]);
 
   const totals = useMemo(() => rows.reduce(
     (t, r) => ({
@@ -134,6 +138,21 @@ export const LimitBalanceReportPage: React.FC = () => {
             <option value="SUFFICIENT">Sufficient</option>
             <option value="INSUFFICIENT">Insufficient</option>
           </select>
+          <input
+            id="limit-party-search"
+            type="text"
+            value={partySearch}
+            onChange={(e) => setPartySearch(e.target.value)}
+            // Enter loads the list if it isn't loaded yet; the typed name filters it either way
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                if (list.length === 0 && !loading) fetchList();
+              }
+            }}
+            placeholder="SEARCH PARTY..."
+            className="w-64 px-2.5 py-1 bg-white border border-slate-300 rounded-xs text-xs font-semibold text-slate-900 uppercase placeholder:text-slate-400 focus:outline-none focus:bg-[#fde68a] focus:border-amber-300"
+          />
           <button type="button" onClick={handleExportExcel} className="ml-auto px-6 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-xs rounded-xs shadow-xs transition-colors">
             Excel
           </button>

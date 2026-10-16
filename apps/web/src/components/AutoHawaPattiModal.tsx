@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { apiRequest } from '../api/client.js';
+import { DateDMYInput } from './DateDMYInput.js';
 import { VAPSI_MONTHS, vapsiYears } from './AutoVapsiModal.js';
 
 // One party of GET /transactions/hawa-patti-summary (TransactionService.getHawaPattiSummary)
@@ -17,6 +18,8 @@ interface HpRow {
   pnl: number;
   hpPct: number;
   hpAmt: number;
+  // the month's Hawa Patti voucher already posted for this party
+  done?: boolean;
 }
 
 interface AgentOption { id: number; agentName: string }
@@ -40,7 +43,9 @@ const notify = (kind: 'success' | 'error', text: string, toastId?: string) =>
 // Hawa Patti page's "Auto Hawa Patti (F3)" popup: Month / Year (+ Agent, On Base), Search lists
 // each party's month — HP Party Name, IsHP, W-Day, T-Sale, P&L, HP %, HP-Amt (editable) — tick
 // parties and Process Voucher posts each HP-Amt against HP A/C on the Voucher Date.
-export const AutoHawaPattiModal: React.FC<{ open: boolean; onClose: () => void; onProcessed: () => void }> = ({ open, onClose, onProcessed }) => {
+// initialMonth / initialYear (optional): the month the popup opens on — HVS Process passes the
+// month it has loaded (live: its Auto Hawa Patti opens on September for September's HVS)
+export const AutoHawaPattiModal: React.FC<{ open: boolean; onClose: () => void; onProcessed: () => void; initialMonth?: number; initialYear?: number }> = ({ open, onClose, onProcessed, initialMonth, initialYear }) => {
   const now = new Date();
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [year, setYear] = useState(now.getFullYear());
@@ -57,6 +62,8 @@ export const AutoHawaPattiModal: React.FC<{ open: boolean; onClose: () => void; 
 
   useEffect(() => {
     if (!open) return;
+    if (initialMonth && initialMonth >= 1 && initialMonth <= 12) setMonth(initialMonth);
+    if (initialYear && initialYear > 2000) setYear(initialYear);
     setRows([]);
     setTicked(new Set());
     setAmounts({});
@@ -103,7 +110,7 @@ export const AutoHawaPattiModal: React.FC<{ open: boolean; onClose: () => void; 
       setRange(res.data ? { from: res.data.from, to: res.data.to } : null);
       setAmounts(Object.fromEntries(list.map(r => [r.partyId, String(Math.round(r.hpAmt))])));
       setTicked(new Set());
-      if (list.length === 0) notify('error', 'Record not found!', 'auto-hp-none');
+      if (!list.some(r => r.isHp && !r.done)) notify('error', 'Record not found!', 'auto-hp-none');
     } catch (err: any) {
       notify('error', err.message || 'Failed to load hawa patti', 'auto-hp-load');
     } finally {
@@ -112,8 +119,12 @@ export const AutoHawaPattiModal: React.FC<{ open: boolean; onClose: () => void; 
   };
 
   const amountOf = (r: HpRow) => parseFloat(amounts[r.partyId] ?? String(r.hpAmt)) || 0;
+  // Live lists only the HP parties still to post for the month: IsHP YES (a Hissa Party row to
+  // HP A/C) and not yet processed — live September after the 30-09 run shows just TANVAR
+  // (1673032 × 15% = 250955), the same 250955 the HVS Process HP-Amt total shows
+  const visible = useMemo(() => rows.filter(r => r.isHp && !r.done), [rows]);
   // Only HP parties with an HP amount can be processed.
-  const tickable = rows.filter(r => r.isHp && amountOf(r) !== 0);
+  const tickable = visible.filter(r => r.isHp && amountOf(r) !== 0);
   const allTicked = tickable.length > 0 && tickable.every(r => ticked.has(r.partyId));
   const toggleAll = () => setTicked(allTicked ? new Set() : new Set(tickable.map(r => r.partyId)));
   const toggle = (id: number) => setTicked(prev => {
@@ -122,26 +133,32 @@ export const AutoHawaPattiModal: React.FC<{ open: boolean; onClose: () => void; 
     return next;
   });
 
-  const totals = useMemo(() => rows.reduce((t, r) => ({
+  const totals = useMemo(() => visible.reduce((t, r) => ({
     tSale: t.tSale + r.tSale, pnl: t.pnl + r.pnl, hpAmt: t.hpAmt + amountOf(r),
-  }), { tSale: 0, pnl: 0, hpAmt: 0 }), [rows, amounts]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), { tSale: 0, pnl: 0, hpAmt: 0 }), [visible, amounts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const processVoucher = async () => {
     const chosen = rows.filter(r => ticked.has(r.partyId) && r.isHp && amountOf(r) !== 0);
     if (chosen.length === 0) return notify('error', 'Please tick at least one party!', 'auto-hp-tick');
     if (!voucherDate) return notify('error', 'Please select Voucher Date!', 'auto-hp-date');
+    // A month already posted for a party is only posted again on confirmation
+    const already = chosen.filter(r => r.done).map(r => r.partyName);
+    if (already.length && !window.confirm(`Hawa Patti for ${VAPSI_MONTHS[month - 1]} ${year} is already posted for: ${already.join(', ')}.\nPost again?`)) return;
     setProcessing(true);
     try {
       const res = await apiRequest<{ posted: number }>('/transactions/hawa-patti-process', {
         method: 'POST',
         body: JSON.stringify({
           month, year, voucherDate,
-          items: chosen.map(r => ({ hpPartyId: r.hpPartyId, amount: amountOf(r), partyName: r.partyName })),
+          // partyId / baseAmt / hpPct go with each line for the HawaPatti Rpt
+          items: chosen.map(r => ({ hpPartyId: r.hpPartyId, amount: amountOf(r), partyName: r.partyName, partyId: r.partyId, baseAmt: r.pnl, hpPct: r.hpPct })),
         }),
       });
       notify('success', `${res.data?.posted || 0} Hawa Patti Voucher has been processed successfully!`, `auto-hp-ok-${Date.now()}`);
       setTicked(new Set());
       onProcessed();
+      // refresh the list so the posted parties show DONE
+      search();
     } catch (err: any) {
       notify('error', err.message || 'Process Voucher failed');
     } finally {
@@ -167,7 +184,12 @@ export const AutoHawaPattiModal: React.FC<{ open: boolean; onClose: () => void; 
       <div className="bg-white rounded-lg shadow-2xl w-full max-w-[1720px] overflow-hidden border border-slate-300 flex flex-col h-[85vh]">
         <div className="bg-[#1f4277] text-white px-4 py-3 flex items-center justify-between">
           <h2 className="text-base font-bold tracking-tight">
-            Auto Hawa Patti Voucher{range ? ` | ${dmy(range.from)} - ${dmy(range.to)}` : ''}
+            {/* Live: "Auto Hawa Patti Voucher | 01 / 10 / 2026 - 31 / 10 / 2026" — the chosen month */}
+            Auto Hawa Patti Voucher | {range ? `${dmy(range.from)} - ${dmy(range.to)}` : (() => {
+              const mm = String(month).padStart(2, '0');
+              const last = String(new Date(year, month, 0).getDate()).padStart(2, '0');
+              return `01 / ${mm} / ${year} - ${last} / ${mm} / ${year}`;
+            })()}
           </h2>
           <button type="button" onClick={onClose} className="text-white hover:text-slate-300 p-0.5" title="Close (Esc)">
             <X className="h-4 w-4" />
@@ -196,9 +218,9 @@ export const AutoHawaPattiModal: React.FC<{ open: boolean; onClose: () => void; 
           <button
             type="button"
             onClick={() => {
-              if (rows.length === 0) return notify('error', 'Record not found!', 'auto-hp-excel');
+              if (visible.length === 0) return notify('error', 'Record not found!', 'auto-hp-excel');
               const lines = ['Sr,Agent,Party Name,HP Party Name,IsHP,W-Day,T-Sale,P&L,HP %,HP-Amt'];
-              rows.forEach((r, i) => lines.push(`${i + 1},"${r.agentName}","${r.partyName}","${r.hpPartyName}",${r.isHp ? 'YES' : 'NO'},${r.wDay},${fmt(r.tSale)},${fmt(r.pnl)},${r.hpPct},${fmt(amountOf(r))}`));
+              visible.forEach((r, i) => lines.push(`${i + 1},"${r.agentName}","${r.partyName}","${r.hpPartyName}",${r.isHp ? 'YES' : 'NO'},${r.wDay},${fmt(r.tSale)},${fmt(r.pnl)},${r.hpPct},${fmt(amountOf(r))}`));
               const link = document.createElement('a');
               link.setAttribute('href', encodeURI('data:text/csv;charset=utf-8,' + lines.join('\n')));
               link.setAttribute('download', `auto_hawa_patti_${VAPSI_MONTHS[month - 1]}_${year}.csv`);
@@ -230,7 +252,7 @@ export const AutoHawaPattiModal: React.FC<{ open: boolean; onClose: () => void; 
               </tr>
             </thead>
             <tbody>
-              {rows.map((r, i) => (
+              {visible.map((r, i) => (
                 <tr key={r.partyId} className={`[&>td]:border-b [&>td]:border-slate-200 ${ticked.has(r.partyId) ? 'bg-blue-50/80' : 'even:bg-slate-50/60'}`}>
                   <td className={td}>{i + 1}</td>
                   <td className={`${td} text-center`}>
@@ -243,7 +265,7 @@ export const AutoHawaPattiModal: React.FC<{ open: boolean; onClose: () => void; 
                     />
                   </td>
                   <td className={`${td} text-center uppercase`}>{r.agentName}</td>
-                  <td className={`${td} uppercase`}>{r.partyName}</td>
+                  <td className={`${td} uppercase`}>{r.partyName}{r.done && <span className="ml-1.5 px-1.5 py-0.5 bg-emerald-100 text-emerald-800 rounded text-[9px]">DONE</span>}</td>
                   <td className={`${td} uppercase`}>{r.hpPartyName}</td>
                   <td className={`${td} text-center`}>
                     <span className={`px-2 py-0.5 rounded-xs text-[9px] font-bold text-white ${r.isHp ? 'bg-[#00897b]' : 'bg-slate-400'}`}>{r.isHp ? 'YES' : 'NO'}</span>
@@ -264,10 +286,10 @@ export const AutoHawaPattiModal: React.FC<{ open: boolean; onClose: () => void; 
                 </tr>
               ))}
             </tbody>
-            {rows.length > 0 && (
+            {visible.length > 0 && (
               <tfoot className="sticky bottom-0">
                 <tr className="bg-[#152847] text-white font-bold text-[12px]">
-                  <td className={th}>{rows.length}</td>
+                  <td className={th}>{visible.length}</td>
                   <td className={`${th} text-center`}>Tik</td>
                   <td className={th}>Agent</td>
                   <td className={th}>Party Name</td>
@@ -286,7 +308,7 @@ export const AutoHawaPattiModal: React.FC<{ open: boolean; onClose: () => void; 
 
         <div className="flex items-center justify-end gap-4 px-4 py-3 border-t border-slate-200">
           <span className="font-bold text-sm text-slate-700">Voucher Date</span>
-          <input type="date" value={voucherDate} onChange={(e) => setVoucherDate(e.target.value)} className="px-2 py-1.5 bg-white border border-slate-300 rounded-xs text-xs font-semibold" />
+          <DateDMYInput value={voucherDate} onChange={setVoucherDate} idPrefix="ah-vdate" />
           <button type="button" onClick={processVoucher} disabled={processing} className="px-4 py-2 bg-[#1e3a8a] hover:bg-[#172554] text-white font-bold rounded-xs text-xs disabled:opacity-50">
             {processing ? 'Processing...' : 'Process Voucher'}
           </button>

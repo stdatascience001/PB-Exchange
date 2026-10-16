@@ -310,6 +310,19 @@ export class VoucherService {
           entrySide: oppositeSide,
           amount: amt,
         }).where(eq(voucherEntries.id, entries[1].id));
+      } else if (entries.length === 1) {
+        // One-sided cash entry (Admin Cash / Settlement): its single line takes the new side and
+        // amount, and the voucher type follows the side (Credit = CASH_RECEIPT, Debit = CASH_PAYMENT)
+        const side = data.entrySide || entries[0].entrySide;
+        const amt = (data.amount ?? parseFloat(entries[0].amount)).toFixed(2);
+        await db.update(voucherEntries).set({
+          ledgerId: data.partyLedgerId ?? entries[0].ledgerId,
+          entrySide: side,
+          amount: amt,
+        }).where(eq(voucherEntries.id, entries[0].id));
+        if (data.entrySide && (existing.voucherType === 'CASH_RECEIPT' || existing.voucherType === 'CASH_PAYMENT')) {
+          await db.update(vouchers).set({ voucherType: side === 'CR' ? 'CASH_RECEIPT' : 'CASH_PAYMENT' }).where(eq(vouchers.id, id));
+        }
       }
     }
 
@@ -542,8 +555,13 @@ export class VoucherService {
   // Report page. Selecting one resolves to its own agentId, which then scopes the report
   // the same way the "Group" (agents master) dropdown does.
   // Limit & Balance Report (rpt_limit_balance), one row per active ledger in ledger order:
-  //   Balance     = the ledger's voucher balance, Dr − Cr (positive = party owes), LIMIT
-  //                 vouchers left out — they're the Limit column
+  //   Balance     = the party's running balance today, Dr − Cr (positive = party owes): every
+  //                 voucher (LIMIT left out — they're the Limit column) PLUS every declared
+  //                 day's game result — the All Shift Report's Closing / the Settling Report's
+  //                 Balance. Live shows game-only ledgers with a balance (ZZ JLD SAROJ HPT ACC
+  //                 998970, ZXC BB NN SONU 1) and FinalLimit off the shown figures by the
+  //                 game's paise (ZXC WELCOME ASR 38309 → 38308), so it isn't vouchers alone.
+  //                 Slips of shifts still running are left out here: they are TransConsum.
   //   Limit       = the ledger's LIMIT vouchers, same Dr − Cr sign
   //   TransConsum = stake on slips in shifts still running (not yet declared, current cycle)
   //   FinalLimit  = Balance + Limit + TransConsum — matches the live footer
@@ -552,6 +570,13 @@ export class VoucherService {
   static async getLimitBalanceReport() {
     const ledgerRows = await db.select({ id: ledgers.id, partyName: ledgers.partyName })
       .from(ledgers).where(isNull(ledgers.deletedAt)).orderBy(asc(ledgers.id));
+
+    // today's running balance per party (dynamic import: TransactionService imports this module)
+    const { TransactionService } = await import('../transactions/transaction.service.js');
+    const [todayRow] = await pgSql<Array<{ today: string }>>`SELECT CURRENT_DATE::text AS today`;
+    const today = todayRow.today;
+    const allShift = await TransactionService.getAllShiftReport({ fromDate: today, toDate: today, settledOnly: true });
+    const runningBalance = new Map(allShift.rows.map(r => [r.partyId, r.closing]));
 
     const voucherRows = await db.select({
       ledgerId: voucherEntries.ledgerId,
@@ -584,7 +609,8 @@ export class VoucherService {
     const consum = new Map(consumRows.map(r => [r.partyId, parseFloat(r.amount)]));
 
     return ledgerRows.map(l => {
-      const bal = balance.get(l.id) || 0;
+      // voucher-only balance kept as the fallback for a ledger the All Shift list doesn't carry
+      const bal = runningBalance.has(l.id) ? (runningBalance.get(l.id) || 0) : (balance.get(l.id) || 0);
       const lim = limit.get(l.id) || 0;
       const tc = consum.get(l.id) || 0;
       const finalLimit = bal + lim + tc;

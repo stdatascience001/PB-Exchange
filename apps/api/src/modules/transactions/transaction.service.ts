@@ -132,6 +132,18 @@ export class TransactionService {
     return -((dSale * (commPct - tpc.d) + aSale * (commPct - tpc.a)) / 100);
   }
 
+  // transactions.started_at (Productivity Report: when the operator started the slip; created_at
+  // is when it was saved). Added on first use, kept out of the drizzle schema (same DDL as migrate.ts).
+  private static startedAtReady: Promise<void> | null = null;
+  static ensureStartedAtColumn(): Promise<void> {
+    if (!this.startedAtReady) {
+      this.startedAtReady = pgSql.unsafe('ALTER TABLE transactions ADD COLUMN IF NOT EXISTS started_at TIMESTAMP')
+        .then(() => undefined)
+        .catch((err) => { TransactionService.startedAtReady = null; throw err; });
+    }
+    return this.startedAtReady;
+  }
+
   static async createTransaction(input: TransactionCreateInput, user: UserSession) {
     // 1. Enforce shift cutoff for this role
     await ShiftService.assertShiftOpenForRole(input.shiftId, user.roleId, user.roleName, user.userId);
@@ -204,6 +216,12 @@ export class TransactionService {
     const randPart = crypto.randomBytes(3).toString('hex').toUpperCase();
     const slipNumber = `SLIP-${dateStr}-${shift.name.slice(0, 3)}-${randPart}`;
 
+    // Slip start for the Productivity Report: save time minus how long the operator took (measured
+    // on the Add page, so no clock / timezone difference) — kept only when it is believable
+    const elapsedMs = Number(input.elapsedMs);
+    const keepStart = Number.isFinite(elapsedMs) && elapsedMs > 0 && elapsedMs < 6 * 60 * 60 * 1000;
+    if (keepStart) await this.ensureStartedAtColumn().catch(() => undefined);
+
     // 7. Atomic DB Transaction
     const createdTx = await db.transaction(async (tx) => {
       const [header] = await tx.insert(transactions).values({
@@ -233,6 +251,10 @@ export class TransactionService {
       }));
 
       await tx.insert(transactionEntries).values(entriesToInsert);
+
+      if (keepStart) {
+        await tx.execute(sql`UPDATE transactions SET started_at = created_at - (${Math.round(elapsedMs)} * interval '1 millisecond') WHERE id = ${header.id}`);
+      }
 
       // Create Audit Log
       await tx.insert(auditLogs).values({
@@ -844,6 +866,20 @@ export class TransactionService {
   // Commission formula (100 - akharRate*10) already used on the Ledgers page — flagged the same
   // honest way TPC/HP-Amt/RBT are flagged elsewhere, since live screenshots of a continuously
   // changing production dataset can't be used to verify the exact arithmetic.
+  // The result declared for a shift on a day ("32"), or null while that day is undeclared —
+  // the day's cycle number, else the shift's own number when the day is its open date (the
+  // same rule the Daily Report uses). Jantri popups paint that number and its haruf red.
+  static async declaredNumberFor(shiftId: number, date: string): Promise<string | null> {
+    if (!shiftId || !date) return null;
+    const [shift] = await db.select().from(shifts).where(eq(shifts.id, shiftId));
+    if (!shift) return null;
+    const [cycle] = await db.select().from(shiftCycles).where(
+      and(eq(shiftCycles.shiftId, shiftId), eq(shiftCycles.cycleDate, date))
+    );
+    const n = cycle?.declaredNumber || (date === shift.openDate ? shift.declaredNumber : null);
+    return n ? String(n).trim().padStart(2, '0') : null;
+  }
+
   static async getCollectionView(filters: {
     shiftId: number;
     date: string;
@@ -1033,7 +1069,8 @@ export class TransactionService {
       });
     }
 
-    return { grid, haruf };
+    const declaredNumber = await TransactionService.declaredNumberFor(filters.shiftId, filters.date);
+    return { grid, haruf, declaredNumber };
   }
 
   // Kwada Transaction (live rule, from its screenshots): for the shift + day, a party is listed
@@ -1987,7 +2024,7 @@ export class TransactionService {
         let numberValue = e.numberValue;
         if (entryType === 'DARA') {
           const v = (numberValue || '').trim();
-          const legacy = /^(\d){3}$/.test(v) ? 'HARUF_ANDAR' : /^(\d){2}$/.test(v) ? 'HARUF_BAHAR' : null;
+          const legacy = /^(\d)\1{3}$/.test(v) ? 'HARUF_ANDAR' : /^(\d)\1{2}$/.test(v) ? 'HARUF_BAHAR' : null;
           if (legacy) {
             entryType = legacy;
             numberValue = v[0];
@@ -2258,12 +2295,18 @@ export class TransactionService {
   // Live AARIT KARNAL: 901960 − 90196 − 8030×90 = 89064; −533607 + 89064 − 100000 = −544543.
   // Live AHAAN 25%: 136460 − 13646 − 370×90 − 500×9 = 85014, Hissa −21253 → 63761;
   //   −13524 + 63761 − 49000 = 1237.
-  private static async allShiftGame(fromDate: string | null, toDate: string) {
+  // settledOnly (Limit & Balance Report): leave out slips of shifts still running — today's
+  // undeclared cycle — since those are counted there as TransConsum. Off for every other caller.
+  private static async allShiftGame(fromDate: string | null, toDate: string, settledOnly = false) {
     const fromCond = fromDate ? pgSql`AND t.created_at::date >= ${fromDate}::date` : pgSql``;
+    const runningCond = settledOnly
+      ? pgSql`AND NOT COALESCE(s.declared_number IS NULL AND s.status NOT IN ('DECLARED', 'AUDITED') AND t.created_at::date::text = s.open_date, false)`
+      : pgSql``;
     const saleRows = await pgSql<Array<{ party_id: number; day: string; sale: string }>>`
       SELECT t.party_id, t.created_at::date::text AS day, SUM(t.total_amount) AS sale
       FROM transactions t
-      WHERE t.status <> 'VOIDED' ${fromCond} AND t.created_at::date <= ${toDate}::date
+      JOIN shifts s ON s.id = t.shift_id
+      WHERE t.status <> 'VOIDED' ${fromCond} AND t.created_at::date <= ${toDate}::date ${runningCond}
       GROUP BY t.party_id, t.created_at::date
     `;
     // Each (shift, day) is judged on that day's own result: its cycle's number, else the
@@ -2288,7 +2331,7 @@ export class TransactionService {
         JOIN transactions t ON t.id = e.transaction_id
         JOIN shifts s ON s.id = t.shift_id
         LEFT JOIN shift_cycles c ON c.shift_id = t.shift_id AND c.cycle_date = t.created_at::date::text
-        WHERE t.status <> 'VOIDED' ${fromCond} AND t.created_at::date <= ${toDate}::date
+        WHERE t.status <> 'VOIDED' ${fromCond} AND t.created_at::date <= ${toDate}::date ${runningCond}
       ) x
       GROUP BY x.party_id
     `;
@@ -2324,6 +2367,8 @@ export class TransactionService {
     partyStatus?: 'ACTIVE' | 'INACTIVE';
     search?: string;
     searchMode?: 'START_WITH' | 'CONTAINS' | 'END_WITH';
+    // Limit & Balance Report: game of running (undeclared) shifts left out, see allShiftGame
+    settledOnly?: boolean;
   }) {
     const ledgerConds = [isNull(ledgers.deletedAt)];
     if (filters.agentId) ledgerConds.push(eq(ledgers.agentId, filters.agentId));
@@ -2435,8 +2480,8 @@ export class TransactionService {
     const dayBeforeStr = dayBefore.toISOString().slice(0, 10);
 
     const [gameNow, gameBefore] = await Promise.all([
-      this.allShiftGame(filters.fromDate, filters.toDate),
-      this.allShiftGame(null, dayBeforeStr),
+      this.allShiftGame(filters.fromDate, filters.toDate, !!filters.settledOnly),
+      this.allShiftGame(null, dayBeforeStr, !!filters.settledOnly),
     ]);
     const nowByParty = tProfitOf(gameNow);
     const beforeByParty = tProfitOf(gameBefore);
@@ -2753,12 +2798,17 @@ export class TransactionService {
     return { rows };
   }
 
-  // Party's game result per DECLARED shift cycle (shift_cycles holds each cycle's date and
-  // winning number): P&L = (Sale + Comm − Payout) + Hissa, with the party's Comm% / S-Hissa%
-  // — the same formula Settling / Profit & Loss use. Positive = party lost (Dr to party).
-  // fromDate/toDate are inclusive cycle dates; either may be left out.
+  // Party's game result per declared shift + day — the party's Debit / Credit on that day's
+  // Daily Report, so Admin Cash, Daily Report, Settling and All Shift agree:
+  //   declared = that day's cycle number (DECLARED / AUDITED or a number set), else the shift's
+  //              own number when the day is its open day (the Daily Report rule)
+  //   Comm     = partyComm (the party's Comm%, or Comm% − D/A-Comm% when it has 3rd Party Comm rows)
+  //   Book     = Sale + Comm − Payout
+  //   P&L      = Book × (100 − S-Hissa)% rounded half away from zero, S-Hissa = the larger of the
+  //              Self Hissa box and the Hissa Party rows naming the party itself
+  // Positive = party lost (Dr to party). fromDate/toDate are inclusive days; either may be left out.
   private static async getPartyCyclePnl(
-    party: { id: number; commissionRate: string | null; hissaPercentage: string | null },
+    party: { id: number; partyName?: string | null; commissionRate: string | null; hissaPercentage: string | null },
     range: { fromDate?: string; toDate?: string }
   ) {
     const conds = [eq(transactions.partyId, party.id), ne(transactions.status, 'VOIDED')];
@@ -2773,21 +2823,36 @@ export class TransactionService {
     if (txRows.length === 0) return [];
 
     const shiftIds = Array.from(new Set(txRows.map(t => t.shiftId)));
+    const shiftRows = await db.select({
+      id: shifts.id,
+      name: shifts.name,
+      openDate: shifts.openDate,
+      declaredNumber: shifts.declaredNumber,
+      updatedAt: shifts.updatedAt,
+    }).from(shifts).where(inArray(shifts.id, shiftIds));
+    const shiftById = new Map(shiftRows.map(s => [s.id, s]));
     const cycles = await db.select({
       shiftId: shiftCycles.shiftId,
       cycleDate: shiftCycles.cycleDate,
+      status: shiftCycles.status,
       declaredNumber: shiftCycles.declaredNumber,
       updatedAt: shiftCycles.updatedAt,
-      shiftName: shifts.name,
     })
       .from(shiftCycles)
-      .innerJoin(shifts, eq(shiftCycles.shiftId, shifts.id))
-      .where(and(
-        inArray(shiftCycles.shiftId, shiftIds),
-        sql`${shiftCycles.status} IN ('DECLARED', 'AUDITED')`,
-        sql`${shiftCycles.declaredNumber} IS NOT NULL`,
-      ));
+      .where(inArray(shiftCycles.shiftId, shiftIds));
     const cycleByKey = new Map(cycles.map(c => [`${c.shiftId}:${c.cycleDate}`, c]));
+    // The day's result and when it was posted, or null while the day is undeclared
+    const resultOf = (shiftId: number, day: string): { number: string; postedAt: Date; shiftName: string } | null => {
+      const sh = shiftById.get(shiftId);
+      const c = cycleByKey.get(`${shiftId}:${day}`);
+      if (c && c.declaredNumber && (['DECLARED', 'AUDITED'].includes(c.status) || c.declaredNumber)) {
+        return { number: c.declaredNumber.padStart(2, '0'), postedAt: c.updatedAt, shiftName: sh?.name || '-' };
+      }
+      if (sh && sh.openDate === day && sh.declaredNumber) {
+        return { number: sh.declaredNumber.padStart(2, '0'), postedAt: c?.updatedAt || sh.updatedAt, shiftName: sh.name };
+      }
+      return null;
+    };
 
     const txIds = txRows.map(t => t.id);
     const entryRows = await db.select().from(transactionEntries).where(inArray(transactionEntries.transactionId, txIds));
@@ -2797,38 +2862,51 @@ export class TransactionService {
       entriesByTx.get(e.transactionId)!.push(e);
     }
 
-    const commPct = parseFloat(party.commissionRate || '0');
-    const hissaPct = parseFloat(party.hissaPercentage || '0');
-    const perCycle = new Map<string, { sale: number; payout: number }>();
+    // S-Hissa: the larger of the Self Hissa box and the Hissa Party rows naming the party itself
+    const ownLinks = await db.select({ partyName: ledgerThirdPartyLinks.partyName, percent: ledgerThirdPartyLinks.percent })
+      .from(ledgerThirdPartyLinks)
+      .where(and(eq(ledgerThirdPartyLinks.linkType, 'HISSA'), eq(ledgerThirdPartyLinks.ledgerId, party.id)));
+    const ownName = (party.partyName || '').trim().toUpperCase();
+    let selfLinks = 0;
+    for (const l of ownLinks) if ((l.partyName || '').trim().toUpperCase() === ownName) selfLinks += parseFloat(l.percent) || 0;
+    const sHissa = Math.max(parseFloat(party.hissaPercentage || '0') || 0, selfLinks);
+    const commPct = parseFloat(party.commissionRate || '0') || 0;
+    const tpc = (await TransactionService.tpcPctByLedger([party.id])).get(party.id);
+
+    type Agg = { shiftId: number; day: string; sale: number; dSale: number; aSale: number; payout: number; result: { postedAt: Date; shiftName: string } };
+    const perCycle = new Map<string, Agg>();
     for (const tx of txRows) {
+      const result = resultOf(tx.shiftId, tx.day);
+      if (!result) continue; // not declared yet — no result to post
+      const declared = result.number;
       const key = `${tx.shiftId}:${tx.day}`;
-      const cycle = cycleByKey.get(key);
-      if (!cycle) continue; // not declared yet — no result to post
-      const declared = cycle.declaredNumber!.padStart(2, '0');
-      if (!perCycle.has(key)) perCycle.set(key, { sale: 0, payout: 0 });
+      if (!perCycle.has(key)) perCycle.set(key, { shiftId: tx.shiftId, day: tx.day, sale: 0, dSale: 0, aSale: 0, payout: 0, result });
       const agg = perCycle.get(key)!;
       agg.sale += parseFloat(tx.totalAmount);
       for (const e of entriesByTx.get(tx.id) || []) {
+        const amt = parseFloat(e.amount);
+        if (e.entryType === 'DARA') agg.dSale += amt; else agg.aSale += amt;
         const wins = (e.entryType === 'DARA' && e.numberValue === declared)
           || (e.entryType === 'HARUF_ANDAR' && e.numberValue === declared[0])
           || (e.entryType === 'HARUF_BAHAR' && e.numberValue === declared[1]);
-        if (wins) agg.payout += parseFloat(e.amount) * parseFloat(e.rate);
+        if (wins) agg.payout += amt * parseFloat(e.rate);
       }
     }
 
-    return Array.from(perCycle.entries()).map(([key, agg]) => {
-      const cycle = cycleByKey.get(key)!;
-      const comm = -(agg.sale * commPct / 100);
+    const roundAway = (v: number) => Math.sign(v) * Math.round(Math.abs(v)) + 0;
+    return Array.from(perCycle.values()).map(agg => {
+      const comm = TransactionService.partyComm(agg.sale, agg.dSale, agg.aSale, commPct, tpc);
       const book = agg.sale + comm - agg.payout;
-      const pnl = book - (book * hissaPct / 100);
-      return { shiftName: cycle.shiftName, cycleDate: cycle.cycleDate, postedAt: cycle.updatedAt, pnl };
+      const pnl = roundAway(book * (100 - sHissa) / 100);
+      return { shiftId: agg.shiftId, shiftName: agg.result.shiftName, cycleDate: agg.day, postedAt: agg.result.postedAt, pnl };
     });
   }
 
-  // Party's ledger balance BEFORE a date, Dr − Cr (positive = party owes): every voucher plus
-  // every declared cycle's game result dated earlier.
+  // Party's ledger balance BEFORE a date, Dr − Cr (positive = party owes): every voucher (LIMIT
+  // vouchers left out — they are the credit limit, LMT, as on All Shift / Settling) plus every
+  // declared day's game result dated earlier.
   private static async getPartyBalanceBefore(
-    party: { id: number; commissionRate: string | null; hissaPercentage: string | null },
+    party: { id: number; partyName?: string | null; commissionRate: string | null; hissaPercentage: string | null },
     beforeDate: string
   ) {
     const [v] = await db.select({
@@ -2836,7 +2914,11 @@ export class TransactionService {
     })
       .from(voucherEntries)
       .innerJoin(vouchers, eq(voucherEntries.voucherId, vouchers.id))
-      .where(and(eq(voucherEntries.ledgerId, party.id), sql`${vouchers.createdAt}::date < ${beforeDate}::date`));
+      .where(and(
+        eq(voucherEntries.ledgerId, party.id),
+        ne(vouchers.voucherType, 'LIMIT'),
+        sql`${vouchers.createdAt}::date < ${beforeDate}::date`,
+      ));
     const dayBefore = new Date(`${beforeDate}T00:00:00Z`);
     dayBefore.setUTCDate(dayBefore.getUTCDate() - 1);
     const game = await this.getPartyCyclePnl(party, { toDate: dayBefore.toISOString().slice(0, 10) });
@@ -2863,7 +2945,7 @@ export class TransactionService {
 
     const opening = await this.getPartyBalanceBefore(party, filters.fromDate);
 
-    type Entry = { date: string; at: Date; partyName: string; credit: number; debit: number; remark: string; updatedBy: string; voucherId: number | null; deletable: boolean };
+    type Entry = { date: string; at: Date; partyName: string; credit: number; debit: number; remark: string; updatedBy: string; voucherId: number | null; deletable: boolean; shiftId: number | null };
     const entries: Entry[] = [];
 
     for (const g of await this.getPartyCyclePnl(party, filters)) {
@@ -2877,6 +2959,8 @@ export class TransactionService {
         updatedBy: 'SERVER',
         voucherId: null,
         deletable: false,
+        // SERVER row → click opens the party's jantri of that shift + day
+        shiftId: g.shiftId,
       });
     }
 
@@ -2896,6 +2980,8 @@ export class TransactionService {
       .innerJoin(vouchers, eq(voucherEntries.voucherId, vouchers.id))
       .where(and(
         eq(voucherEntries.ledgerId, party.id),
+        // LIMIT vouchers are the credit limit (LMT above), not a passbook line
+        ne(vouchers.voucherType, 'LIMIT'),
         sql`${vouchers.createdAt}::date >= ${filters.fromDate}::date`,
         sql`${vouchers.createdAt}::date <= ${filters.toDate}::date`,
       ));
@@ -2922,6 +3008,7 @@ export class TransactionService {
         updatedBy: e.updatedBy || 'SYSTEM',
         voucherId: e.voucherId,
         deletable: isCash,
+        shiftId: null,
       });
     }
 
@@ -2941,6 +3028,7 @@ export class TransactionService {
         updatedAt: e.at.toISOString(),
         voucherId: e.voucherId,
         deletable: e.deletable,
+        shiftId: e.shiftId,
       };
     });
 
@@ -2950,6 +3038,14 @@ export class TransactionService {
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`;
     const currentBalance = await this.getPartyBalanceBefore(party, tomorrowStr);
+    // LMT (live "LMT: 2383540 Cr"): the balance with the party's LIMIT vouchers added — the
+    // Settling Report's Limit, Dr − Cr
+    const [limitRow] = await pgSql<Array<{ net: string | null }>>`
+      SELECT SUM(CASE WHEN e.entry_side = 'DR' THEN e.amount ELSE -e.amount END) AS net
+      FROM voucher_entries e JOIN vouchers v ON v.id = e.voucher_id
+      WHERE e.ledger_id = ${party.id} AND v.voucher_type = 'LIMIT' AND v.created_at::date < ${tomorrowStr}::date
+    `;
+    const limitVouchers = parseFloat(limitRow?.net || '0') || 0;
 
     return {
       partyId: party.id,
@@ -2958,6 +3054,7 @@ export class TransactionService {
       rate,
       balance: currentBalance,
       limit: parseFloat(party.betLimit || '0'),
+      lmt: currentBalance + limitVouchers,
       opening,
       current: totalDebit - totalCredit,
       closing: running,
@@ -2971,9 +3068,9 @@ export class TransactionService {
   // into a Credit list (balance Cr) and a Debit list (balance Dr), each A-Z with the ledger's
   // LIMIT underneath the name.
   //   Balance = vouchers up to the date (Dr − Cr, LIMIT vouchers left out — they're the LIMIT
-  //             line) + every declared cycle's game result up to the date, with the party's
-  //             Comm% / S-Hissa%: ((Sale − Sale×Comm%) − Payout) × (1 − S-Hissa%) — the same
-  //             result Admin Cash posts as its SERVER rows.
+  //             line) + every declared day's game result up to the date — the party's Daily
+  //             Report Debit / Credit per shift and day, the same result Admin Cash posts as its
+  //             SERVER rows (see getLedgerBalancesAsOf).
   //   LIMIT   = the ledger's LIMIT vouchers up to the date (Dr − Cr, shown as a plain number).
   static async getTrialBalance(filters: { asOfDate: string }) {
     const all = await this.getLedgerBalancesAsOf(filters.asOfDate);
@@ -2992,8 +3089,14 @@ export class TransactionService {
   }
 
   // Every active ledger's balance as of a date (the Trail Balance / OutStanding figure):
-  // vouchers Dr − Cr (LIMIT vouchers returned separately as `limit`) + every declared cycle's
-  // game result with the party's Comm% / S-Hissa%.
+  // vouchers Dr − Cr (LIMIT vouchers returned separately as `limit`) + every declared day's game
+  // result — per party, shift and day the party's Daily Report Debit / Credit, the same figure
+  // Admin Cash posts as its SERVER rows:
+  //   declared = the day's cycle number (DECLARED / AUDITED or a number set), else the shift's
+  //              own number when the day is its open day
+  //   Book     = Sale + partyComm (Comm%, or Comm% − D/A-Comm% with 3rd Party Comm rows) − Payout
+  //   P&L      = Book × (100 − S-Hissa)%, rounded half away from zero; S-Hissa = the larger of
+  //              the Self Hissa box and the Hissa Party rows naming the party itself
   private static async getLedgerBalancesAsOf(asOf: string) {
     const ledgerRows = await db.select({
       id: ledgers.id,
@@ -3012,28 +3115,40 @@ export class TransactionService {
       GROUP BY e.ledger_id, (v.voucher_type = 'LIMIT')
     `;
 
-    // Sale and winning payout per party per declared cycle, both up to the date.
+    // Sale per party, shift and declared day; then Dara / Akhar sale and winning payout
     const saleRows = await pgSql<Array<{ party_id: number; shift_id: number; day: string; sale: string }>>`
       SELECT t.party_id, t.shift_id, t.created_at::date::text AS day, SUM(t.total_amount) AS sale
       FROM transactions t
-      JOIN shift_cycles c ON c.shift_id = t.shift_id AND c.cycle_date = t.created_at::date::text
+      JOIN shifts s ON s.id = t.shift_id
+      LEFT JOIN shift_cycles c ON c.shift_id = t.shift_id AND c.cycle_date = t.created_at::date::text
       WHERE t.status <> 'VOIDED' AND t.created_at::date <= ${asOf}::date
-        AND c.status IN ('DECLARED', 'AUDITED') AND c.declared_number IS NOT NULL
+        AND COALESCE(
+          CASE WHEN c.status IN ('DECLARED', 'AUDITED') OR c.declared_number IS NOT NULL THEN c.declared_number END,
+          CASE WHEN s.open_date = t.created_at::date::text THEN s.declared_number END
+        ) IS NOT NULL
       GROUP BY t.party_id, t.shift_id, t.created_at::date
     `;
-    const payoutRows = await pgSql<Array<{ party_id: number; shift_id: number; day: string; payout: string }>>`
-      SELECT t.party_id, t.shift_id, t.created_at::date::text AS day, SUM(e.amount * e.rate) AS payout
-      FROM transaction_entries e
-      JOIN transactions t ON t.id = e.transaction_id
-      JOIN shift_cycles c ON c.shift_id = t.shift_id AND c.cycle_date = t.created_at::date::text
-      WHERE t.status <> 'VOIDED' AND t.created_at::date <= ${asOf}::date
-        AND c.status IN ('DECLARED', 'AUDITED') AND c.declared_number IS NOT NULL
-        AND (
-          (e.entry_type = 'DARA' AND e.number_value = lpad(c.declared_number, 2, '0'))
-          OR (e.entry_type = 'HARUF_ANDAR' AND e.number_value = substr(lpad(c.declared_number, 2, '0'), 1, 1))
-          OR (e.entry_type = 'HARUF_BAHAR' AND e.number_value = substr(lpad(c.declared_number, 2, '0'), 2, 1))
-        )
-      GROUP BY t.party_id, t.shift_id, t.created_at::date
+    const entryRows = await pgSql<Array<{ party_id: number; shift_id: number; day: string; d_sale: string; a_sale: string; payout: string }>>`
+      SELECT x.party_id, x.shift_id, x.day,
+        SUM(CASE WHEN x.entry_type = 'DARA' THEN x.amount ELSE 0 END) AS d_sale,
+        SUM(CASE WHEN x.entry_type <> 'DARA' THEN x.amount ELSE 0 END) AS a_sale,
+        SUM(CASE WHEN (x.entry_type = 'DARA' AND x.number_value = x.dn)
+                   OR (x.entry_type = 'HARUF_ANDAR' AND x.number_value = substr(x.dn, 1, 1))
+                   OR (x.entry_type = 'HARUF_BAHAR' AND x.number_value = substr(x.dn, 2, 1)) THEN x.amount * x.rate ELSE 0 END) AS payout
+      FROM (
+        SELECT t.party_id, t.shift_id, t.created_at::date::text AS day, e.entry_type, e.number_value, e.amount, e.rate,
+          lpad(COALESCE(
+            CASE WHEN c.status IN ('DECLARED', 'AUDITED') OR c.declared_number IS NOT NULL THEN c.declared_number END,
+            CASE WHEN s.open_date = t.created_at::date::text THEN s.declared_number END
+          ), 2, '0') AS dn
+        FROM transaction_entries e
+        JOIN transactions t ON t.id = e.transaction_id
+        JOIN shifts s ON s.id = t.shift_id
+        LEFT JOIN shift_cycles c ON c.shift_id = t.shift_id AND c.cycle_date = t.created_at::date::text
+        WHERE t.status <> 'VOIDED' AND t.created_at::date <= ${asOf}::date
+      ) x
+      WHERE x.dn IS NOT NULL
+      GROUP BY x.party_id, x.shift_id, x.day
     `;
 
     const balance = new Map<number, number>();
@@ -3043,15 +3158,34 @@ export class TransactionService {
       target.set(v.ledger_id, (target.get(v.ledger_id) || 0) + parseFloat(v.net));
     }
 
+    // S-Hissa per party: the larger of the Self Hissa box and its Hissa rows naming itself
+    const hissaLinks = await db.select({ ledgerId: ledgerThirdPartyLinks.ledgerId, partyName: ledgerThirdPartyLinks.partyName, percent: ledgerThirdPartyLinks.percent })
+      .from(ledgerThirdPartyLinks)
+      .where(eq(ledgerThirdPartyLinks.linkType, 'HISSA'));
     const ledgerById = new Map(ledgerRows.map(l => [l.id, l]));
-    const payoutByKey = new Map(payoutRows.map(p => [`${p.party_id}:${p.shift_id}:${p.day}`, parseFloat(p.payout)]));
-    for (const s of saleRows) {
-      const l = ledgerById.get(s.party_id);
+    const selfLinks = new Map<number, number>();
+    for (const h of hissaLinks) {
+      const l = ledgerById.get(h.ledgerId);
       if (!l) continue;
-      const sale = parseFloat(s.sale);
-      const payout = payoutByKey.get(`${s.party_id}:${s.shift_id}:${s.day}`) || 0;
-      const book = sale - sale * parseFloat(l.commissionRate || '0') / 100 - payout;
-      const pnl = book - book * parseFloat(l.hissaPercentage || '0') / 100;
+      if ((h.partyName || '').trim().toUpperCase() !== (l.partyName || '').trim().toUpperCase()) continue;
+      selfLinks.set(l.id, (selfLinks.get(l.id) || 0) + (parseFloat(h.percent) || 0));
+    }
+    const sHissaOf = (l: typeof ledgerRows[number]) => Math.max(parseFloat(l.hissaPercentage || '0') || 0, selfLinks.get(l.id) || 0);
+    const tpcByLedger = await TransactionService.tpcPctByLedger();
+
+    const roundAway = (v: number) => Math.sign(v) * Math.round(Math.abs(v)) + 0;
+    const entryByKey = new Map(entryRows.map(p => [`${p.party_id}:${p.shift_id}:${p.day}`, p]));
+    for (const srow of saleRows) {
+      const l = ledgerById.get(srow.party_id);
+      if (!l) continue;
+      const sale = parseFloat(srow.sale) || 0;
+      const e = entryByKey.get(`${srow.party_id}:${srow.shift_id}:${srow.day}`);
+      const dSale = parseFloat(e?.d_sale || '0') || 0;
+      const aSale = parseFloat(e?.a_sale || '0') || 0;
+      const payout = parseFloat(e?.payout || '0') || 0;
+      const comm = TransactionService.partyComm(sale, dSale, aSale, parseFloat(l.commissionRate || '0') || 0, tpcByLedger.get(l.id));
+      const book = sale + comm - payout;
+      const pnl = roundAway(book * (100 - sHissaOf(l)) / 100);
       balance.set(l.id, (balance.get(l.id) || 0) + pnl);
     }
 
@@ -3062,6 +3196,142 @@ export class TransactionService {
       balance: balance.get(l.id) || 0,
       limit: limit.get(l.id) || 0,
     }));
+  }
+
+  // Cash Report (rpt_cash / rpt_cash_agent): every Cash Agent ledger (Ledger Group "Cash Agent"),
+  // A-Z, with its balance — the same Dr − Cr balance Trail Balance / OutStanding / Admin Cash use
+  // (vouchers without LIMIT + declared game results):
+  //   Opening = balance up to the day before From     Amount = its movement From → To
+  //   Closing = Opening + Amount (= balance up to To)
+  // A cash agent with nothing in either (Opening and Amount both 0) is left out — live lists 50
+  // of its Cash Agents, skipping e.g. CASH 13 13 A/C. Totals: count, Σ Opening, Σ Amount, Σ Closing.
+  static async getCashAgentReport(filters: { fromDate: string; toDate: string }) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(filters.fromDate || '') || !/^\d{4}-\d{2}-\d{2}$/.test(filters.toDate || '')) {
+      throw new AppError('Please select both Dates!');
+    }
+    if (filters.fromDate > filters.toDate) throw new AppError('From Date cannot be after To Date!');
+    const dayBefore = new Date(`${filters.fromDate}T00:00:00Z`);
+    dayBefore.setUTCDate(dayBefore.getUTCDate() - 1);
+    const cashIds = new Set((await db.select({ id: ledgers.id }).from(ledgers)
+      .where(and(eq(ledgers.groupName, 'Cash Agent'), isNull(ledgers.deletedAt)))).map(l => l.id));
+    const [before, upTo] = await Promise.all([
+      this.getLedgerBalancesAsOf(dayBefore.toISOString().slice(0, 10)),
+      this.getLedgerBalancesAsOf(filters.toDate),
+    ]);
+    const openingById = new Map(before.map(b => [b.ledgerId, b.balance]));
+    const rows = upTo
+      .filter(l => cashIds.has(l.ledgerId))
+      .map(l => {
+        const opening = openingById.get(l.ledgerId) || 0;
+        const closing = l.balance;
+        return { ledgerId: l.ledgerId, partyName: l.partyName, opening, amount: closing - opening, closing };
+      })
+      .filter(r => Math.round(r.opening) !== 0 || Math.round(r.amount) !== 0)
+      .sort((a, b) => a.partyName.localeCompare(b.partyName));
+    return {
+      fromDate: filters.fromDate,
+      toDate: filters.toDate,
+      rows,
+      totalOpening: rows.reduce((s, r) => s + r.opening, 0),
+      totalAmount: rows.reduce((s, r) => s + r.amount, 0),
+      totalClosing: rows.reduce((s, r) => s + r.closing, 0),
+    };
+  }
+
+  // Settlement Agent (rpt_settlement_agent_group): every party of the chosen agent group, A-Z,
+  // with its balance up to the month's end — the OutStanding / Admin Cash balance (Dr − Cr):
+  //   Credit / Debit = that balance on its side (Cr → Credit, Dr → Debit; 0 → both blank)
+  //   Balance        = running total down the list, Σ (Debit − Credit) so far, "… Cr" / "… Dr"
+  //                    (live AAHIL DL: DILSAD 2605 Cr, IMRAN DL +17388 → 19993 Cr, ISTKIR −100559
+  //                    → 80566 Dr … footer 276561 − 98870 = 177691 Dr)
+  //   Updated By / Updated Date = the ledger's own (live 13-10-2025, 01-10-2024 …)
+  // periodCredit / periodDebit: the month's voucher entries, kept for reference.
+  static async getSettlementAgentRows(filters: { fromDate: string; toDate: string; agentId: number }) {
+    if (!filters.agentId) throw new AppError('Please enter a valid agent!');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(filters.fromDate || '') || !/^\d{4}-\d{2}-\d{2}$/.test(filters.toDate || '')) {
+      throw new AppError('Please select a valid Month and Year!');
+    }
+    const [partyRows, balances, periodRows] = await Promise.all([
+      db.select({ id: ledgers.id, partyName: ledgers.partyName, updatedBy: ledgers.updatedBy, updatedAt: ledgers.updatedAt })
+        .from(ledgers)
+        .where(and(eq(ledgers.agentId, filters.agentId), isNull(ledgers.deletedAt))),
+      this.getLedgerBalancesAsOf(filters.toDate),
+      pgSql<Array<{ ledger_id: number; cr: string; dr: string }>>`
+        SELECT e.ledger_id,
+               SUM(CASE WHEN e.entry_side = 'CR' THEN e.amount ELSE 0 END) AS cr,
+               SUM(CASE WHEN e.entry_side = 'DR' THEN e.amount ELSE 0 END) AS dr
+        FROM voucher_entries e
+        JOIN vouchers v ON v.id = e.voucher_id
+        JOIN ledgers l ON l.id = e.ledger_id
+        WHERE l.agent_id = ${filters.agentId} AND v.voucher_type <> 'LIMIT'
+          AND v.created_at::date BETWEEN ${filters.fromDate}::date AND ${filters.toDate}::date
+        GROUP BY e.ledger_id
+      `,
+    ]);
+    const balanceById = new Map(balances.map(b => [b.ledgerId, b.balance]));
+    const periodById = new Map(periodRows.map(p => [p.ledger_id, p]));
+    let running = 0;
+    const rows = partyRows
+      .sort((a, b) => a.partyName.localeCompare(b.partyName))
+      .map(p => {
+        const bal = balanceById.get(p.id) || 0;
+        running += bal;
+        const period = periodById.get(p.id);
+        return {
+          ledgerId: p.id,
+          partyName: p.partyName,
+          agentId: filters.agentId,
+          credit: bal < 0 ? -bal : 0,
+          debit: bal > 0 ? bal : 0,
+          // the party's own balance (Dr − Cr) — the Save form's "Party & Balance"
+          partyBalance: bal,
+          balance: running,
+          periodCredit: parseFloat(period?.cr || '0') || 0,
+          periodDebit: parseFloat(period?.dr || '0') || 0,
+          updatedBy: p.updatedBy || 'A100',
+          updatedAt: TransactionService.stampIso(p.updatedAt),
+        };
+      });
+    const totalCredit = rows.reduce((s, r) => s + r.credit, 0);
+    const totalDebit = rows.reduce((s, r) => s + r.debit, 0);
+    return { rows, totalCredit, totalDebit, totalBalance: totalDebit - totalCredit };
+  }
+
+  // OutStanding Agent-Group (rpt_agent_group_outstanding): the OutStanding Report rolled up — one
+  // row per agent group under the chosen Agent (agents master: Group = ASLAM 40, Agent = its
+  // Main Agent, CASH ASLAM), its parties' balances as of the date summed (Dr − Cr: vouchers
+  // without LIMIT + declared game). The sum goes on its side — Dr → Debit, Cr → Credit — and a
+  // group that nets to 0 is left out. Final = Σ Debit − Σ Credit
+  // (live CASH ASLAM 16-10: ASLAM 40 Debit 1013146, ASLAM 60 Credit 1380 → Final 1011766).
+  static async getOutstandingAgentGroup(filters: { asOfDate: string; agentIds: number[] }) {
+    if (filters.agentIds.length === 0) return { rows: [], totalCredit: 0, totalDebit: 0, final: 0 };
+    const [groupRows, all] = await Promise.all([
+      db.select({ id: agents.id, agentName: agents.agentName, mainAgentName: agents.mainAgentName })
+        .from(agents).where(inArray(agents.id, filters.agentIds)),
+      this.getLedgerBalancesAsOf(filters.asOfDate),
+    ]);
+    const net = new Map<number, number>();
+    for (const l of all) {
+      if (l.agentId == null) continue;
+      net.set(l.agentId, (net.get(l.agentId) || 0) + l.balance);
+    }
+    const rows = groupRows
+      .map(g => {
+        const bal = net.get(g.id) || 0;
+        return {
+          agentId: g.id,
+          agentGroup: g.agentName,
+          // the agents master's Agent column (no Main Agent reads VIKAS CASH, as on the Agents page)
+          agentName: g.mainAgentName || 'VIKAS CASH',
+          credit: bal < 0 ? -bal : 0,
+          debit: bal > 0 ? bal : 0,
+        };
+      })
+      .filter(r => Math.round(r.credit) !== 0 || Math.round(r.debit) !== 0)
+      .sort((a, b) => a.agentGroup.localeCompare(b.agentGroup));
+    const totalCredit = rows.reduce((s, r) => s + r.credit, 0);
+    const totalDebit = rows.reduce((s, r) => s + r.debit, 0);
+    return { rows, totalCredit, totalDebit, final: totalDebit - totalCredit };
   }
 
   // OutStanding Report (rpt_agent_outstanding): parties under the chosen agent groups (agents
@@ -3083,7 +3353,8 @@ export class TransactionService {
         credit: l.balance < 0 ? -l.balance : 0,
         debit: l.balance > 0 ? l.balance : 0,
       }))
-      .sort((a, b) => a.partyName.localeCompare(b.partyName));
+      // Group by group (live: ASLAM 40's parties together, A-Z, then ASLAM 60's), then party A-Z
+      .sort((a, b) => a.agentGroup.localeCompare(b.agentGroup) || a.partyName.localeCompare(b.partyName));
     const totalCredit = rows.reduce((s, r) => s + r.credit, 0);
     const totalDebit = rows.reduce((s, r) => s + r.debit, 0);
     return { rows, totalCredit, totalDebit, final: totalDebit - totalCredit };
@@ -3107,9 +3378,11 @@ export class TransactionService {
     return { from: `${year}-${pad(month)}-01`, to: `${year}-${pad(month)}-${pad(last)}` };
   }
 
-  static async getVapsiSummary(filters: { month: number; year: number; agentId?: number; partyId?: number; withHp?: boolean; onBase?: boolean }) {
+  // range (optional): a From–To inside the month in place of the whole month (HVS Process filter);
+  // the month still names the vouchers (DONE)
+  static async getVapsiSummary(filters: { month: number; year: number; agentId?: number; partyId?: number; withHp?: boolean; onBase?: boolean; range?: { from: string; to: string } }) {
     if (!(filters.month >= 1 && filters.month <= 12) || !(filters.year > 2000)) throw new AppError('Please select a valid Month and Year!');
-    const { from, to } = this.monthRange(filters.month, filters.year);
+    const { from, to } = filters.range || this.monthRange(filters.month, filters.year);
     const narration = `${this.VAPSI_MONTHS[filters.month - 1]} ${filters.year}`;
 
     const ledgerConds = [isNull(ledgers.deletedAt)];
@@ -3163,6 +3436,12 @@ export class TransactionService {
     }).from(ledgerThirdPartyLinks).where(eq(ledgerThirdPartyLinks.linkType, 'TPV'));
     const hissaTargets = await db.selectDistinct({ name: sql<string>`UPPER(${ledgerThirdPartyLinks.partyName})` })
       .from(ledgerThirdPartyLinks).where(eq(ledgerThirdPartyLinks.linkType, 'HISSA'));
+    // HP % = the party's Hissa Party row(s) to HP A/C — the share Hawa Patti takes before Vapsi
+    const hpLinkRows = await db.select({ ledgerId: ledgerThirdPartyLinks.ledgerId, percent: ledgerThirdPartyLinks.percent })
+      .from(ledgerThirdPartyLinks)
+      .where(and(eq(ledgerThirdPartyLinks.linkType, 'HISSA'), sql`UPPER(TRIM(${ledgerThirdPartyLinks.partyName})) = ${this.HP_ACCOUNT}`));
+    const hpLinkPct = new Map<number, number>();
+    for (const h of hpLinkRows) hpLinkPct.set(h.ledgerId, (hpLinkPct.get(h.ledgerId) || 0) + (parseFloat(h.percent) || 0));
     const hpNames = new Set(hissaTargets.map(h => h.name));
     const nameToId = new Map((await db.select({ id: ledgers.id, n: ledgers.partyName }).from(ledgers).where(isNull(ledgers.deletedAt)))
       .map(l => [l.n.toUpperCase(), l.id]));
@@ -3188,7 +3467,10 @@ export class TransactionService {
       .filter(l => filters.withHp || !hpNames.has(l.partyName.toUpperCase()))
       .map(l => {
         const a = agg.get(l.id) || { sale: 0, pnl: 0, days: new Set<string>() };
-        const hissaPct = parseFloat(l.hissaPercentage || '0');
+        // Vapsi is worked out on what is left after Hawa Patti (live, and the All Shift month-end
+        // HR): ANKUSH FARIDABAD 224154, HP A/C 50% → (224154 − 112077) × 10% = 11208; KADAR 25%
+        // 27878, HP 10% → 2509. A party with no HP A/C row keeps its Self Hissa % as before.
+        const hissaPct = hpLinkPct.has(l.id) ? (hpLinkPct.get(l.id) || 0) : parseFloat(l.hissaPercentage || '0');
         const hpAmt = -(a.pnl * hissaPct / 100);
         const finalPl = a.pnl + hpAmt;
         const pay = payment.get(l.id) || 0;
@@ -3208,6 +3490,8 @@ export class TransactionService {
           partyName: l.partyName,
           agentName: l.agentName || '-',
           tpv: links.reduce((s, t) => s + t.percent, 0),
+          // ledger "Vapsi | TPR" second part — the live TPV column's YES / NO
+          tpr,
           wDay: a.days.size,
           tSale: a.sale,
           pnl: a.pnl,
@@ -3226,6 +3510,92 @@ export class TransactionService {
     return { month: filters.month, year: filters.year, narration, rows };
   }
 
+  // Vapsi Report (rpt_vapsi) needs each processed line's Party, Base-Amt and Vapsi-% as they were
+  // when the month was processed — the voucher itself only carries the amount. Kept in vapsi_lines
+  // (one row per VAPSI voucher), created on first use (same DDL as migrate.ts).
+  private static vapsiLinesReady: Promise<void> | null = null;
+  private static ensureVapsiLines(): Promise<void> {
+    if (!this.vapsiLinesReady) {
+      this.vapsiLinesReady = pgSql.unsafe(`
+        CREATE TABLE IF NOT EXISTS vapsi_lines (
+          id SERIAL PRIMARY KEY,
+          voucher_id INTEGER NOT NULL,
+          month INTEGER NOT NULL,
+          year INTEGER NOT NULL,
+          party_id INTEGER,
+          party_name VARCHAR(150),
+          ledger_id INTEGER,
+          base_amt NUMERIC(14, 2),
+          vapsi_pct NUMERIC(6, 2),
+          vapsi_amt NUMERIC(14, 2),
+          added_by VARCHAR(100),
+          added_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS vapsi_lines_voucher_idx ON vapsi_lines(voucher_id);
+        CREATE INDEX IF NOT EXISTS vapsi_lines_month_idx ON vapsi_lines(year, month);
+      `).then(() => undefined).catch((err) => {
+        TransactionService.vapsiLinesReady = null;
+        throw err;
+      });
+    }
+    return this.vapsiLinesReady;
+  }
+
+  // Vapsi Report (rpt_vapsi): the month's processed Vapsi lines — one row per VAPSI voucher
+  // narrated "<Month> <Year>" (Auto Vapsi / Vapsi Voucher → Process):
+  //   Party      the playing party (a 3rd Party Rebate line shows it too: live ANUPGARH 10% and 5%)
+  //   Base-Amt   its month P&L (or Payment when processed "On Base")
+  //   Vapsi-%    the % the line was worked out at     Vapsi-Amt  the amount posted
+  //              ((Base − HP-Amt) × %: ANKUSH FARIDABAD 224154, HP 50% → 11208)
+  //   AddedBy / AddedDate  who processed it and when
+  // A voucher processed before the line record existed falls back to the credited ledger as the
+  // Party, its Vapsi % today (ledger Vapsi | TPR) and Base = Amount ÷ %.
+  static async getVapsiReport(filters: { month: number; year: number }) {
+    if (!(filters.month >= 1 && filters.month <= 12) || !(filters.year > 2000)) throw new AppError('Please select a valid Month and Year!');
+    await this.ensureVapsiLines();
+    const label = `${this.VAPSI_MONTHS[filters.month - 1]} ${filters.year}`;
+    const vRows = await pgSql<Array<{
+      id: number; updated_by: string | null; updated_at: Date | string; username: string | null;
+      party_id: number | null; party_name: string | null; base_amt: string | null; vapsi_pct: string | null;
+      added_by: string | null; added_at: Date | string | null;
+      cr_ledger: string | null; cr_vapsi: string | null; amount: string | null;
+    }>>`
+      SELECT v.id, v.updated_by, v.updated_at, u.username,
+             l.party_id, l.party_name, l.base_amt, l.vapsi_pct, l.added_by, l.added_at,
+             cr.party_name AS cr_ledger, cr.vapsi_tpr AS cr_vapsi, e.amount
+      FROM vouchers v
+      LEFT JOIN users u ON u.id = v.created_by
+      LEFT JOIN vapsi_lines l ON l.voucher_id = v.id
+      LEFT JOIN voucher_entries e ON e.voucher_id = v.id AND e.entry_side = 'CR'
+      LEFT JOIN ledgers cr ON cr.id = e.ledger_id
+      WHERE v.voucher_type = 'VAPSI' AND v.narration = ${label}
+    `;
+    const rows = vRows.map(v => {
+      const vapsiAmt = parseFloat(v.amount || '0') || 0;
+      const ledgerPct = parseFloat(String(v.cr_vapsi || '0').split('|')[0]) || 0;
+      const vapsiPct = v.vapsi_pct !== null ? parseFloat(v.vapsi_pct) : ledgerPct;
+      const baseAmt = v.base_amt !== null ? parseFloat(v.base_amt) : (vapsiPct ? vapsiAmt * 100 / vapsiPct : 0);
+      return {
+        voucherId: v.id,
+        partyId: v.party_id,
+        partyName: v.party_name || v.cr_ledger || '-',
+        receiverName: v.cr_ledger || '-',
+        baseAmt,
+        vapsiPct,
+        vapsiAmt,
+        addedBy: v.added_by || v.username || v.updated_by || '-',
+        addedAt: TransactionService.stampIso(v.added_at || v.updated_at),
+      };
+    }).sort((a, b) => a.addedAt.localeCompare(b.addedAt) || a.voucherId - b.voucherId);
+    return {
+      month: filters.month,
+      year: filters.year,
+      rows,
+      totalBase: rows.reduce((s, r) => s + r.baseAmt, 0),
+      totalVapsiAmt: rows.reduce((s, r) => s + r.vapsiAmt, 0),
+    };
+  }
+
   private static async getOrCreateLedger(name: string): Promise<number> {
     const [existing] = await db.select({ id: ledgers.id }).from(ledgers).where(eq(ledgers.partyName, name));
     if (existing) return existing.id;
@@ -3240,15 +3610,16 @@ export class TransactionService {
     month: number;
     year: number;
     voucherDate: string;
-    items: { partyId: number; amount: number; thirdParties?: { ledgerId: number; amount: number }[] }[];
+    // baseAmt / vapsiPct / thirdParties[].percent (optional): kept for the Vapsi Report
+    items: { partyId: number; amount: number; baseAmt?: number; vapsiPct?: number; thirdParties?: { ledgerId: number; amount: number; percent?: number }[] }[];
   }, user: UserSession) {
     if (!(data.month >= 1 && data.month <= 12) || !(data.year > 2000)) throw new AppError('Please select a valid Month and Year!');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(data.voucherDate || '')) throw new AppError('Please select Voucher Date!');
-    const lines: { ledgerId: number; amount: number }[] = [];
+    const lines: { ledgerId: number; amount: number; partyId: number; baseAmt?: number; pct?: number }[] = [];
     for (const it of data.items || []) {
-      if (Number(it.amount) > 0) lines.push({ ledgerId: Number(it.partyId), amount: Number(it.amount) });
+      if (Number(it.amount) > 0) lines.push({ ledgerId: Number(it.partyId), amount: Number(it.amount), partyId: Number(it.partyId), baseAmt: it.baseAmt, pct: it.vapsiPct });
       for (const t of it.thirdParties || []) {
-        if (t.ledgerId && Number(t.amount) > 0) lines.push({ ledgerId: Number(t.ledgerId), amount: Number(t.amount) });
+        if (t.ledgerId && Number(t.amount) > 0) lines.push({ ledgerId: Number(t.ledgerId), amount: Number(t.amount), partyId: Number(it.partyId), baseAmt: it.baseAmt, pct: t.percent });
       }
     }
     if (lines.length === 0) throw new AppError('Please tick at least one party with a Vapsi amount!');
@@ -3256,6 +3627,9 @@ export class TransactionService {
     const vapsiLedgerId = await this.getOrCreateLedger('VAPSI A/C');
     const narration = `${this.VAPSI_MONTHS[data.month - 1]} ${data.year}`;
     const createdAt = new Date(`${data.voucherDate}T12:00:00`);
+    await this.ensureVapsiLines();
+    const partyNames = new Map((await db.select({ id: ledgers.id, n: ledgers.partyName }).from(ledgers)
+      .where(inArray(ledgers.id, Array.from(new Set(lines.map(l => l.partyId)))))).map(l => [l.id, l.n]));
 
     await db.transaction(async (tx) => {
       for (const line of lines) {
@@ -3272,6 +3646,12 @@ export class TransactionService {
           { voucherId: voucher.id, ledgerId: line.ledgerId, entrySide: 'CR', amount: line.amount.toFixed(2) },
           { voucherId: voucher.id, ledgerId: vapsiLedgerId, entrySide: 'DR', amount: line.amount.toFixed(2) },
         ]);
+        const num = (v: unknown) => (v === undefined || v === null || !isFinite(Number(v)) ? null : Number(v).toFixed(2));
+        await tx.execute(sql`
+          INSERT INTO vapsi_lines (voucher_id, month, year, party_id, party_name, ledger_id, base_amt, vapsi_pct, vapsi_amt, added_by)
+          VALUES (${voucher.id}, ${data.month}, ${data.year}, ${line.partyId}, ${partyNames.get(line.partyId) || null},
+                  ${line.ledgerId}, ${num(line.baseAmt)}, ${num(line.pct)}, ${line.amount.toFixed(2)}, ${user.username || 'SYSTEM'})
+        `);
       }
     });
     return { posted: lines.length, totalAmount: lines.reduce((s, l) => s + l.amount, 0) };
@@ -3286,9 +3666,49 @@ export class TransactionService {
   //   HP-Amt   = P&L × HP %  — posted HP Party Cr / HP A/C Dr when positive, the reverse when not
   static readonly HP_ACCOUNT = 'HP A/C';
 
-  static async getHawaPattiSummary(filters: { month: number; year: number; agentId?: number; onBase?: boolean }) {
+  // A raw-SQL timestamp comes back as a Date or as the stored wall-clock text
+  // ("2026-09-30 11:05:12.3"); either way → "2026-09-30T11:05:12" for the report pages.
+  private static stampIso(v: Date | string | null | undefined): string {
+    if (!v) return '';
+    if (v instanceof Date) return v.toISOString();
+    return String(v).replace(' ', 'T');
+  }
+
+  // HawaPatti Rpt (rpt_hawa_patti) needs each processed line's Party, Base-Amt and HP-% as they
+  // were when the month was processed — the voucher itself only carries the HP-Amt. Kept in
+  // hawa_patti_lines (one row per HAWA_PATTI voucher), created on first use (same DDL as migrate.ts).
+  private static hawaPattiLinesReady: Promise<void> | null = null;
+  private static ensureHawaPattiLines(): Promise<void> {
+    if (!this.hawaPattiLinesReady) {
+      this.hawaPattiLinesReady = pgSql.unsafe(`
+        CREATE TABLE IF NOT EXISTS hawa_patti_lines (
+          id SERIAL PRIMARY KEY,
+          voucher_id INTEGER NOT NULL,
+          month INTEGER NOT NULL,
+          year INTEGER NOT NULL,
+          party_id INTEGER,
+          party_name VARCHAR(150),
+          hp_party_id INTEGER,
+          base_amt NUMERIC(14, 2),
+          hp_pct NUMERIC(6, 2),
+          hp_amt NUMERIC(14, 2),
+          added_by VARCHAR(100),
+          added_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS hawa_patti_lines_voucher_idx ON hawa_patti_lines(voucher_id);
+        CREATE INDEX IF NOT EXISTS hawa_patti_lines_month_idx ON hawa_patti_lines(year, month);
+      `).then(() => undefined).catch((err) => {
+        TransactionService.hawaPattiLinesReady = null;
+        throw err;
+      });
+    }
+    return this.hawaPattiLinesReady;
+  }
+
+  // range (optional): as getVapsiSummary — the HVS Process From–To in place of the whole month
+  static async getHawaPattiSummary(filters: { month: number; year: number; agentId?: number; onBase?: boolean; range?: { from: string; to: string } }) {
     if (!(filters.month >= 1 && filters.month <= 12) || !(filters.year > 2000)) throw new AppError('Please select a valid Month and Year!');
-    const { from, to } = this.monthRange(filters.month, filters.year);
+    const { from, to } = filters.range || this.monthRange(filters.month, filters.year);
 
     const ledgerConds = [isNull(ledgers.deletedAt)];
     if (filters.agentId) ledgerConds.push(eq(ledgers.agentId, filters.agentId));
@@ -3307,6 +3727,12 @@ export class TransactionService {
     for (const l of hpLinks) hpPct.set(l.ledgerId, (hpPct.get(l.ledgerId) || 0) + parseFloat(l.percent || '0'));
 
     const nameById = new Map((await db.select({ id: ledgers.id, n: ledgers.partyName }).from(ledgers)).map(l => [l.id, l.n]));
+    // DONE = the month already has this party's Hawa Patti voucher ("October 2026 | ARE J")
+    const hpLabel = `${this.VAPSI_MONTHS[filters.month - 1]} ${filters.year}`;
+    const doneRows = await pgSql<Array<{ narration: string }>>`
+      SELECT narration FROM vouchers WHERE voucher_type = 'HAWA_PATTI' AND narration LIKE ${hpLabel + ' | %'}
+    `;
+    const doneNames = new Set(doneRows.map(d => d.narration.slice(hpLabel.length + 3).trim().toUpperCase()));
 
     const saleRows = await pgSql<Array<{ party_id: number; shift_id: number; day: string; sale: string }>>`
       SELECT t.party_id, t.shift_id, t.created_at::date::text AS day, SUM(t.total_amount) AS sale
@@ -3364,6 +3790,7 @@ export class TransactionService {
           pnl: a.pnl,
           hpPct: pct,
           hpAmt: Math.round(a.pnl * pct) / 100,
+          done: doneNames.has((l.partyName || '').trim().toUpperCase()),
         };
       })
       .sort((a, b) => a.partyName.localeCompare(b.partyName));
@@ -3374,7 +3801,9 @@ export class TransactionService {
     month: number;
     year: number;
     voucherDate: string;
-    items: { hpPartyId: number; amount: number; partyName?: string }[];
+    // partyId / baseAmt / hpPct (optional): the playing party, its month P&L and HP % — kept for
+    // the HawaPatti Rpt
+    items: { hpPartyId: number; amount: number; partyName?: string; partyId?: number; baseAmt?: number; hpPct?: number }[];
   }, user: UserSession) {
     if (!(data.month >= 1 && data.month <= 12) || !(data.year > 2000)) throw new AppError('Please select a valid Month and Year!');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(data.voucherDate || '')) throw new AppError('Please select Voucher Date!');
@@ -3384,6 +3813,7 @@ export class TransactionService {
     const hpAccountId = await this.getOrCreateLedger(this.HP_ACCOUNT);
     const month = `${this.VAPSI_MONTHS[data.month - 1]} ${data.year}`;
     const createdAt = new Date(`${data.voucherDate}T12:00:00`);
+    await this.ensureHawaPattiLines();
 
     await db.transaction(async (tx) => {
       for (const line of lines) {
@@ -3403,99 +3833,293 @@ export class TransactionService {
           { voucherId: voucher.id, ledgerId: Number(line.hpPartyId), entrySide: partySide, amount: amount.toFixed(2) },
           { voucherId: voucher.id, ledgerId: hpAccountId, entrySide: partySide === 'CR' ? 'DR' : 'CR', amount: amount.toFixed(2) },
         ]);
+        const num = (v: unknown) => (v === undefined || v === null || !isFinite(Number(v)) ? null : Number(v).toFixed(2));
+        await tx.execute(sql`
+          INSERT INTO hawa_patti_lines (voucher_id, month, year, party_id, party_name, hp_party_id, base_amt, hp_pct, hp_amt, added_by)
+          VALUES (${voucher.id}, ${data.month}, ${data.year}, ${line.partyId ? Number(line.partyId) : null}, ${line.partyName || null},
+                  ${Number(line.hpPartyId)}, ${num(line.baseAmt)}, ${num(line.hpPct)}, ${Number(line.amount).toFixed(2)}, ${user.username || 'SYSTEM'})
+        `);
       }
     });
     return { posted: lines.length };
   }
 
-  // HVS Process data: reuses the exact Comm/Hissa/opening-balance/P&L formulas already
-  // validated for getAllShiftPartyReport above. "Total"/"Closing"/"T-Settle-Amt" are a
-  // best-effort formula (Total = opening + P&L, Closing = Total - settled-so-far) — flagged
-  // here the same way TPC/HP-Amt/RBT are flagged elsewhere, since their exact live semantics
-  // can't be independently verified from a static screenshot.
+  // HawaPatti Rpt (rpt_hawa_patti): the month's processed Hawa Patti lines — one row per
+  // HAWA_PATTI voucher narrated "<Month> <Year>" (Auto Hawa Patti → Process Voucher):
+  //   Party     the playing party            HP-Party  the ledger the share was posted to
+  //   Base-Amt  the party's month P&L        HP-%      its HP A/C Hissa %
+  //   HP-Amt    Base × HP-% — signed: + when the HP party was credited, − when debited
+  //             (live ABHISHEK RAWLA −28385 × 20% → −5677)
+  //   AddedBy / AddedDate  who processed it and when
+  // A voucher processed before the line record existed falls back to its narration (Party), its
+  // entries (HP-Party, HP-Amt), the party's HP A/C % today and Base = HP-Amt ÷ HP-%.
+  static async getHawaPattiReport(filters: { month: number; year: number }) {
+    if (!(filters.month >= 1 && filters.month <= 12) || !(filters.year > 2000)) throw new AppError('Please select a valid Month and Year!');
+    await this.ensureHawaPattiLines();
+    const label = `${this.VAPSI_MONTHS[filters.month - 1]} ${filters.year}`;
+    const vRows = await pgSql<Array<{
+      id: number; narration: string | null; updated_by: string | null; updated_at: Date | string; username: string | null;
+      party_id: number | null; party_name: string | null; hp_party_id: number | null; base_amt: string | null; hp_pct: string | null;
+      added_by: string | null; added_at: Date | string | null;
+    }>>`
+      SELECT v.id, v.narration, v.updated_by, v.updated_at, u.username,
+             l.party_id, l.party_name, l.hp_party_id, l.base_amt, l.hp_pct, l.added_by, l.added_at
+      FROM vouchers v
+      LEFT JOIN users u ON u.id = v.created_by
+      LEFT JOIN hawa_patti_lines l ON l.voucher_id = v.id
+      WHERE v.voucher_type = 'HAWA_PATTI' AND (v.narration = ${label} OR v.narration LIKE ${label + ' | %'})
+    `;
+    if (vRows.length === 0) return { month: filters.month, year: filters.year, rows: [], totalBase: 0, totalHpAmt: 0 };
+
+    const ids = vRows.map(v => v.id);
+    const entries = await pgSql<Array<{ voucher_id: number; ledger_id: number; entry_side: string; amount: string; party_name: string }>>`
+      SELECT e.voucher_id, e.ledger_id, e.entry_side, e.amount, l.party_name
+      FROM voucher_entries e JOIN ledgers l ON l.id = e.ledger_id
+      WHERE e.voucher_id IN ${pgSql(ids)}
+    `;
+    const hpLinks = await db.select({ ledgerId: ledgerThirdPartyLinks.ledgerId, percent: ledgerThirdPartyLinks.percent, owner: ledgers.partyName })
+      .from(ledgerThirdPartyLinks)
+      .innerJoin(ledgers, eq(ledgers.id, ledgerThirdPartyLinks.ledgerId))
+      .where(and(eq(ledgerThirdPartyLinks.linkType, 'HISSA'), sql`UPPER(TRIM(${ledgerThirdPartyLinks.partyName})) = ${this.HP_ACCOUNT}`));
+    const hpPctByName = new Map<string, number>();
+    for (const h of hpLinks) {
+      const k = (h.owner || '').trim().toUpperCase();
+      hpPctByName.set(k, (hpPctByName.get(k) || 0) + (parseFloat(h.percent) || 0));
+    }
+
+    const rows = vRows.map(v => {
+      const mine = entries.filter(e => e.voucher_id === v.id);
+      const hpLine = (v.hp_party_id ? mine.find(e => e.ledger_id === v.hp_party_id) : undefined)
+        || mine.find(e => (e.party_name || '').trim().toUpperCase() !== this.HP_ACCOUNT)
+        || mine[0];
+      const amt = parseFloat(hpLine?.amount || '0') || 0;
+      const hpAmt = hpLine?.entry_side === 'DR' ? -amt : amt;
+      const fromNarration = (v.narration || '').includes(' | ') ? (v.narration || '').split(' | ').slice(1).join(' | ').trim() : '';
+      const partyName = v.party_name || fromNarration || hpLine?.party_name || '-';
+      const hpPct = v.hp_pct !== null ? parseFloat(v.hp_pct) : (hpPctByName.get(partyName.trim().toUpperCase()) || 0);
+      const baseAmt = v.base_amt !== null ? parseFloat(v.base_amt) : (hpPct ? hpAmt * 100 / hpPct : 0);
+      return {
+        voucherId: v.id,
+        partyId: v.party_id,
+        partyName,
+        hpPartyName: hpLine?.party_name || partyName,
+        baseAmt,
+        hpPct,
+        hpAmt,
+        addedBy: v.added_by || v.username || v.updated_by || '-',
+        addedAt: TransactionService.stampIso(v.added_at || v.updated_at),
+      };
+    }).sort((a, b) => a.partyName.localeCompare(b.partyName));
+    return {
+      month: filters.month,
+      year: filters.year,
+      rows,
+      totalBase: rows.reduce((s, r) => s + r.baseAmt, 0),
+      totalHpAmt: rows.reduce((s, r) => s + r.hpAmt, 0),
+    };
+  }
+
+  // HVS Process (process_hvs) — the month-end settlement desk, one row per party that played in
+  // the month (live 11 columns):
+  //   P&L         = the month's Sale − Comm − Payout over its declared cycles (the Auto Hawa
+  //                 Patti / Auto Vapsi P&L)
+  //   HP-Amt      = P&L × HP %  (HP A/C Hissa row) — only while the month's Hawa Patti for the
+  //                 party is still to post; once posted it is in Closing, so it reads 0
+  //   Vapsi-Amt   = (P&L − HP-Amt) × Vapsi %, when above 0 — likewise 0 once posted
+  //                 (live September: Vapsi posted → 0)
+  //   Total       = HP-Amt + Vapsi-Amt
+  //   Closing     = the party's balance at the month's end (Dr − Cr: vouchers without LIMIT +
+  //                 declared game, the OutStanding / Admin Cash balance)
+  //   T-Settle-Amt = Closing − Total  (live footer 7763431 − 250955 = 7512476)
+  // Built from the month summaries and the balances, all SQL-aggregated and run side by side —
+  // no slip or entry rows are pulled into memory.
   static async getHvsProcessData(filters: { fromDate: string; toDate: string; agentId?: number }) {
-    const { rows } = await this.getAllShiftPartyReport({
-      fromDate: filters.fromDate,
-      toDate: filters.toDate,
-      agentId: filters.agentId,
-    });
-
-    const partyIds = rows.map(r => r.partyId);
-    const settledRows = partyIds.length > 0
-      ? await db.select({
-          ledgerId: voucherEntries.ledgerId,
-          totalDr: sql<string>`COALESCE(SUM(CASE WHEN ${voucherEntries.entrySide} = 'DR' THEN ${voucherEntries.amount}::numeric ELSE 0 END), 0)`,
-          totalCr: sql<string>`COALESCE(SUM(CASE WHEN ${voucherEntries.entrySide} = 'CR' THEN ${voucherEntries.amount}::numeric ELSE 0 END), 0)`,
-        })
-          .from(voucherEntries)
-          .innerJoin(vouchers, eq(voucherEntries.voucherId, vouchers.id))
-          .where(and(
-            inArray(voucherEntries.ledgerId, partyIds),
-            inArray(vouchers.voucherType, ['CASH_RECEIPT', 'CASH_PAYMENT']),
-            sql`${vouchers.createdAt}::date >= ${filters.fromDate}::date`,
-            sql`${vouchers.createdAt}::date <= ${filters.toDate}::date`,
-          ))
-          .groupBy(voucherEntries.ledgerId)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(filters.fromDate || '') || !/^\d{4}-\d{2}-\d{2}$/.test(filters.toDate || '')) {
+      throw new AppError('Please select a valid Month and Year!');
+    }
+    if (filters.fromDate > filters.toDate) throw new AppError('From Date cannot be after To Date!');
+    const month = parseInt(filters.fromDate.slice(5, 7), 10);
+    const year = parseInt(filters.fromDate.slice(0, 4), 10);
+    // P&L / HP / Vapsi over the From–To on screen (the whole month by default); Closing up to To
+    const range = { from: filters.fromDate, to: filters.toDate };
+    const [vapsi, hp, balances] = await Promise.all([
+      this.getVapsiSummary({ month, year, agentId: filters.agentId, withHp: true, range }),
+      this.getHawaPattiSummary({ month, year, agentId: filters.agentId, range }),
+      this.getLedgerBalancesAsOf(filters.toDate),
+    ]);
+    const hpById = new Map(hp.rows.map(r => [r.partyId, r]));
+    const closingById = new Map(balances.map(b => [b.ledgerId, b.balance]));
+    const played = vapsi.rows.filter(r => r.tSale !== 0);
+    const ids = played.map(r => r.partyId);
+    const mobileRows = ids.length > 0
+      ? await db.select({ id: ledgers.id, mobile: ledgers.mobile }).from(ledgers).where(inArray(ledgers.id, ids))
       : [];
-    const settledByLedger = new Map(settledRows.map(s => [s.ledgerId, parseFloat(s.totalCr) - parseFloat(s.totalDr)]));
+    const mobileById = new Map(mobileRows.map(m => [m.id, m.mobile]));
 
-    return rows.map(r => {
-      const pnl = r.totalSale + r.comm + r.hissa - r.dOpen - r.aOpen;
-      const total = r.opening + pnl;
-      const tSettleAmt = settledByLedger.get(r.partyId) || 0;
-      const closing = total - tSettleAmt;
+    return played.map(r => {
+      const h = hpById.get(r.partyId);
+      const hpAmt = h && h.isHp && !h.done ? Math.round(h.hpAmt) : 0;
+      const vapsiAmt = !r.done && r.vapsiAmt > 0 ? Math.round(r.vapsiAmt) : 0;
+      const total = hpAmt + vapsiAmt;
+      const closing = closingById.get(r.partyId) || 0;
       return {
         partyId: r.partyId,
         partyName: r.partyName,
         agentName: r.agentName,
-        mobile: r.mobile,
-        pnl,
+        mobile: mobileById.get(r.partyId) || '-',
+        pnl: r.pnl,
+        hpAmt,
+        vapsiAmt,
         total,
         closing,
-        tSettleAmt,
+        tSettleAmt: closing - total,
       };
     });
+  }
+
+  // HVS Go-Process: each ticked party's T-Settle-Amt posted as a cash settlement entry (the party
+  // owes, > 0 → received from it, Cr; < 0 → paid to it, Dr), narrated "HVS Process <Month> <Year>",
+  // all in one database transaction — every entry is posted or none is.
+  static async processHvs(data: { month: number; year: number; voucherDate: string; items: { partyId: number; amount: number }[] }, user: UserSession) {
+    if (!(data.month >= 1 && data.month <= 12) || !(data.year > 2000)) throw new AppError('Please select a valid Month and Year!');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(data.voucherDate || '')) throw new AppError('Please select Date!');
+    const lines = (data.items || []).filter(i => i.partyId && Math.round(Number(i.amount) || 0) !== 0);
+    if (lines.length === 0) throw new AppError('Please check at least one party with a T-Settle amount!');
+    const narration = `HVS Process ${this.VAPSI_MONTHS[data.month - 1]} ${data.year}`;
+    const createdAt = new Date(`${data.voucherDate}T12:00:00`);
+    await db.transaction(async (tx) => {
+      for (const line of lines) {
+        const amt = Math.abs(Number(line.amount));
+        const side = Number(line.amount) > 0 ? 'CR' : 'DR';
+        const voucherType = side === 'CR' ? 'CASH_RECEIPT' : 'CASH_PAYMENT';
+        const [voucher] = await tx.insert(vouchers).values({
+          voucherNumber: `VOUCH-${voucherType}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+          voucherType,
+          totalAmount: amt.toFixed(2),
+          narration,
+          createdBy: user.userId,
+          updatedBy: user.username || 'SYSTEM',
+          createdAt,
+        }).returning();
+        await tx.insert(voucherEntries).values([
+          { voucherId: voucher.id, ledgerId: Number(line.partyId), entrySide: side, amount: amt.toFixed(2) },
+        ]);
+      }
+    });
+    return { posted: lines.length };
   }
 
   // Per-staff transaction stats. Free Time / Time Taken / T-Time have no backing data
   // anywhere in this schema (no session-duration tracking exists) — left at 0, same
   // honest-placeholder convention already used for TPC/HP-Amt/RBT elsewhere.
-  static async getProductivityReport(filters: { fromDate: string; toDate: string; shiftId?: number }) {
-    const conditions = [
-      ne(transactions.status, 'VOIDED'),
-      sql`${transactions.createdAt}::date >= ${filters.fromDate}::date`,
-      sql`${transactions.createdAt}::date <= ${filters.toDate}::date`,
-    ];
-    if (filters.shiftId) conditions.push(eq(transactions.shiftId, filters.shiftId));
+  // Productivity Report (rpt_productivity): per operator (staff), the slips saved in From–To (and
+  // Shift), sorted by T-Count as live. Per slip: Start = started_at (when the slip was begun on the
+  // Add page; a slip saved before that was tracked starts at its save), End = created_at,
+  // Time Taken = End − Start, Free Time = Start − the operator's previous slip's End that day.
+  //   Free Count  = slips                  T-Count  = number entries     T-Amount = Σ slip amount
+  //   Time Taken  = Σ Time Taken           T-Time   = Σ Time Taken + Σ Free Time (time at the desk)
+  //   Free Time   = Σ Free Time gaps longer than D-Min minutes (D-Min blank → 0, as live shows)
+  // Times go out in seconds; the page prints them as live (H.MM: 0.17, 1.50). One SQL pass over
+  // an index range on created_at (no ::date cast on the column).
+  private static async productivitySlips(filters: { fromDate: string; toDate: string; shiftId?: number; userId?: number }) {
+    await this.ensureStartedAtColumn();
+    const shiftCond = filters.shiftId ? pgSql`AND t.shift_id = ${filters.shiftId}` : pgSql``;
+    const userCond = filters.userId ? pgSql`AND t.created_by = ${filters.userId}` : pgSql``;
+    return pgSql<Array<{
+      id: number; created_by: number; party_name: string; shift_name: string; start_at: string; end_at: string;
+      taken_s: string; gap_s: string | null; entries: number; total_amount: string; updated_by: string | null; updated_at: string;
+    }>>`
+      WITH s AS (
+        SELECT t.id, t.created_by, t.created_at AS end_at, COALESCE(t.started_at, t.created_at) AS start_at,
+               t.total_amount, t.updated_by, t.updated_at, t.party_id, t.shift_id,
+               (SELECT COUNT(*) FROM transaction_entries e WHERE e.transaction_id = t.id)::int AS entries
+        FROM transactions t
+        WHERE t.status <> 'VOIDED'
+          AND t.created_at >= ${filters.fromDate}::date AND t.created_at < (${filters.toDate}::date + 1)
+          ${shiftCond} ${userCond}
+      ), g AS (
+        SELECT s.*, LAG(s.end_at) OVER (PARTITION BY s.created_by, s.end_at::date ORDER BY s.start_at, s.id) AS prev_end
+        FROM s
+      )
+      SELECT g.id, g.created_by, l.party_name, sh.name AS shift_name,
+             g.start_at::text AS start_at, g.end_at::text AS end_at,
+             GREATEST(EXTRACT(EPOCH FROM (g.end_at - g.start_at)), 0) AS taken_s,
+             CASE WHEN g.prev_end IS NULL THEN NULL ELSE GREATEST(EXTRACT(EPOCH FROM (g.start_at - g.prev_end)), 0) END AS gap_s,
+             g.entries, g.total_amount, g.updated_by, g.updated_at::text AS updated_at
+      FROM g
+      JOIN ledgers l ON l.id = g.party_id
+      JOIN shifts sh ON sh.id = g.shift_id
+      ORDER BY g.created_by, g.start_at, g.id
+    `;
+  }
 
-    const rows = await db.select({
-      userId: staff.userId,
-      name: staff.fullName,
-      mobile: staff.mobile,
-      address: staff.address,
-      role: staff.role,
-      username: staff.username,
-      tCount: sql<number>`COUNT(${transactions.id})::int`,
-      tAmount: sql<string>`COALESCE(SUM(${transactions.totalAmount}), 0)`,
-    })
-      .from(transactions)
-      .innerJoin(staff, eq(transactions.createdBy, staff.userId))
-      .where(and(...conditions))
-      .groupBy(staff.userId, staff.fullName, staff.mobile, staff.address, staff.role, staff.username);
+  static async getProductivityReport(filters: { fromDate: string; toDate: string; shiftId?: number; dMin?: number }) {
+    const [slips, staffRows] = await Promise.all([
+      this.productivitySlips(filters),
+      db.select({
+        userId: staff.userId,
+        name: staff.fullName,
+        mobile: staff.mobile,
+        address: staff.address,
+        role: staff.role,
+        username: staff.username,
+      }).from(staff),
+    ]);
+    const staffById = new Map(staffRows.map(s => [s.userId, s]));
+    const minGap = (filters.dMin && filters.dMin > 0 ? filters.dMin : 0) * 60;
+    const agg = new Map<number, { slips: number; entries: number; amount: number; taken: number; gaps: number; free: number }>();
+    for (const s of slips) {
+      if (!staffById.has(s.created_by)) continue; // operators without a staff record stay out, as before
+      const a = agg.get(s.created_by) || { slips: 0, entries: 0, amount: 0, taken: 0, gaps: 0, free: 0 };
+      const gap = s.gap_s === null ? 0 : parseFloat(s.gap_s) || 0;
+      a.slips += 1;
+      a.entries += Number(s.entries) || 0;
+      a.amount += parseFloat(s.total_amount) || 0;
+      a.taken += parseFloat(s.taken_s) || 0;
+      a.gaps += gap;
+      if (minGap > 0 && gap > minGap) a.free += gap;
+      agg.set(s.created_by, a);
+    }
+    return Array.from(agg.entries()).map(([userId, a]) => {
+      const st = staffById.get(userId)!;
+      return {
+        staffId: userId,
+        name: st.name,
+        mobile: st.mobile || '-',
+        address: st.address || '-',
+        role: st.role || '-',
+        username: st.username || '-',
+        freeCount: a.slips,
+        // seconds
+        freeTime: Math.round(a.free),
+        timeTaken: Math.round(a.taken),
+        tTime: Math.round(a.taken + a.gaps),
+        // T-Count = number entries (live GAGGU 47 slips → 1038)
+        tCount: a.entries,
+        tAmount: a.amount,
+      };
+    }).sort((a, b) => a.tCount - b.tCount || a.name.localeCompare(b.name));
+  }
 
-    return rows.map(r => ({
-      staffId: r.userId,
-      name: r.name,
-      mobile: r.mobile || '-',
-      address: r.address || '-',
-      role: r.role || '-',
-      username: r.username || '-',
-      freeTime: 0,
-      timeTaken: 0,
-      tTime: 0,
-      tCount: r.tCount,
-      tAmount: parseFloat(r.tAmount),
-    })).sort((a, b) => a.name.localeCompare(b.name));
+  // Productivity Report → click a Name: that operator's slips (live "TRANSACTION PRODUCTIVITY
+  // REPORT"): Party, Shift, Start Time, Time Taken, End Time, Free Time, T-Count, T-Amt,
+  // Update By, Update Date — oldest first.
+  static async getProductivityDetail(filters: { fromDate: string; toDate: string; shiftId?: number; userId: number }) {
+    if (!filters.userId) throw new AppError('Please select a user!');
+    const slips = await this.productivitySlips(filters);
+    return slips.map(s => ({
+      transactionId: s.id,
+      partyName: s.party_name,
+      shiftName: s.shift_name,
+      startAt: s.start_at,
+      endAt: s.end_at,
+      timeTaken: Math.round(parseFloat(s.taken_s) || 0),
+      freeTime: s.gap_s === null ? 0 : Math.round(parseFloat(s.gap_s) || 0),
+      tCount: Number(s.entries) || 0,
+      tAmount: parseFloat(s.total_amount) || 0,
+      updatedBy: s.updated_by || '-',
+      updatedAt: s.updated_at,
+    }));
   }
 
   // Same per-staff base as getProductivityReport, but broken down per shift name instead of

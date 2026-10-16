@@ -97,13 +97,37 @@ export class TransactionController {
     }
   }
 
+  static async hvsGoProcess(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await TransactionService.processHvs(req.body, req.user!);
+      return sendSuccess(res, result, 'HVS process posted', 201);
+    } catch (err) {
+      next(err);
+    }
+  }
+
   static async productivityReport(req: Request, res: Response, next: NextFunction) {
     try {
       const fromDate = req.query.fromDate as string;
       const toDate = req.query.toDate as string;
       const shiftId = req.query.shiftId ? parseInt(req.query.shiftId as string, 10) : undefined;
-      const result = await TransactionService.getProductivityReport({ fromDate, toDate, shiftId });
+      const dMin = req.query.dMin ? parseFloat(req.query.dMin as string) : undefined;
+      const result = await TransactionService.getProductivityReport({ fromDate, toDate, shiftId, dMin });
       return sendSuccess(res, result, 'Productivity report retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async productivityDetail(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await TransactionService.getProductivityDetail({
+        fromDate: req.query.fromDate as string,
+        toDate: req.query.toDate as string,
+        shiftId: req.query.shiftId ? parseInt(req.query.shiftId as string, 10) : undefined,
+        userId: parseInt(req.query.userId as string, 10) || 0,
+      });
+      return sendSuccess(res, result, 'Productivity detail retrieved');
     } catch (err) {
       next(err);
     }
@@ -136,6 +160,11 @@ export class TransactionController {
     try {
       const shiftId = parseInt(req.query.shiftId as string, 10);
       const date = req.query.date as string;
+      // ?declaredOnly=true: just the day's declared number (Jantri View popup highlight)
+      if (req.query.declaredOnly === 'true') {
+        const declaredNumber = await TransactionService.declaredNumberFor(shiftId, date);
+        return sendSuccess(res, { declaredNumber }, 'Declared number retrieved');
+      }
       const commission = req.query.commission === 'true';
       const hissa = req.query.hissa === 'true';
       const dibba = req.query.dibba === 'true';
@@ -354,6 +383,30 @@ export class TransactionController {
     }
   }
 
+  static async vapsiReport(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await TransactionService.getVapsiReport({
+        month: parseInt(req.query.month as string, 10),
+        year: parseInt(req.query.year as string, 10),
+      });
+      return sendSuccess(res, result, 'Vapsi report retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async hawaPattiReport(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await TransactionService.getHawaPattiReport({
+        month: parseInt(req.query.month as string, 10),
+        year: parseInt(req.query.year as string, 10),
+      });
+      return sendSuccess(res, result, 'Hawa patti report retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
   static async hawaPattiProcess(req: Request, res: Response, next: NextFunction) {
     try {
       const result = await TransactionService.processHawaPatti(req.body, req.user!);
@@ -384,6 +437,45 @@ export class TransactionController {
     try {
       const result = await TransactionService.processVapsi(req.body, req.user!);
       return sendSuccess(res, result, 'Vapsi voucher processed', 201);
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async cashAgentReport(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await TransactionService.getCashAgentReport({
+        fromDate: req.query.fromDate as string,
+        toDate: req.query.toDate as string,
+      });
+      return sendSuccess(res, result, 'Cash report retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async settlementAgentRows(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await TransactionService.getSettlementAgentRows({
+        fromDate: req.query.fromDate as string,
+        toDate: req.query.toDate as string,
+        agentId: parseInt(req.query.agentId as string, 10) || 0,
+      });
+      return sendSuccess(res, result, 'Settlement agent rows retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async outstandingAgentGroup(req: Request, res: Response, next: NextFunction) {
+    try {
+      const asOfDate = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+      const agentIds = String(req.query.agentIds || '')
+        .split(',')
+        .map(v => parseInt(v, 10))
+        .filter(n => Number.isInteger(n) && n > 0);
+      const result = await TransactionService.getOutstandingAgentGroup({ asOfDate, agentIds });
+      return sendSuccess(res, result, 'Outstanding agent-group retrieved');
     } catch (err) {
       next(err);
     }

@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { apiRequest } from '../api/client.js';
+import { declaredCellKeys, hlCls } from '../utils/declaredHighlight.js';
 
 interface CollectionGrid {
   grid: { number: string; totalAmount: number }[];
   haruf: { digit: string; andarAmount: number; baharAmount: number }[];
+  // the day's declared result ("32"), null while undeclared
+  declaredNumber?: string | null;
 }
 
 interface PartyJantriModalProps {
@@ -15,6 +18,11 @@ interface PartyJantriModalProps {
   date: string;
   partyId: number;
   partyName: string;
+  // Optional header text in place of the party name (Admin Cash: "JIMMY CHD | 14-10-2026 | GHAZIABAD")
+  title?: string;
+  // Each cell rounded up to whole 50s (Daily Report, the default). Admin Cash passes false:
+  // the party's exact amounts, Grand Total = its sale for that shift + day.
+  round50?: boolean;
 }
 
 // Daily Report → click a Party name (live): that party's own jantri for the shift and day —
@@ -22,7 +30,7 @@ interface PartyJantriModalProps {
 // to whole 50s. Live JAI LUXMI 12-10: ANKUSH KUMAR 15/85 every number it played shows 50, the
 // six it didn't (37, 39, 59, 73, 93, 95) stay blank, Grand Total 4,700; GANGA NAGAR 20,400;
 // HANUMANGARH B9 117 -> 150. Server: /transactions/collection?round50=true, one party.
-export const PartyJantriModal: React.FC<PartyJantriModalProps> = ({ open, onClose, shiftId, date, partyId, partyName }) => {
+export const PartyJantriModal: React.FC<PartyJantriModalProps> = ({ open, onClose, shiftId, date, partyId, partyName, title, round50 = true }) => {
   const [result, setResult] = useState<CollectionGrid | null>(null);
   const [loading, setLoading] = useState(false);
   const backdropDownRef = useRef(false);
@@ -32,7 +40,8 @@ export const PartyJantriModal: React.FC<PartyJantriModalProps> = ({ open, onClos
     let cancelled = false;
     setResult(null);
     setLoading(true);
-    const params = new URLSearchParams({ shiftId, date, round50: 'true', partyIds: String(partyId) });
+    const params = new URLSearchParams({ shiftId, date, partyIds: String(partyId) });
+    if (round50) params.append('round50', 'true');
     apiRequest<CollectionGrid>(`/transactions/collection?${params.toString()}`)
       .then(res => { if (!cancelled) setResult(res.data || { grid: [], haruf: [] }); })
       .catch(err => {
@@ -41,7 +50,7 @@ export const PartyJantriModal: React.FC<PartyJantriModalProps> = ({ open, onClos
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [open, shiftId, date, partyId]);
+  }, [open, shiftId, date, partyId, round50]);
 
   useEffect(() => {
     if (!open) return;
@@ -82,12 +91,15 @@ export const PartyJantriModal: React.FC<PartyJantriModalProps> = ({ open, onClos
   const badge = 'absolute top-0.5 left-0.5 text-[9px] font-bold px-1 rounded-xs bg-[#fde68a] text-[#713f12] leading-tight select-none';
   const amt = (v: number) => (v > 0 ? <span className="font-bold text-[13px] text-slate-900 font-mono">{v}</span> : null);
 
+  // declared number + its Andar / Bahar haruf shown in green (32 -> 32, A3, B2)
+  const declaredKeys = declaredCellKeys(result?.declaredNumber);
+
   const harufRow = (side: 'A' | 'B') => (
     <tr>
       {Array.from({ length: 10 }, (_, c) => {
         const digit = c + 1 === 10 ? 0 : c + 1;
         return (
-          <td key={digit} className={cellBox}>
+          <td key={digit} className={hlCls(declaredKeys, `${side}${digit}`, cellBox)}>
             <span className={badge}>{side}{digit}</span>
             {amt(cell(`${side}${digit}`))}
           </td>
@@ -109,7 +121,7 @@ export const PartyJantriModal: React.FC<PartyJantriModalProps> = ({ open, onClos
       <div className="bg-white rounded-lg shadow-2xl w-full max-w-5xl overflow-hidden border border-slate-300 max-h-[95vh] flex flex-col">
         <div className="bg-[#24497e] text-white px-4 py-3 flex items-center justify-between">
           <h2 className="text-sm sm:text-base font-bold tracking-tight uppercase inline-flex items-center gap-2">
-            {partyName}
+            {title || partyName}
             {loading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
           </h2>
           <button type="button" onClick={onClose} className="text-white hover:text-slate-200 p-0.5" title="Close (Esc)">
@@ -133,7 +145,7 @@ export const PartyJantriModal: React.FC<PartyJantriModalProps> = ({ open, onClos
                   {Array.from({ length: 10 }, (_, c) => {
                     const n = r * 10 + c + 1;
                     return (
-                      <td key={n} className={cellBox}>
+                      <td key={n} className={hlCls(declaredKeys, n, cellBox)}>
                         <span className={badge}>{n}</span>
                         {amt(cell(String(n)))}
                       </td>

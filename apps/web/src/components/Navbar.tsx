@@ -235,12 +235,14 @@ export const Navbar: React.FC<NavbarProps> = ({
         { label: 'Profit & Loss Report', page: 'profit-loss-report' },
         { label: 'Limit & Balance Report', page: 'limit-balance-report' },
         { label: 'Admin Cash', page: 'admin-cash' },
-        { label: 'Trail Balance Report', page: 'trial-balance-report' },
+        // "Trail Balance Report" is hidden from the menu (the page itself and its
+        // /rpt_trial_balance address still work): { label: 'Trail Balance Report', page: 'trial-balance-report' },
         { label: 'OutStanding Report', page: 'outstanding-report' },
         { label: 'HawaPatti Rpt', page: 'hawapatti-rpt' },
         { label: 'Vapsi Report', page: 'vapsi-report' },
         { label: 'Cash Report', page: 'cash-report' },
-        { label: 'Voucher List', page: 'voucher-list-report' },
+        // "Voucher List" is hidden from the menu (the page itself and its /rpt_voucher_list
+        // address still work): { label: 'Voucher List', page: 'voucher-list-report' },
       ],
     },
     {
@@ -249,7 +251,8 @@ export const Navbar: React.FC<NavbarProps> = ({
       items: [
         { label: 'Vapsi Voucher', page: 'vapsi-voucher' },
         { label: 'Hawa Patti Voucher', page: 'hawa-patti-voucher' },
-        { label: 'Settlement', page: 'settlement' },
+        // "Settlement" is hidden from the menu (the page itself and its /rpt_settlement
+        // address still work): { label: 'Settlement', page: 'settlement' },
         { label: 'HVS Process', page: 'hvs-process' },
         { label: 'Settlement Agent', page: 'settlement-agent-group' },
         { label: 'OutStanding Agent-Group', page: 'outstanding-agent-group' },

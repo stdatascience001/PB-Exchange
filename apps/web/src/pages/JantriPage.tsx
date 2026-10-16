@@ -3,6 +3,7 @@ import { ShiftDto, JantriViewDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { toast } from 'react-toastify';
 import { DateDMYInput } from '../components/DateDMYInput.js';
+import { declaredCellKeys, useDeclaredNumber, hlCls } from '../utils/declaredHighlight.js';
 
 interface JantriPageProps {
   shifts: ShiftDto[];
@@ -139,6 +140,9 @@ export const JantriPage: React.FC<JantriPageProps> = ({
   }, [activeShift, availableShifts.length, dateStr]);
 
   const selectedShift = activeShift && availableShifts.some(s => s.id === activeShift.id) ? activeShift : availableShifts[0];
+
+  // declared number + its Andar / Bahar haruf shown in green
+  const declaredKeys = declaredCellKeys(useDeclaredNumber(selectedShift?.id, dateStr));
 
   const gridByNumber = useMemo(() => {
     const map = new Map<string, { totalAmount: number; liability: number }>();
@@ -286,7 +290,7 @@ export const JantriPage: React.FC<JantriPageProps> = ({
                         const num = r * 10 + (c + 1);
                         const amt = getAmountForNum(num);
                         return (
-                          <td key={num} className="relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 sm:px-1.5 align-middle">
+                          <td key={num} className={hlCls(declaredKeys, num, "relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 sm:px-1.5 align-middle")}>
                             <span className="absolute top-0.5 left-0.5 text-[9px] font-bold px-1 rounded-xs bg-[#fef9c3] text-[#854d0e] leading-tight select-none">
                               {num}
                             </span>
@@ -325,7 +329,7 @@ export const JantriPage: React.FC<JantriPageProps> = ({
                     const badgeLabel = `B${digit}`;
                     const bAmt = harufByDigit.get(String(digit))?.baharAmount || 0;
                     return (
-                      <td key={badgeLabel} className="relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 sm:px-1.5 align-middle">
+                      <td key={badgeLabel} className={hlCls(declaredKeys, badgeLabel, "relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 sm:px-1.5 align-middle")}>
                         <span className="absolute top-0.5 left-0.5 text-[9px] font-bold px-1 rounded-xs bg-[#fef9c3] text-[#854d0e] leading-tight select-none">
                           {badgeLabel}
                         </span>
@@ -348,7 +352,7 @@ export const JantriPage: React.FC<JantriPageProps> = ({
                     const badgeLabel = `A${digit}`;
                     const aAmt = harufByDigit.get(String(digit))?.andarAmount || 0;
                     return (
-                      <td key={badgeLabel} className="relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 sm:px-1.5 align-middle">
+                      <td key={badgeLabel} className={hlCls(declaredKeys, badgeLabel, "relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 sm:px-1.5 align-middle")}>
                         <span className="absolute top-0.5 left-0.5 text-[9px] font-bold px-1 rounded-xs bg-[#fef9c3] text-[#854d0e] leading-tight select-none">
                           {badgeLabel}
                         </span>

@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { X } from 'lucide-react';
 import type { TransactionItem } from '../pages/TransactionListPage.js';
 import { harufOf } from '../utils/entryDisplay.js';
+import { apiRequest } from '../api/client.js';
+import { declaredCellKeys } from '../utils/declaredHighlight.js';
 
 interface JantriViewModalProps {
   open: boolean;
@@ -10,7 +12,13 @@ interface JantriViewModalProps {
   selectedTx: TransactionItem | null;
   // Every slip currently loaded on the page — Consolidate Jantri sums across these.
   list: TransactionItem[];
+  // Optional: the shift + day on screen — when that day is declared, its number and haruf
+  // (32 -> 32, A3, B2) are shown in green. Pages that don't pass them are unchanged.
+  shiftId?: string;
+  date?: string;
 }
+
+export { declaredCellKeys } from '../utils/declaredHighlight.js';
 
 // Jantri View (F3) popup — the same grid, toggles and totals as Live Transactions' Jantri
 // View: numbers 1-100 in a 10x10 grid with row/column totals, then Bahar (B1-B0) and Andar
@@ -18,8 +26,22 @@ interface JantriViewModalProps {
 //   - default:                the selected slip's entries only
 //   - Consolidate Jantri:     every loaded slip of the selected party (all slips if none)
 //   - Cut Consolidate Jantri: each cell shown at 90% (rounded)
-export const JantriViewModal: React.FC<JantriViewModalProps> = ({ open, onClose, selectedTx, list }) => {
+export const JantriViewModal: React.FC<JantriViewModalProps> = ({ open, onClose, selectedTx, list, shiftId, date }) => {
   const [isConsolidated, setIsConsolidated] = useState(false);
+  const [declaredNumber, setDeclaredNumber] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || !shiftId || !date) { setDeclaredNumber(null); return; }
+    let alive = true;
+    const params = new URLSearchParams({ shiftId, date, declaredOnly: 'true' });
+    apiRequest<{ declaredNumber: string | null }>(`/transactions/collection?${params.toString()}`)
+      .then(res => { if (alive) setDeclaredNumber(res.data?.declaredNumber ?? null); })
+      .catch(() => { if (alive) setDeclaredNumber(null); });
+    return () => { alive = false; };
+  }, [open, shiftId, date]);
+  const declaredKeys = declaredCellKeys(declaredNumber);
+  const tdCls = (k: string) => `relative h-8 sm:h-9 border border-slate-300 text-right px-1 sm:px-1.5 align-middle ${declaredKeys.has(k) ? 'bg-green-600' : 'bg-white'}`;
+  const amtCls = (k: string) => `font-bold text-xs sm:text-[13px] font-mono ${declaredKeys.has(k) ? 'text-white' : 'text-slate-900'}`;
   const [isCutConsolidated, setIsCutConsolidated] = useState(false);
 
   useEffect(() => {
@@ -144,13 +166,13 @@ export const JantriViewModal: React.FC<JantriViewModalProps> = ({ open, onClose,
         return (
           <td
             key={badgeLabel}
-            className="relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 sm:px-1.5 align-middle"
+            className={tdCls(badgeLabel)}
           >
             <span className="absolute top-0.5 left-0.5 text-[9px] font-bold px-1 rounded-xs bg-[#fef9c3] text-[#854d0e] leading-tight select-none">
               {badgeLabel}
             </span>
             {amt > 0 ? (
-              <span className="font-bold text-xs sm:text-[13px] text-slate-900 font-mono">
+              <span className={amtCls(badgeLabel)}>
                 {amt.toLocaleString('en-IN')}
               </span>
             ) : null}
@@ -212,13 +234,13 @@ export const JantriViewModal: React.FC<JantriViewModalProps> = ({ open, onClose,
                     return (
                       <td
                         key={num}
-                        className="relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 sm:px-1.5 align-middle"
+                        className={tdCls(String(num))}
                       >
                         <span className="absolute top-0.5 left-0.5 text-[9px] font-bold px-1 rounded-xs bg-[#fef9c3] text-[#854d0e] leading-tight select-none">
                           {num}
                         </span>
                         {amt > 0 ? (
-                          <span className="font-bold text-xs sm:text-[13px] text-slate-900 font-mono">
+                          <span className={amtCls(String(num))}>
                             {amt.toLocaleString('en-IN')}
                           </span>
                         ) : null}

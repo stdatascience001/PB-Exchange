@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { apiRequest } from '../api/client.js';
+import { DateDMYInput } from './DateDMYInput.js';
 
 export const VAPSI_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
@@ -17,6 +18,8 @@ export interface VapsiSummaryRow {
   partyName: string;
   agentName: string;
   tpv: number;
+  // the ledger's TPR flag (Vapsi | TPR = "10 | YES") — the TPV column's YES / NO
+  tpr?: boolean;
   wDay: number;
   tSale: number;
   pnl: number;
@@ -65,8 +68,12 @@ export const AutoVapsiModal: React.FC<AutoVapsiModalProps> = ({ open, onClose, o
   const [agentId, setAgentId] = useState('');
   const [withHp, setWithHp] = useState(false);
   const [onBase, setOnBase] = useState(false);
-  const [filter, setFilter] = useState<'ALL' | 'PENDING' | 'DONE'>('ALL');
+  // Live Filter: ALL / P&L Zero / P&L Non-Zero (PENDING / DONE kept as before)
+  const [filter, setFilter] = useState<'ALL' | 'PNL_ZERO' | 'PNL_NONZERO' | 'PENDING' | 'DONE'>('ALL');
   const [rows, setRows] = useState<VapsiSummaryRow[]>([]);
+  // Vapsi-Amt is an input on live: each party's amount opens at its worked-out Vapsi (whole
+  // rupees, 388256 × 10% → 38826) and can be changed before Process Voucher
+  const [amounts, setAmounts] = useState<Record<number, string>>({});
   const [ticked, setTicked] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
   const [voucherDate, setVoucherDate] = useState(todayLocal());
@@ -115,6 +122,7 @@ export const AutoVapsiModal: React.FC<AutoVapsiModalProps> = ({ open, onClose, o
       if (agentId) params.append('agentId', agentId);
       const res = await apiRequest<{ rows: VapsiSummaryRow[] }>(`/transactions/vapsi-summary?${params.toString()}`);
       setRows(res.data?.rows || []);
+      setAmounts({});
       setTicked(new Set());
       // Live: "Error / Vapsi not available of party!" when the month has nothing to vapsi
       if (!res.data?.rows?.length) {
@@ -134,11 +142,22 @@ export const AutoVapsiModal: React.FC<AutoVapsiModalProps> = ({ open, onClose, o
   };
 
   const visible = useMemo(
-    () => rows.filter(r => filter === 'ALL' || (filter === 'DONE' ? r.done : !r.done)),
+    () => rows.filter(r => {
+      if (filter === 'ALL') return true;
+      if (filter === 'PNL_ZERO') return Math.round(r.pnl) === 0;
+      if (filter === 'PNL_NONZERO') return Math.round(r.pnl) !== 0;
+      return filter === 'DONE' ? r.done : !r.done;
+    }),
     [rows, filter]
   );
+  // The amount to post for a party: the typed Vapsi-Amt, else its worked-out one (whole rupees)
+  const amountOf = (r: VapsiSummaryRow) => {
+    const typed = amounts[r.partyId];
+    if (typed !== undefined) return Math.max(0, parseFloat(typed) || 0);
+    return Math.round(r.vapsiAmt || 0);
+  };
   // Only parties with a Vapsi amount can be processed.
-  const tickable = visible.filter(r => r.vapsiAmt > 0);
+  const tickable = visible.filter(r => amountOf(r) > 0);
   const allTicked = tickable.length > 0 && tickable.every(r => ticked.has(r.partyId));
   const toggleAll = () => setTicked(allTicked ? new Set() : new Set(tickable.map(r => r.partyId)));
   const toggle = (id: number) => setTicked(prev => {
@@ -149,11 +168,12 @@ export const AutoVapsiModal: React.FC<AutoVapsiModalProps> = ({ open, onClose, o
 
   const totals = useMemo(() => visible.reduce((t, r) => ({
     tSale: t.tSale + r.tSale, pnl: t.pnl + r.pnl, hpAmt: t.hpAmt + r.hpAmt, finalPl: t.finalPl + r.finalPl,
-    payment: t.payment + r.payment, vapsiAmt: t.vapsiAmt + (ticked.has(r.partyId) ? r.vapsiAmt : 0),
-  }), { tSale: 0, pnl: 0, hpAmt: 0, finalPl: 0, payment: 0, vapsiAmt: 0 }), [visible, ticked]);
+    // Live footer: the Vapsi-Amt of every listed party (112 rows → 1510149), ticked or not
+    payment: t.payment + r.payment, vapsiAmt: t.vapsiAmt + amountOf(r),
+  }), { tSale: 0, pnl: 0, hpAmt: 0, finalPl: 0, payment: 0, vapsiAmt: 0 }), [visible, amounts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const processVoucher = async () => {
-    const chosen = rows.filter(r => ticked.has(r.partyId) && r.vapsiAmt > 0);
+    const chosen = rows.filter(r => ticked.has(r.partyId) && amountOf(r) > 0);
     if (chosen.length === 0) return notify('error', 'Please tick at least one party!', 'auto-vapsi-tick');
     if (!voucherDate) return notify('error', 'Please select Voucher Date!', 'auto-vapsi-date');
     const already = chosen.filter(r => r.done).map(r => r.partyName);
@@ -167,10 +187,13 @@ export const AutoVapsiModal: React.FC<AutoVapsiModalProps> = ({ open, onClose, o
           month, year, voucherDate,
           items: chosen.map(r => ({
             partyId: r.partyId,
-            amount: Math.round(r.vapsiAmt * 100) / 100,
+            amount: amountOf(r),
+            // Base-Amt / Vapsi-% kept with each line for the Vapsi Report
+            baseAmt: onBase ? r.payment : r.pnl,
+            vapsiPct: r.vapsiPct,
             thirdParties: r.thirdParties
               .filter(t => t.ledgerId)
-              .map(t => ({ ledgerId: t.ledgerId, amount: Math.round(Math.max(0, base(r)) * t.percent) / 100 })),
+              .map(t => ({ ledgerId: t.ledgerId, amount: Math.round(Math.max(0, base(r)) * t.percent / 100), percent: t.percent })),
           })),
         }),
       });
@@ -201,7 +224,14 @@ export const AutoVapsiModal: React.FC<AutoVapsiModalProps> = ({ open, onClose, o
     >
       <div className="bg-white rounded-lg shadow-2xl w-full max-w-[1700px] overflow-hidden border border-slate-300 flex flex-col h-[85vh]">
         <div className="bg-[#1f4277] text-white px-4 py-3 flex items-center justify-between">
-          <h2 className="text-base font-bold tracking-tight">Auto Vapsi Voucher |</h2>
+          {/* Live: "Auto Vapsi Voucher | 01 / 10 / 2026 - 31 / 10 / 2026" — the chosen month */}
+          <h2 className="text-base font-bold tracking-tight">
+            Auto Vapsi Voucher | {(() => {
+              const mm = String(month).padStart(2, '0');
+              const last = String(new Date(year, month, 0).getDate()).padStart(2, '0');
+              return `01 / ${mm} / ${year} - ${last} / ${mm} / ${year}`;
+            })()}
+          </h2>
           <button type="button" onClick={onClose} className="text-white hover:text-slate-300 p-0.5" title="Close (Esc)">
             <X className="h-4 w-4" />
           </button>
@@ -227,8 +257,10 @@ export const AutoVapsiModal: React.FC<AutoVapsiModalProps> = ({ open, onClose, o
             {loading ? 'Searching...' : 'Search'}
           </button>
           <span className="font-semibold text-slate-600">Filter</span>
-          <select value={filter} onChange={(e) => setFilter(e.target.value as 'ALL' | 'PENDING' | 'DONE')} className={`${sel} w-32`}>
+          <select value={filter} onChange={(e) => setFilter(e.target.value as typeof filter)} className={`${sel} w-32`}>
             <option value="ALL">ALL</option>
+            <option value="PNL_ZERO">P&amp;L Zero</option>
+            <option value="PNL_NONZERO">P&amp;L Non-Zero</option>
             <option value="PENDING">PENDING</option>
             <option value="DONE">DONE</option>
           </select>
@@ -240,7 +272,7 @@ export const AutoVapsiModal: React.FC<AutoVapsiModalProps> = ({ open, onClose, o
             onClick={() => {
               if (visible.length === 0) return notify('error', 'Record not found!', 'auto-vapsi-excel');
               const lines = ['Sr,Agent,Party Name,TPV,W-Day,T-Sale,P&L,Hissa%,HP-Amt,Final-PL,Payment,Vapsi%,Vapsi-Amt'];
-              visible.forEach((r, i) => lines.push(`${i + 1},"${r.agentName}","${r.partyName}",${r.tpv},${r.wDay},${fmt(r.tSale)},${fmt(r.pnl)},${r.hissaPct},${fmt(r.hpAmt)},${fmt(r.finalPl)},${fmt(r.payment)},${r.vapsiPct},${fmt(r.vapsiAmt)}`));
+              visible.forEach((r, i) => lines.push(`${i + 1},"${r.agentName}","${r.partyName}",${r.tpr ? 'YES' : 'NO'},${r.wDay},${fmt(r.tSale)},${fmt(r.pnl)},${r.hissaPct},${fmt(r.hpAmt)},${fmt(r.finalPl)},${fmt(r.payment)},${r.vapsiPct},${fmt(amountOf(r))}`));
               const link = document.createElement('a');
               link.setAttribute('href', encodeURI('data:text/csv;charset=utf-8,' + lines.join('\n')));
               link.setAttribute('download', `auto_vapsi_${VAPSI_MONTHS[month - 1]}_${year}.csv`);
@@ -279,7 +311,7 @@ export const AutoVapsiModal: React.FC<AutoVapsiModalProps> = ({ open, onClose, o
             </thead>
             <tbody>
               {visible.map((r, i) => {
-                const canTick = r.vapsiAmt > 0;
+                const canTick = amountOf(r) > 0;
                 const box = (
                   <input type="checkbox" checked={ticked.has(r.partyId)} disabled={!canTick} onChange={() => toggle(r.partyId)} className="h-4 w-4 cursor-pointer" />
                 );
@@ -289,17 +321,27 @@ export const AutoVapsiModal: React.FC<AutoVapsiModalProps> = ({ open, onClose, o
                     <td className={`${td} !text-center`}>{box}</td>
                     <td className={`${td} !text-center uppercase`}>{r.agentName}</td>
                     <td className={`${td} !text-left uppercase`}>{r.partyName}{r.done && <span className="ml-1.5 px-1.5 py-0.5 bg-emerald-100 text-emerald-800 rounded text-[9px]">DONE</span>}</td>
-                    <td className={td}>{r.tpv}</td>
+                    <td className={`${td} !text-center`} title={r.tpv ? `3rd Party Rebate ${r.tpv}%` : undefined}>
+                      <span className="inline-block px-1.5 py-0.5 rounded-xs border border-slate-300 bg-slate-50 text-[9px] font-bold text-slate-700">{r.tpr ? 'YES' : 'NO'}</span>
+                    </td>
                     <td className={td}>{r.wDay}</td>
                     <td className={td}>{fmt(r.tSale)}</td>
                     <td className={td}>{fmt(r.pnl)}</td>
                     <td className={td}>{r.hissaPct}</td>
                     <td className={td}>{fmt(r.hpAmt)}</td>
                     <td className={td}>{fmt(r.finalPl)}</td>
-                    <td className={td}>{fmt(r.payment)}</td>
+                    <td className={`${td} !bg-[#ffc0c8]`}>{fmt(r.payment)}</td>
                     <td className={td}>{r.vapsiPct}</td>
                     <td className={`${td} !text-center`}>{box}</td>
-                    <td className="py-1.5 px-2 font-bold text-slate-800 text-right">{fmt(r.vapsiAmt)}</td>
+                    <td className="py-1 px-2 text-right">
+                      <input
+                        type="number"
+                        min="0"
+                        value={amounts[r.partyId] ?? String(Math.round(r.vapsiAmt || 0))}
+                        onChange={(e) => setAmounts(prev => ({ ...prev, [r.partyId]: e.target.value }))}
+                        className="w-24 px-2 py-1 bg-white border border-slate-300 rounded-xs text-xs font-bold text-slate-800 text-right focus:outline-none focus:bg-[#fde68a]"
+                      />
+                    </td>
                   </tr>
                 );
               })}
@@ -308,19 +350,19 @@ export const AutoVapsiModal: React.FC<AutoVapsiModalProps> = ({ open, onClose, o
               <tfoot className="sticky bottom-0">
                 <tr className="bg-[#152847] text-white font-bold text-[12px]">
                   <td className={th}>{visible.length}</td>
-                  <td className={`${th} text-center`}>{ticked.size}</td>
+                  <td className={`${th} text-center`} title={`${ticked.size} ticked`}>Tik</td>
                   <td className={th}>Agent</td>
                   <td className={th}>Party Name</td>
-                  <td className={th}></td>
-                  <td className={th}></td>
+                  <td className={th}>TPV</td>
+                  <td className={th}>W-Day</td>
                   <td className={`${th} text-right`}>{fmt(totals.tSale)}</td>
                   <td className={`${th} text-right`}>{fmt(totals.pnl)}</td>
-                  <td className={th}></td>
+                  <td className={th}>Hissa%</td>
                   <td className={`${th} text-right`}>{fmt(totals.hpAmt)}</td>
                   <td className={`${th} text-right`}>{fmt(totals.finalPl)}</td>
                   <td className={`${th} text-right`}>{fmt(totals.payment)}</td>
-                  <td className={th}></td>
-                  <td className={th}></td>
+                  <td className={th}>Vapsi%</td>
+                  <td className={th}>Tik</td>
                   <td className="py-2.5 px-2 text-right">{fmt(totals.vapsiAmt)}</td>
                 </tr>
               </tfoot>
@@ -330,7 +372,7 @@ export const AutoVapsiModal: React.FC<AutoVapsiModalProps> = ({ open, onClose, o
 
         <div className="flex items-center justify-end gap-4 px-4 py-3 border-t border-slate-200">
           <span className="font-bold text-sm text-slate-700">Voucher Date</span>
-          <input type="date" value={voucherDate} onChange={(e) => setVoucherDate(e.target.value)} className="px-2 py-1.5 bg-white border border-slate-300 rounded-xs text-xs font-semibold" />
+          <DateDMYInput value={voucherDate} onChange={setVoucherDate} idPrefix="av-vdate" />
           <button type="button" onClick={processVoucher} disabled={processing} className="px-4 py-2 bg-[#1e3a8a] hover:bg-[#172554] text-white font-bold rounded-xs text-xs disabled:opacity-50">
             {processing ? 'Processing...' : 'Process Voucher'}
           </button>

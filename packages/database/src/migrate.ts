@@ -405,6 +405,56 @@ export async function runMigrations() {
     );
     CREATE INDEX IF NOT EXISTS voucher_deletion_log_type_date_idx ON voucher_deletion_log(voucher_type, voucher_date);
 
+    -- HawaPatti Rpt: each processed Hawa Patti line's Party / Base-Amt / HP-% (the voucher only
+    -- carries the HP-Amt). One row per HAWA_PATTI voucher made by Auto Hawa Patti → Process.
+    CREATE TABLE IF NOT EXISTS hawa_patti_lines (
+      id SERIAL PRIMARY KEY,
+      voucher_id INTEGER NOT NULL,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      party_id INTEGER,
+      party_name VARCHAR(150),
+      hp_party_id INTEGER,
+      base_amt NUMERIC(14, 2),
+      hp_pct NUMERIC(6, 2),
+      hp_amt NUMERIC(14, 2),
+      added_by VARCHAR(100),
+      added_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS hawa_patti_lines_voucher_idx ON hawa_patti_lines(voucher_id);
+    CREATE INDEX IF NOT EXISTS hawa_patti_lines_month_idx ON hawa_patti_lines(year, month);
+
+    -- Report indexes (Trail Balance / OutStanding / Admin Cash / Cash Report / HVS / Hawa Patti /
+    -- Vapsi): voucher_entries by ledger and voucher, vouchers by type + date, slips by party + date
+    -- Productivity Report: when the operator started the slip (created_at = when it was saved)
+    ALTER TABLE transactions ADD COLUMN IF NOT EXISTS started_at TIMESTAMP;
+    CREATE INDEX IF NOT EXISTS trans_created_by_date_idx ON transactions(created_by, created_at);
+    CREATE INDEX IF NOT EXISTS voucher_entries_ledger_idx ON voucher_entries(ledger_id, voucher_id);
+    CREATE INDEX IF NOT EXISTS voucher_entries_voucher_idx ON voucher_entries(voucher_id);
+    CREATE INDEX IF NOT EXISTS vouchers_type_date_idx ON vouchers(voucher_type, created_at);
+    CREATE INDEX IF NOT EXISTS trans_party_date_idx ON transactions(party_id, created_at);
+    CREATE INDEX IF NOT EXISTS trans_entries_tx_type_idx ON transaction_entries(transaction_id, entry_type);
+    CREATE INDEX IF NOT EXISTS shift_cycles_shift_date_status_idx ON shift_cycles(shift_id, cycle_date, status);
+
+    -- Vapsi Report: each processed Vapsi line's Party / Base-Amt / Vapsi-% (the voucher only
+    -- carries the amount). One row per VAPSI voucher made by Auto Vapsi / Vapsi Voucher → Process.
+    CREATE TABLE IF NOT EXISTS vapsi_lines (
+      id SERIAL PRIMARY KEY,
+      voucher_id INTEGER NOT NULL,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      party_id INTEGER,
+      party_name VARCHAR(150),
+      ledger_id INTEGER,
+      base_amt NUMERIC(14, 2),
+      vapsi_pct NUMERIC(6, 2),
+      vapsi_amt NUMERIC(14, 2),
+      added_by VARCHAR(100),
+      added_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS vapsi_lines_voucher_idx ON vapsi_lines(voucher_id);
+    CREATE INDEX IF NOT EXISTS vapsi_lines_month_idx ON vapsi_lines(year, month);
+
     CREATE TABLE IF NOT EXISTS staff (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id),

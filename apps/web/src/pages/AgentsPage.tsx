@@ -62,6 +62,10 @@ export const AgentsPage: React.FC = () => {
   const mainAgentBoxRef = useRef<HTMLDivElement>(null);
   // Highlighted row in the Main Agent Name list (arrow keys move it, Enter picks it); -1 = none
   const [mainAgentHi, setMainAgentHi] = useState(-1);
+  // "Parent Agent Name" (live): the same Cash Agent list, opened as you type in the box
+  const [showParentAgentList, setShowParentAgentList] = useState(false);
+  const parentAgentBoxRef = useRef<HTMLDivElement>(null);
+  const [parentAgentHi, setParentAgentHi] = useState(-1);
   // Live Enter flow in the Agents popup: Agent Name -> Main Agent Name (pick from its list)
   // -> Parent Agent Name -> Save (Enter on Save saves)
   const focusAgentField = (id: string) => {
@@ -77,6 +81,11 @@ export const AgentsPage: React.FC = () => {
     if (!term) return cashAgentParties;
     return cashAgentParties.filter((n) => n.toLowerCase().includes(term));
   }, [cashAgentParties, mainAgentName]);
+  const parentAgentSuggestions = React.useMemo(() => {
+    const term = parentAgentName.trim().toLowerCase();
+    if (!term) return cashAgentParties;
+    return cashAgentParties.filter((n) => n.toLowerCase().includes(term));
+  }, [cashAgentParties, parentAgentName]);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -123,6 +132,9 @@ export const AgentsPage: React.FC = () => {
     const onDocClick = (e: MouseEvent) => {
       if (mainAgentBoxRef.current && !mainAgentBoxRef.current.contains(e.target as Node)) {
         setShowMainAgentList(false);
+      }
+      if (parentAgentBoxRef.current && !parentAgentBoxRef.current.contains(e.target as Node)) {
+        setShowParentAgentList(false);
       }
     };
     document.addEventListener('mousedown', onDocClick);
@@ -176,6 +188,7 @@ export const AgentsPage: React.FC = () => {
     setMainAgentName('');
     setParentAgentName('');
     setShowMainAgentList(false);
+    setShowParentAgentList(false);
     // Re-read the Cash Agent parties each time the dialog opens, so a ledger created on the
     // Ledgers page shows up here without needing a full page reload.
     fetchCashAgentParties();
@@ -185,6 +198,7 @@ export const AgentsPage: React.FC = () => {
 
   const openEditModal = (agent: AgentItem) => {
     setShowMainAgentList(false);
+    setShowParentAgentList(false);
     fetchCashAgentParties();
     setEditingAgentId(agent.id);
     setAgentName(agent.agentName || agent.group || '');
@@ -559,7 +573,7 @@ export const AgentsPage: React.FC = () => {
                     )}
                   </div>
 
-                  <div>
+                  <div className="relative" ref={parentAgentBoxRef}>
                     <label className="block text-slate-700 font-medium mb-1">
                       Parent Agent Name
                     </label>
@@ -567,15 +581,64 @@ export const AgentsPage: React.FC = () => {
                       id="agent-parent"
                       type="text"
                       value={parentAgentName}
-                      onChange={(e) => setParentAgentName(e.target.value)}
+                      onChange={(e) => {
+                        setParentAgentName(e.target.value);
+                        // Live: typing opens the Cash Agent list, narrowed to the typed text,
+                        // with the first match highlighted so Enter picks it
+                        setShowParentAgentList(!!e.target.value.trim());
+                        setParentAgentHi(e.target.value.trim() ? 0 : -1);
+                      }}
                       onKeyDown={(e) => {
-                        if (e.key !== 'Enter') return;
-                        e.preventDefault();
-                        document.getElementById('agent-save-btn')?.focus();
+                        const n = parentAgentSuggestions.length;
+                        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                          if (n === 0) return;
+                          e.preventDefault();
+                          setShowParentAgentList(true);
+                          setParentAgentHi(i => e.key === 'ArrowDown' ? (i + 1) % n : (i <= 0 ? n - 1 : i - 1));
+                        } else if (e.key === 'Enter') {
+                          // Pick the highlighted name (if any), then on to Save
+                          e.preventDefault();
+                          if (showParentAgentList && parentAgentHi >= 0 && parentAgentSuggestions[parentAgentHi]) {
+                            setParentAgentName(parentAgentSuggestions[parentAgentHi]);
+                          }
+                          setShowParentAgentList(false);
+                          setParentAgentHi(-1);
+                          document.getElementById('agent-save-btn')?.focus();
+                        } else if (e.key === 'Escape' && showParentAgentList) {
+                          // An open list takes the first Esc; the popup stays open
+                          e.stopPropagation();
+                          e.nativeEvent.stopImmediatePropagation();
+                          setShowParentAgentList(false);
+                        }
                       }}
                       placeholder=""
+                      autoComplete="off"
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
                     />
+                    {showParentAgentList && parentAgentSuggestions.length > 0 && (
+                      <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-400 shadow-lg rounded-xs z-50 max-h-48 overflow-y-auto pbmax-table-scrollbar">
+                        {parentAgentSuggestions.map((name, idx) => (
+                          <button
+                            key={name}
+                            ref={idx === parentAgentHi ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setParentAgentName(name);
+                              setShowParentAgentList(false);
+                              setParentAgentHi(-1);
+                            }}
+                            className={`w-full text-left px-2.5 py-1 text-xs uppercase whitespace-nowrap overflow-hidden text-ellipsis border-b border-slate-100 last:border-b-0 focus:outline-none ${
+                              idx === parentAgentHi || name.toUpperCase() === parentAgentName.trim().toUpperCase()
+                                ? 'bg-[#fef08a] text-slate-900 font-bold'
+                                : 'text-slate-800 hover:bg-[#fef08a] focus:bg-[#fef08a]'
+                            }`}
+                          >
+                            {name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

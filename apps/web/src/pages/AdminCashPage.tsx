@@ -5,6 +5,7 @@ import { ArrowLeft } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { PartyPicker } from '../components/PartyPicker.js';
 import { DateDMYInput } from '../components/DateDMYInput.js';
+import { PartyJantriModal } from '../components/PartyJantriModal.js';
 
 interface AdminCashPageProps {
   onNavigate?: (page: string) => void;
@@ -22,6 +23,8 @@ interface AdminCashRow {
   updatedAt: string;
   voucherId: number | null;
   deletable: boolean;
+  // SERVER (game) rows: the shift, for the party's jantri popup
+  shiftId?: number | null;
 }
 
 interface AdminCashData {
@@ -31,6 +34,8 @@ interface AdminCashData {
   rate: string;
   balance: number;
   limit: number;
+  // LMT: balance with the party's LIMIT vouchers added (Dr − Cr)
+  lmt?: number;
   opening: number;
   current: number;
   closing: number;
@@ -83,6 +88,14 @@ export const AdminCashPage: React.FC<AdminCashPageProps> = ({ onNavigate }) => {
   const [saving, setSaving] = useState(false);
   const payFormRef = useRef<HTMLFormElement>(null);
   const payPartyRef = useRef<HTMLInputElement>(null);
+  const payBalReqRef = useRef(0);
+  // Edit (cash rows): the voucher being changed — the form below then Updates it instead of
+  // adding a new entry; Esc / Cancel goes back to a new entry
+  const [editingVoucherId, setEditingVoucherId] = useState<number | null>(null);
+  // SERVER row click: the party's jantri for that shift + day
+  const [jantriRow, setJantriRow] = useState<AdminCashRow | null>(null);
+  const jantriOpenRef = useRef(false);
+  jantriOpenRef.current = !!jantriRow;
 
   // Live keyboard flow: the page opens with the cursor on From's day; Enter walks From DD ->
   // MM -> YYYY -> To DD -> MM -> YYYY -> Party, where typing lists the parties and Enter picks
@@ -147,12 +160,14 @@ export const AdminCashPage: React.FC<AdminCashPageProps> = ({ onNavigate }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromDate, toDate]);
 
+  // Only the latest request may set the balance (fast party / date switching)
   const loadPayBalance = async (p: LedgerDto, date: string) => {
+    const reqId = ++payBalReqRef.current;
     try {
       const d = await loadCash(p.id, date, date);
-      setPayBalance(d ? d.closing : null);
+      if (reqId === payBalReqRef.current) setPayBalance(d ? d.closing : null);
     } catch {
-      setPayBalance(null);
+      if (reqId === payBalReqRef.current) setPayBalance(null);
     }
   };
 
@@ -185,17 +200,32 @@ export const AdminCashPage: React.FC<AdminCashPageProps> = ({ onNavigate }) => {
     }
     setSaving(true);
     try {
-      await apiRequest('/vouchers/settlement', {
-        method: 'POST',
-        body: JSON.stringify({
-          partyLedgerId: payParty.id,
-          entrySide: saveType === 'Credit' ? 'CR' : 'DR',
-          amount: amt,
-          narration: saveRemark.trim() || undefined,
-          voucherDate: saveDate,
-        }),
-      });
-      notify('success', 'Entry has been saved successfully!', `admin-cash-saved-${Date.now()}`);
+      if (editingVoucherId) {
+        await apiRequest(`/vouchers/${editingVoucherId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            partyLedgerId: payParty.id,
+            entrySide: saveType === 'Credit' ? 'CR' : 'DR',
+            amount: amt,
+            narration: saveRemark.trim(),
+            voucherDate: saveDate,
+          }),
+        });
+        notify('success', 'Entry has been updated successfully!', `admin-cash-updated-${Date.now()}`);
+        setEditingVoucherId(null);
+      } else {
+        await apiRequest('/vouchers/settlement', {
+          method: 'POST',
+          body: JSON.stringify({
+            partyLedgerId: payParty.id,
+            entrySide: saveType === 'Credit' ? 'CR' : 'DR',
+            amount: amt,
+            narration: saveRemark.trim() || undefined,
+            voucherDate: saveDate,
+          }),
+        });
+        notify('success', 'Entry has been saved successfully!', `admin-cash-saved-${Date.now()}`);
+      }
       setSaveAmount('');
       setSaveRemark('');
       loadPayBalance(payParty, saveDate);
@@ -207,11 +237,35 @@ export const AdminCashPage: React.FC<AdminCashPageProps> = ({ onNavigate }) => {
     }
   };
 
+  // Edit (cash rows only): the entry goes into the form below — Date, Party, Type, Amount,
+  // Remark — and Save (F2) updates it
+  const handleEdit = (r: AdminCashRow) => {
+    if (!r.voucherId || !data) return;
+    const p = ledgers.find(l => l.id === data.partyId) || null;
+    setEditingVoucherId(r.voucherId);
+    setSaveDate(r.date);
+    if (p) {
+      setPayParty(p);
+      setPayPartySearch(p.partyName);
+      loadPayBalance(p, r.date);
+    }
+    setSaveType(r.credit > 0 ? 'Credit' : 'Debit');
+    setSaveAmount(String(Math.round((r.credit || r.debit) * 100) / 100));
+    setSaveRemark(r.remark || '');
+    setTimeout(() => document.getElementById('admincash-amount')?.focus(), 0);
+  };
+  const cancelEdit = () => {
+    setEditingVoucherId(null);
+    setSaveAmount('');
+    setSaveRemark('');
+  };
+
   const handleDelete = async (r: AdminCashRow) => {
     if (!r.voucherId || !window.confirm('Are you sure you want to delete this entry?')) return;
     try {
       await apiRequest(`/vouchers/${r.voucherId}`, { method: 'DELETE' });
       notify('success', 'Entry has been deleted successfully!', `admin-cash-del-${r.voucherId}`);
+      if (editingVoucherId === r.voucherId) cancelEdit();
       if (selectedParty) fetchReport(selectedParty.id);
       if (payParty) loadPayBalance(payParty, saveDate);
     } catch (err: any) {
@@ -225,6 +279,13 @@ export const AdminCashPage: React.FC<AdminCashPageProps> = ({ onNavigate }) => {
       if (e.key === 'F2') {
         e.preventDefault();
         payFormRef.current?.requestSubmit();
+      }
+      // Esc leaves Edit mode (the form goes back to a new entry)
+      if (e.key === 'Escape' && !jantriOpenRef.current) {
+        setEditingVoucherId(prev => {
+          if (prev) { setSaveAmount(''); setSaveRemark(''); }
+          return null;
+        });
       }
     };
     window.addEventListener('keydown', onKey);
@@ -292,7 +353,7 @@ export const AdminCashPage: React.FC<AdminCashPageProps> = ({ onNavigate }) => {
         {/* [ AGENT ] [ RATE ] / [ BAL | LMT ] */}
         <div className="ml-6 text-[13px] text-slate-800 text-center leading-6">
           <div>[ AGENT: &nbsp;{data?.agentName ?? '-'} ] [ RATE: &nbsp;{data?.rate ?? '0/0 | 0/0'} ]</div>
-          <div>[ BAL: &nbsp;{data ? crDr(data.balance) : 0} | LMT: &nbsp;{data ? `${round(data.limit)} Cr` : 0} ]</div>
+          <div>[ BAL: &nbsp;{data ? crDr(data.balance) : 0} | LMT: &nbsp;{data ? crDr(data.lmt ?? data.balance) : 0} ]</div>
         </div>
 
         {/* OPENING / CURRENT / CLOSING */}
@@ -346,7 +407,13 @@ export const AdminCashPage: React.FC<AdminCashPageProps> = ({ onNavigate }) => {
                   {data.rows.map((r, i) => (
                     <tr key={`${r.date}-${i}`} className="even:bg-slate-50/60 hover:bg-slate-50">
                       <td className={`${td} text-center`}>{dmy(r.date)}</td>
-                      <td className={`${td} text-center uppercase bg-[#f1f1f1]`}>{r.partyName}</td>
+                      <td
+                        className={`${td} text-center uppercase bg-[#f1f1f1] ${r.updatedBy === 'SERVER' && r.shiftId ? 'cursor-pointer hover:underline' : ''}`}
+                        // SERVER (game) row: the party's jantri for that shift + day
+                        onClick={() => { if (r.updatedBy === 'SERVER' && r.shiftId) setJantriRow(r); }}
+                      >
+                        {r.partyName}
+                      </td>
                       <td className={`${td} text-right`}>{r.credit ? round(r.credit) : ''}</td>
                       <td className={`${td} text-right`}>{r.debit ? round(r.debit) : ''}</td>
                       <td className={`${td} text-right`}>{crDr(r.balance)}</td>
@@ -354,6 +421,15 @@ export const AdminCashPage: React.FC<AdminCashPageProps> = ({ onNavigate }) => {
                       <td className={`${td} text-center uppercase`}>{r.updatedBy}</td>
                       <td className={`${td} text-center`}>{stamp(r.updatedAt)}</td>
                       <td className="py-2 px-3">
+                        {r.deletable && (
+                          <button
+                            type="button"
+                            onClick={() => handleEdit(r)}
+                            className={`px-2.5 py-0.5 mr-2 text-white text-[10px] font-bold rounded-xs ${editingVoucherId === r.voucherId ? 'bg-amber-600' : 'bg-[#1e3a8a] hover:bg-[#1e40af]'}`}
+                          >
+                            Edit
+                          </button>
+                        )}
                         {r.deletable && (
                           <button
                             type="button"
@@ -423,18 +499,34 @@ export const AdminCashPage: React.FC<AdminCashPageProps> = ({ onNavigate }) => {
           </div>
           <div>
             <label className="block text-slate-600 mb-1 text-[10px]">Amount</label>
-            <input type="number" min="0" step="any" value={saveAmount} onChange={(e) => setSaveAmount(e.target.value)} className="w-32 px-2 py-1.5 bg-white border border-slate-300 rounded-xs text-xs font-bold focus:outline-none focus:bg-[#fde68a]" />
+            <input id="admincash-amount" type="number" min="0" step="any" value={saveAmount} onChange={(e) => setSaveAmount(e.target.value)} className="w-32 px-2 py-1.5 bg-white border border-slate-300 rounded-xs text-xs font-bold focus:outline-none focus:bg-[#fde68a]" />
           </div>
           <div className="w-56">
             <label className="block text-slate-600 mb-1 text-[10px]">Remark</label>
             <input type="text" value={saveRemark} onChange={(e) => setSaveRemark(e.target.value)} className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded-xs text-xs focus:outline-none focus:bg-[#fde68a]" />
           </div>
           <button type="submit" disabled={saving} className="px-9 py-2 bg-[#1662c6] hover:bg-[#1354ab] text-white font-bold text-xs rounded-xs shadow-xs disabled:opacity-50">
-            {saving ? 'Saving...' : <>Save <span className="text-[10px] font-semibold">(F2)</span></>}
+            {saving ? 'Saving...' : <>{editingVoucherId ? 'Update' : 'Save'} <span className="text-[10px] font-semibold">(F2)</span></>}
           </button>
+          {editingVoucherId && (
+            <button type="button" onClick={cancelEdit} className="px-5 py-2 bg-slate-500 hover:bg-slate-600 text-white font-bold text-xs rounded-xs shadow-xs">
+              Cancel
+            </button>
+          )}
         </form>
       </div>
       <div className="px-1 text-[11px] text-amber-600">Need Help?</div>
+      {/* SERVER row → "JIMMY CHD | 14-10-2026 | GHAZIABAD": the party's slips for that shift + day */}
+      <PartyJantriModal
+        open={!!jantriRow && !!data}
+        onClose={() => setJantriRow(null)}
+        shiftId={jantriRow?.shiftId ? String(jantriRow.shiftId) : ''}
+        date={jantriRow?.date || ''}
+        partyId={data?.partyId || 0}
+        partyName={data?.partyName || ''}
+        title={jantriRow && data ? `${data.partyName} | ${dmy(jantriRow.date)} | ${jantriRow.partyName}` : undefined}
+        round50={false}
+      />
     </div>
   );
 };

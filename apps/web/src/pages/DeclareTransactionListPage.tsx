@@ -1059,6 +1059,8 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
         onClose={() => setShowJantriModal(false)}
         selectedTx={selectedTx}
         list={visibleList}
+        shiftId={selectedShiftId}
+        date={dateStr}
       />
       <HplJantriModal
         open={showHPLModal}

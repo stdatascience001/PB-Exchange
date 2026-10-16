@@ -172,6 +172,12 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   const [entriesList, setEntriesList] = useState<EntryRow[]>([]);
   const [inputNumber, setInputNumber] = useState('');
   const [inputAmount, setInputAmount] = useState('');
+  // Productivity Report: when this slip was started (party picked or first number entered) — sent
+  // with Save as elapsedMs, kept as the slip's Start Time; cleared once the slip is saved
+  const slipStartRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (slipStartRef.current === null && (selectedParty || entriesList.length > 0)) slipStartRef.current = Date.now();
+  }, [selectedParty, entriesList.length]);
 
   // Right column: Copy transaction to other shifts & narration
   const [selectedCopyShiftIds, setSelectedCopyShiftIds] = useState<number[]>([]);
@@ -778,6 +784,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
           amount: e.amount,
         })),
         narration: narration.trim() || undefined,
+        elapsedMs: slipStartRef.current !== null ? Math.max(0, Date.now() - slipStartRef.current) : undefined,
       };
 
       const res = await apiRequest('/transactions', {
@@ -797,6 +804,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
         }
       }
 
+      // the next slip times itself from its own start
+      slipStartRef.current = null;
       setSuccessMsg('Transaction slip saved successfully!');
       // the Live Transactions list open in the first tab reloads with the new slip
       notifyTransactionsChanged([shiftIdToUse, ...selectedCopyShiftIds]);

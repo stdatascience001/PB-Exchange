@@ -1,67 +1,73 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { apiRequest } from '../api/client.js';
+import { toast } from 'react-toastify';
 import { DateDMYInput } from '../components/DateDMYInput.js';
 
 const PAGE_TITLE = 'Cash Report';
-const VOUCHER_TYPE_FILTER: string | undefined = undefined; // undefined = all voucher types
 
-interface VoucherListItem {
-  id: number;
-  voucherNumber: string;
-  voucherType: string;
-  totalAmount: number;
-  narration: string | null;
+// One Cash Agent ledger of GET /transactions/cash-agent-report
+// (TransactionService.getCashAgentReport): Opening (before From), Amount (From → To), Closing.
+// Balances are Dr − Cr, the same figure Admin Cash / OutStanding show for the ledger.
+interface CashAgentRow {
+  ledgerId: number;
   partyName: string;
-  entrySide: string;
-  oppositePartyName: string;
-  createdByUsername: string;
-  updatedBy: string;
-  createdAt: string;
-  updatedAt: string;
+  opening: number;
+  amount: number;
+  closing: number;
 }
 
-const todayInputDate = () => new Date().toISOString().slice(0, 10);
+interface CashAgentReport {
+  rows: CashAgentRow[];
+  totalOpening: number;
+  totalAmount: number;
+  totalClosing: number;
+}
 
-const formatTimestamp = (dateVal?: string) => {
-  if (!dateVal) return '-';
-  try {
-    const d = new Date(dateVal);
-    if (isNaN(d.getTime())) return dateVal;
-    const day = String(d.getDate()).padStart(2, '0');
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const year = d.getFullYear();
-    let hours = d.getHours();
-    const minutes = String(d.getMinutes()).padStart(2, '0');
-    const ampm = hours >= 12 ? 'PM' : 'AM';
-    hours = hours % 12 || 12;
-    return `${day}-${month}-${year} ${String(hours).padStart(2, '0')}:${minutes} ${ampm}`;
-  } catch {
-    return dateVal;
-  }
+// Browser-local today (toISOString() is UTC and gave yesterday before 05:30 IST)
+const todayInputDate = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
+// Whole numbers without grouping, signed, as the live report prints them (4511958, 0)
+const fmt = (n: number) => String(Math.round(n || 0) + 0);
 
 export const CashReportPage: React.FC = () => {
-  const [list, setList] = useState<VoucherListItem[]>([]);
+  const [data, setData] = useState<CashAgentReport | null>(null);
+  const list = data?.rows || [];
+  // Only the latest Search may fill the table
+  const reqRef = useRef(0);
   const [loading, setLoading] = useState(false);
   // Live opens with both From and To on today's date
   const [fromDate, setFromDate] = useState(todayInputDate());
   const [toDate, setToDate] = useState(todayInputDate());
 
+  const message = (kind: 'Error' | 'Message', text: string, toastId: string) => toast.error(
+    <div>
+      <div className="font-bold text-base">{kind}</div>
+      <div className="text-sm mt-0.5">{text}</div>
+    </div>,
+    { toastId }
+  );
+
   const fetchList = async () => {
+    if (!fromDate || !toDate) return message('Message', 'Please select both Dates!', 'cashrpt-date');
+    if (fromDate > toDate) return message('Message', 'From Date cannot be after To Date!', 'cashrpt-date');
+    const reqId = ++reqRef.current;
     setLoading(true);
     try {
-      const params = new URLSearchParams();
-      if (VOUCHER_TYPE_FILTER) params.append('voucherType', VOUCHER_TYPE_FILTER);
-      if (fromDate) params.append('fromDate', fromDate);
-      if (toDate) params.append('toDate', toDate);
-      const res = await apiRequest<VoucherListItem[]>(`/vouchers/manual?${params.toString()}`);
-      // Cash Report combines two voucher types — filtered client-side since the endpoint
-      // takes a single voucherType, not a list.
-      if (res.data) setList(res.data.filter(v => v.voucherType === 'CASH_RECEIPT' || v.voucherType === 'CASH_PAYMENT'));
-    } catch (err) {
-      console.warn('Failed to load vouchers:', err);
+      const params = new URLSearchParams({ fromDate, toDate });
+      const res = await apiRequest<CashAgentReport>(`/transactions/cash-agent-report?${params.toString()}`);
+      if (reqId !== reqRef.current) return;
+      setData(res.data || null);
+      // Live: a Search that finds nothing says so in a red Error toast
+      if (!res.data || res.data.rows.length === 0) message('Error', 'Record not avaliable!', 'cashrpt-empty');
+    } catch (err: any) {
+      if (reqId !== reqRef.current) return;
+      console.warn('Failed to load cash report:', err);
+      setData(null);
+      message('Error', err?.message || 'Failed to load report', 'cashrpt-load');
     } finally {
-      setLoading(false);
+      if (reqId === reqRef.current) setLoading(false);
     }
   };
 
@@ -91,8 +97,9 @@ export const CashReportPage: React.FC = () => {
       return;
     }
     const csvContent = 'data:text/csv;charset=utf-8,' +
-      ['Date,Type,Party,Cr/Dr,Amount,Opposite Party,Remark'].concat(
-        list.map(v => `${v.createdAt.slice(0, 10)},${v.voucherType},"${v.partyName}",${v.entrySide},${v.totalAmount},"${v.oppositePartyName}","${v.narration || ''}"`)
+      ['Sr,Party,Opening,Amount,Closing'].concat(
+        list.map((r, i) => `${i + 1},"${r.partyName}",${fmt(r.opening)},${fmt(r.amount)},${fmt(r.closing)}`),
+        [`${list.length},Party,${fmt(data?.totalOpening || 0)},${fmt(data?.totalAmount || 0)},${fmt(data?.totalClosing || 0)}`]
       ).join('\n');
     const link = document.createElement('a');
     link.setAttribute('href', encodeURI(csvContent));
@@ -101,6 +108,9 @@ export const CashReportPage: React.FC = () => {
     link.click();
     document.body.removeChild(link);
   };
+
+  const th = 'py-2.5 px-3 border-r border-[#223b63]';
+  const td = 'py-2 px-3 font-semibold text-slate-700 border-r border-slate-200';
 
   return (
     <div className="min-h-full bg-[#eaedf2] p-2.5 sm:p-3 flex flex-col justify-between text-slate-800 select-none font-sans text-xs">
@@ -123,62 +133,48 @@ export const CashReportPage: React.FC = () => {
           </button>
         </form>
 
-        <div className="overflow-x-auto flex-1">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
+        <div className="overflow-auto flex-1 max-h-[calc(100vh-190px)]">
+          <table className="w-auto min-w-[560px] text-left text-xs border-separate border-spacing-0">
+            <thead className="sticky top-0 z-10">
               <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
-                <th className="py-2.5 px-3 border-r border-[#223b63] w-12 text-center">Sr</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Date</th>
-                {!VOUCHER_TYPE_FILTER && <th className="py-2.5 px-4 border-r border-[#223b63]">Type</th>}
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Party</th>
-                <th className="py-2.5 px-3 border-r border-[#223b63] text-center">Cr/Dr</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63] text-right">Amount</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Opposite Party</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Remark</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Added</th>
-                <th className="py-2.5 px-4">Updated</th>
+                <th className={`${th} w-11`}>Sr.</th>
+                <th className={`${th} w-56`}>Party</th>
+                <th className={`${th} w-24 text-right`}>Opening</th>
+                <th className={`${th} w-24 text-right`}>Amount</th>
+                <th className={`${th} w-24 text-right`}>Closing</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-200 font-sans text-xs whitespace-nowrap">
+            <tbody className="font-sans text-xs whitespace-nowrap">
               {loading ? (
-                <tr><td colSpan={10} className="py-14 text-center text-slate-400 font-medium">Loading...</td></tr>
+                <tr><td colSpan={5} className="py-14 text-center text-slate-400 font-medium">Loading...</td></tr>
               ) : !hasSearched ? (
-                <tr><td colSpan={10} className="py-14" /></tr>
+                <tr><td colSpan={5} className="py-14" /></tr>
               ) : list.length === 0 ? (
-                <tr><td colSpan={10} className="py-14 text-center text-slate-400 font-medium">No records found for this filter.</td></tr>
+                <tr><td colSpan={5} className="py-14 text-center text-slate-400 font-medium">No records found for this filter.</td></tr>
               ) : (
-                list.map((v, idx) => (
-                  <tr key={v.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="py-2 px-3 text-center font-mono text-slate-600 border-r border-slate-200">{idx + 1}</td>
-                    <td className="py-2 px-4 font-mono text-slate-600 border-r border-slate-200">{v.createdAt.slice(0, 10)}</td>
-                    {!VOUCHER_TYPE_FILTER && (
-                      <td className="py-2 px-4 border-r border-slate-200">
-                        <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded-full text-[10px] font-bold uppercase">
-                          {v.voucherType.replace(/_/g, ' ')}
-                        </span>
-                      </td>
-                    )}
-                    <td className="py-2 px-4 font-bold text-slate-900 uppercase border-r border-slate-200">{v.partyName}</td>
-                    <td className="py-2 px-4 text-center border-r border-slate-200">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${v.entrySide === 'CR' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
-                        {v.entrySide}
-                      </span>
-                    </td>
-                    <td className="py-2 px-4 text-right font-mono font-bold text-slate-900 border-r border-slate-200">{v.totalAmount.toLocaleString('en-IN')}</td>
-                    <td className="py-2 px-4 font-semibold uppercase text-slate-800 border-r border-slate-200">{v.oppositePartyName}</td>
-                    <td className="py-2 px-4 text-slate-600 border-r border-slate-200 whitespace-normal max-w-xs">{v.narration || '-'}</td>
-                    <td className="py-1 px-4 border-r border-slate-200 leading-snug">
-                      <div className="font-bold text-slate-900 uppercase text-[11px]">{v.createdByUsername}</div>
-                      <div className="font-mono text-slate-500 text-[10px]">{formatTimestamp(v.createdAt)}</div>
-                    </td>
-                    <td className="py-1 px-4 leading-snug">
-                      <div className="font-bold text-slate-900 uppercase text-[11px]">{v.updatedBy}</div>
-                      <div className="font-mono text-slate-500 text-[10px]">{formatTimestamp(v.updatedAt)}</div>
-                    </td>
+                list.map((r, idx) => (
+                  <tr key={r.ledgerId} className="even:bg-slate-50/60 hover:bg-slate-50 [&>td]:border-b [&>td]:border-slate-200">
+                    <td className={td}>{idx + 1}</td>
+                    <td className={`${td} uppercase bg-[#f1f1f1]`}>{r.partyName}</td>
+                    <td className={`${td} text-right`}>{fmt(r.opening)}</td>
+                    <td className={`${td} text-right`}>{fmt(r.amount)}</td>
+                    <td className={`${td} text-right`}>{fmt(r.closing)}</td>
                   </tr>
                 ))
               )}
             </tbody>
+            {/* Footer as live: count, then the Opening / Amount / Closing totals */}
+            {!loading && hasSearched && list.length > 0 && (
+              <tfoot className="sticky bottom-0 z-10">
+                <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
+                  <td className={th}>{list.length}</td>
+                  <td className={th}>Party</td>
+                  <td className={`${th} text-right`}>{fmt(data?.totalOpening || 0)}</td>
+                  <td className={`${th} text-right`}>{fmt(data?.totalAmount || 0)}</td>
+                  <td className={`${th} text-right`}>{fmt(data?.totalClosing || 0)}</td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </div>

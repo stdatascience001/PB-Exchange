@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { ShiftDto, LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { DateDMYInput } from '../components/DateDMYInput.js';
+import { declaredCellKeys, useDeclaredNumber, hlCls } from '../utils/declaredHighlight.js';
 
 // Live Enter order across the filter bar: Shift -> DD -> MM -> YYYY -> Commission -> Hissa ->
 // Dibba -> Akh-Mix -> Amt-Less -> Less-% -> Submit (whose own Enter runs it).
@@ -42,6 +43,8 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
     const day = String(d.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
   });
+  // declared number + its Andar / Bahar haruf shown in green
+  const declaredKeys = declaredCellKeys(useDeclaredNumber(shiftId, dateStr));
   const [parties, setParties] = useState<LedgerDto[]>([]);
   const [partySearch, setPartySearch] = useState('');
   const [addedParties, setAddedParties] = useState<LedgerDto[]>([]);
@@ -412,7 +415,7 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
                     {Array.from({ length: 10 }, (_, c) => {
                       const num = r * 10 + (c + 1);
                       return (
-                        <td key={num} className="relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 align-middle">
+                        <td key={num} className={hlCls(declaredKeys, num, "relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 align-middle")}>
                           <span className="absolute top-0.5 left-0.5 text-[9px] font-bold px-1 rounded-xs bg-[#fef9c3] text-[#854d0e] leading-tight select-none">
                             {num}
                           </span>
@@ -454,7 +457,7 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
                     const digit = c + 1 === 10 ? 0 : c + 1;
                     const bAmt = getHarufAmount(digit, 'bahar');
                     return (
-                      <td key={`b${digit}`} className="relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 align-middle">
+                      <td key={`b${digit}`} className={hlCls(declaredKeys, `B${digit}`, "relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 align-middle")}>
                         <span className="absolute top-0.5 left-0.5 text-[9px] font-bold px-1 rounded-xs bg-[#fef9c3] text-[#854d0e] leading-tight select-none">
                           B{digit}
                         </span>
@@ -473,7 +476,7 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
                     const digit = c + 1 === 10 ? 0 : c + 1;
                     const aAmt = getHarufAmount(digit, 'andar');
                     return (
-                      <td key={`a${digit}`} className="relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 align-middle">
+                      <td key={`a${digit}`} className={hlCls(declaredKeys, `A${digit}`, "relative h-8 sm:h-9 bg-white border border-slate-300 text-right px-1 align-middle")}>
                         <span className="absolute top-0.5 left-0.5 text-[9px] font-bold px-1 rounded-xs bg-[#fef9c3] text-[#854d0e] leading-tight select-none">
                           A{digit}
                         </span>

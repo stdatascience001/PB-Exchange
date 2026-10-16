@@ -4,10 +4,13 @@ import { toast } from 'react-toastify';
 import { LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { PartyPicker } from './PartyPicker.js';
+import { declaredCellKeys } from '../utils/declaredHighlight.js';
 
 interface CollectionGrid {
   grid: { number: string; totalAmount: number }[];
   haruf: { digit: string; andarAmount: number; baharAmount: number }[];
+  // the day's declared result ("32"), null while undeclared
+  declaredNumber?: string | null;
 }
 
 interface HplJantriModalProps {
@@ -173,6 +176,10 @@ export const HplJantriModal: React.FC<HplJantriModalProps> = ({ open, onClose, s
   if (!open) return null;
 
   const cell = (k: string) => cells.get(k) || 0;
+  // declared number + its Andar / Bahar haruf, shown in green
+  const declaredKeys = declaredCellKeys(result?.declaredNumber);
+  const cellCls = (k: string) => declaredKeys.has(k) ? cellBox.replace('bg-white', 'bg-green-600') : cellBox;
+  const amtCls = (k: string) => `font-bold text-[13px] font-mono ${declaredKeys.has(k) ? 'text-white' : 'text-slate-900'}`;
   const rowTotal = (r: number) => Array.from({ length: 10 }, (_, c) => cell(String(r * 10 + c + 1))).reduce((a, b) => a + b, 0);
   const colTotal = (c: number) => Array.from({ length: 10 }, (_, r) => cell(String(r * 10 + c))).reduce((a, b) => a + b, 0);
   const numbersTotal = Array.from({ length: 100 }, (_, i) => cell(String(i + 1))).reduce((a, b) => a + b, 0);
@@ -198,9 +205,9 @@ export const HplJantriModal: React.FC<HplJantriModalProps> = ({ open, onClose, s
         const digit = c + 1 === 10 ? 0 : c + 1;
         const v = cell(`${side}${digit}`);
         return (
-          <td key={digit} className={cellBox}>
+          <td key={digit} className={cellCls(`${side}${digit}`)}>
             <span className={badge}>{side}{digit}</span>
-            {v > 0 ? <span className="font-bold text-[13px] text-slate-900 font-mono">{v}</span> : null}
+            {v > 0 ? <span className={amtCls(`${side}${digit}`)}>{v}</span> : null}
           </td>
         );
       })}
@@ -299,9 +306,9 @@ export const HplJantriModal: React.FC<HplJantriModalProps> = ({ open, onClose, s
                     const n = r * 10 + c + 1;
                     const v = cell(String(n));
                     return (
-                      <td key={n} className={cellBox}>
+                      <td key={n} className={cellCls(String(n))}>
                         <span className={badge}>{n}</span>
-                        {v > 0 ? <span className="font-bold text-[13px] text-slate-900 font-mono">{v}</span> : null}
+                        {v > 0 ? <span className={amtCls(String(n))}>{v}</span> : null}
                       </td>
                     );
                   })}

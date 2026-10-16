@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { apiRequest } from '../api/client.js';
 import { toast } from 'react-toastify';
 import { DateDMYInput } from '../components/DateDMYInput.js';
@@ -46,10 +46,15 @@ const messageToast = (text: string, toastId: string) =>
 export const OutstandingReportPage: React.FC = () => {
   const [fromDate, setFromDate] = useState(todayInputDate());
   const [agentRows, setAgentRows] = useState<AgentRow[]>([]);
+  // Every ledger in the "Cash Agent" group (live Agents list: BOOOK SALARIES, CASH 13 13 A/C …
+  // ZZZZZZ) — GET /vouchers/cash-agent-ledgers
+  const [cashAgentNames, setCashAgentNames] = useState<string[]>([]);
   const [selectedAgent, setSelectedAgent] = useState('');
   const [selectedGroupId, setSelectedGroupId] = useState<number | ''>('');
   const [data, setData] = useState<OutstandingData | null>(null);
   const [loading, setLoading] = useState(false);
+  // Only the latest Search may fill the table (Agent / Group switched while one is loading)
+  const reqRef = useRef(0);
 
   useEffect(() => {
     (async () => {
@@ -60,13 +65,25 @@ export const OutstandingReportPage: React.FC = () => {
         console.warn('Failed to load agents:', err);
       }
     })();
+    (async () => {
+      try {
+        const res = await apiRequest<Array<{ id: number; partyName: string }>>('/vouchers/cash-agent-ledgers');
+        if (res.data) setCashAgentNames(res.data.map(l => (l.partyName || '').trim()).filter(Boolean));
+      } catch (err) {
+        console.warn('Failed to load cash agents:', err);
+      }
+    })();
   }, []);
 
-  // "Agents" = the Agent column of the agents master, each name once, A-Z.
-  const agentNames = useMemo(
-    () => Array.from(new Set(agentRows.map(a => (a.agent || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
-    [agentRows]
-  );
+  // "Agents" = every Cash Agent ledger (live) plus the Agent column of the agents master (so a
+  // master name with no ledger of its own stays listed), each name once (any case), A-Z.
+  const agentNames = useMemo(() => {
+    const byKey = new Map<string, string>();
+    for (const n of [...cashAgentNames, ...agentRows.map(a => (a.agent || '').trim())]) {
+      if (n && !byKey.has(n.toUpperCase())) byKey.set(n.toUpperCase(), n);
+    }
+    return Array.from(byKey.values()).sort((a, b) => a.localeCompare(b));
+  }, [agentRows, cashAgentNames]);
 
   useEffect(() => {
     if (!selectedAgent && agentNames.length > 0) setSelectedAgent(agentNames[0]);
@@ -75,7 +92,7 @@ export const OutstandingReportPage: React.FC = () => {
   // Group dropdown = only the groups that belong to the chosen agent.
   const groupOptions = useMemo(
     () => agentRows
-      .filter(a => (a.agent || '').trim() === selectedAgent)
+      .filter(a => (a.agent || '').trim().toUpperCase() === selectedAgent.trim().toUpperCase())
       .sort((a, b) => a.group.localeCompare(b.group)),
     [agentRows, selectedAgent]
   );
@@ -84,11 +101,26 @@ export const OutstandingReportPage: React.FC = () => {
     if (!fromDate) return messageToast('Please select Date!', 'outstanding-date');
     // One group if chosen, otherwise every group under the agent.
     const ids = selectedGroupId ? [selectedGroupId] : groupOptions.map(g => g.id);
-    if (ids.length === 0) return messageToast('Please select Agent!', 'outstanding-agent');
+    if (!selectedAgent) return messageToast('Please select Agent!', 'outstanding-agent');
+    // An agent with no group under it has no parties to list
+    if (ids.length === 0) {
+      reqRef.current++;
+      setData(null);
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Error</div>
+          <div className="text-sm mt-0.5">Record not avaliable!</div>
+        </div>,
+        { toastId: 'outstanding-empty' }
+      );
+      return;
+    }
+    const reqId = ++reqRef.current;
     setLoading(true);
     try {
       const params = new URLSearchParams({ date: fromDate, agentIds: ids.join(',') });
       const res = await apiRequest<OutstandingData>(`/transactions/outstanding?${params.toString()}`);
+      if (reqId !== reqRef.current) return;
       setData(res.data || null);
       // Live: a Search that finds nothing says so in a red Error toast
       if (!res.data || res.data.rows.length === 0) {
@@ -101,10 +133,11 @@ export const OutstandingReportPage: React.FC = () => {
         );
       }
     } catch (err: any) {
+      if (reqId !== reqRef.current) return;
       console.warn('Failed to load outstanding report:', err);
       messageToast(err.message || 'Failed to load outstanding report', 'outstanding-load');
     } finally {
-      setLoading(false);
+      if (reqId === reqRef.current) setLoading(false);
     }
   };
 
@@ -171,7 +204,7 @@ export const OutstandingReportPage: React.FC = () => {
           <select
             id="outstanding-agent"
             value={selectedAgent}
-            onChange={(e) => { setSelectedAgent(e.target.value); setSelectedGroupId(''); setData(null); }}
+            onChange={(e) => { reqRef.current++; setLoading(false); setSelectedAgent(e.target.value); setSelectedGroupId(''); setData(null); }}
             onKeyDown={enterTo('outstanding-search-btn')}
             className={`${select} min-w-40`}
           >

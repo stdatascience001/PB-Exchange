@@ -16,6 +16,8 @@ export const createTransactionSchema = z.object({
   partyId: z.number().int().positive('Party ID required'),
   idempotencyKey: z.string().optional(),
   entries: z.array(transactionEntrySchema).min(1, 'At least one number entry is required'),
+  // ms the slip took to enter (Productivity Report); out-of-range values are ignored server-side
+  elapsedMs: z.number().nonnegative().optional(),
 });
 
 export const crossGenerateSchema = z.object({
