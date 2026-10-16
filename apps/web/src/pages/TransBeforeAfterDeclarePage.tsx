@@ -247,11 +247,13 @@ export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePagePr
       </div>
 
       <div className="flex flex-col md:flex-row gap-2.5 flex-1">
-        <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden flex-1 flex flex-col">
-          <div className="overflow-auto flex-1">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap sticky top-0 z-10">
+        <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden flex-1 flex flex-col min-w-0">
+          {/* Live: the slip list scrolls inside its own box (own scrollbar) with the header on top
+              and the total row at the bottom always in view; Sale / P&L stay below it */}
+          <div className="overflow-auto h-[calc(100vh-290px)] min-h-[220px] pbmax-table-scrollbar">
+            <table className="w-full text-left text-xs border-separate border-spacing-0">
+              <thead className="sticky top-0 z-10">
+                <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
                   <th className="py-2 px-3 border-r border-[#223b63] w-12 text-center">Sr</th>
                   <th className="py-2 px-3 border-r border-[#223b63] w-10 text-center">D</th>
                   <th className="py-2 px-3 border-r border-[#223b63]">Party</th>
@@ -262,7 +264,7 @@ export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePagePr
                   <th className="py-2 px-3 text-center w-16">Action</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-200 font-sans text-xs whitespace-nowrap">
+              <tbody className="font-sans text-xs whitespace-nowrap [&>tr>td]:border-b [&>tr>td]:border-slate-200">
                 {loading ? (
                   <tr><td colSpan={8} className="py-14 text-center text-slate-400 font-medium">Loading...</td></tr>
                 ) : !hasSearched ? (
@@ -296,7 +298,7 @@ export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePagePr
               </tbody>
               {/* Live keeps this total row under the header at all times: count, then the amount
                   total (0 / 0 before a Search or when nothing is found) */}
-              <tfoot className="sticky bottom-0">
+              <tfoot className="sticky bottom-0 z-10">
                 <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
                   <td className="py-2 px-3 border-r border-[#223b63] text-center">{filteredRows.length}</td>
                   <td className="py-2 px-3 border-r border-[#223b63] text-center">D</td>
@@ -340,8 +342,11 @@ export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePagePr
         </div>
 
         <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden w-full md:w-64 flex-shrink-0 flex flex-col">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
+          {/* Live: the party's Number / Amount list scrolls on its own (own scrollbar), its header
+              fixed on top; Jantri View (F3) stays below */}
+          <div className="overflow-auto h-[calc(100vh-290px)] min-h-[220px] pbmax-table-scrollbar">
+          <table className="w-full text-left text-xs border-separate border-spacing-0">
+            <thead className="sticky top-0 z-10">
               <tr className="bg-[#152847] text-white font-bold text-[11px] border-b border-[#223b63]">
                 <th colSpan={2} className="py-2 px-3 uppercase">
                   {rows.find(r => r.id === viewingId)?.partyName || 'Party'}
@@ -352,7 +357,7 @@ export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePagePr
                 <th className="py-2 px-3">Amount</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-200">
+            <tbody className="[&>tr>td]:border-b [&>tr>td]:border-slate-200">
               {viewingId === null ? (
                 <tr><td colSpan={2} className="py-8 text-center text-slate-400 font-medium">Click View on a row.</td></tr>
               ) : viewEntries.length === 0 ? (
@@ -367,6 +372,7 @@ export const TransBeforeAfterDeclarePage: React.FC<TransBeforeAfterDeclarePagePr
               )}
             </tbody>
           </table>
+          </div>
           <div className="mt-auto p-2.5 flex justify-end border-t border-slate-200">
             <button
               type="button"

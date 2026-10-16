@@ -753,7 +753,7 @@ export const App: React.FC = () => {
           {currentPage === 'settlement-agent-group' && <SettlementAgentPage onNavigate={navigateTo} />}
           {currentPage === 'outstanding-agent-group' && <OutstandingAgentGroupPage />}
           {currentPage === 'productivity-report' && <ProductivityReportPage shifts={shifts} onNavigate={navigateTo} />}
-          {currentPage === 'productivity-shift' && <ProductivityShiftPage onNavigate={navigateTo} />}
+          {currentPage === 'productivity-shift' && <ProductivityShiftPage onNavigate={navigateTo} shifts={shifts} />}
           {currentPage === 'productivity-audit' && <ProductivityAuditPage shifts={shifts} onNavigate={navigateTo} />}
           {currentPage === 'trans-before-after-declare' && <TransBeforeAfterDeclarePage shifts={shifts} onNavigate={navigateTo} />}
           {currentPage === 'pl-before-after-declare' && <PlBeforeAfterDeclarePage shifts={shifts} />}

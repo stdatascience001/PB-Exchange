@@ -2,10 +2,16 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { apiRequest } from '../api/client.js';
 import { ArrowLeft } from 'lucide-react';
 import { DateDMYInput } from '../components/DateDMYInput.js';
+import { ShiftDto } from '@pb/types';
 
 interface ProductivityShiftPageProps {
   onNavigate?: (page: string) => void;
+  // Master → Shift list (its own order): every Active shift gets a column, as on live
+  shifts?: ShiftDto[];
 }
+
+// Live: each shift column on its own soft tint, cycling
+const SHIFT_TINTS = ['bg-[#f7f3e3]', 'bg-[#e8f6fb]', 'bg-[#f3e8f8]', 'bg-[#f8ebe8]', 'bg-[#e9f8e9]', 'bg-[#e9e8fa]', 'bg-[#f6f4e6]', 'bg-[#e7f4f6]'];
 
 interface ProductivityShiftRow {
   staffId: number;
@@ -18,10 +24,15 @@ interface ProductivityShiftRow {
   perShift: Record<string, number>;
 }
 
-const todayInputDate = () => new Date().toISOString().slice(0, 10);
-const fmt = (n: number) => Math.round(n || 0).toLocaleString('en-IN');
+// Browser-local today (toISOString() is UTC and gave yesterday before 05:30 IST)
+const todayInputDate = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+// Whole numbers without grouping, as live prints them (1827, 9019)
+const fmt = (n: number) => String(Math.round(n || 0));
 
-export const ProductivityShiftPage: React.FC<ProductivityShiftPageProps> = ({ onNavigate }) => {
+export const ProductivityShiftPage: React.FC<ProductivityShiftPageProps> = ({ onNavigate, shifts = [] }) => {
   const [fromDate, setFromDate] = useState(todayInputDate());
   const [toDate, setToDate] = useState(todayInputDate());
   const [rows, setRows] = useState<ProductivityShiftRow[]>([]);
@@ -60,13 +71,22 @@ export const ProductivityShiftPage: React.FC<ProductivityShiftPageProps> = ({ on
     fetchList();
   };
 
-  // Columns are built dynamically from whatever shift names actually appear in the data —
-  // no market list is hardcoded, so this naturally matches whatever shifts exist in the DB.
+  // Columns (live): every Active shift, in the Master → Shift order, a 0 where nobody entered —
+  // then any other shift that has entries in the range (an inactive one still shows its count).
+  // Nothing hardcoded: it is the shift list as it stands.
   const shiftColumns = useMemo(() => {
-    const names = new Set<string>();
-    rows.forEach(r => Object.keys(r.perShift).forEach(n => names.add(n)));
-    return Array.from(names).sort();
-  }, [rows]);
+    const names: string[] = [];
+    const seen = new Set<string>();
+    for (const s of shifts) {
+      if (s.isActive === false) continue;
+      const n = s.name;
+      if (n && !seen.has(n)) { seen.add(n); names.push(n); }
+    }
+    rows.forEach(r => Object.keys(r.perShift).forEach(n => {
+      if (!seen.has(n)) { seen.add(n); names.push(n); }
+    }));
+    return names;
+  }, [rows, shifts]);
 
   const handleExportExcel = () => {
     if (rows.length === 0) {
@@ -126,7 +146,7 @@ export const ProductivityShiftPage: React.FC<ProductivityShiftPageProps> = ({ on
                 <th className="py-2.5 px-4 border-r border-[#223b63]">User</th>
                 <th className="py-2.5 px-4 border-r border-[#223b63] text-right">T-Count</th>
                 {shiftColumns.map(c => (
-                  <th key={c} className="py-2.5 px-4 border-r border-[#223b63] text-right">{c}</th>
+                  <th key={c} className="py-2.5 px-4 border-r border-[#223b63] text-center uppercase">{c}</th>
                 ))}
               </tr>
             </thead>
@@ -147,8 +167,8 @@ export const ProductivityShiftPage: React.FC<ProductivityShiftPageProps> = ({ on
                     <td className="py-2 px-4 text-slate-700 uppercase border-r border-slate-200">{r.role}</td>
                     <td className="py-2 px-4 font-semibold text-slate-800 uppercase border-r border-slate-200">{r.username}</td>
                     <td className="py-2 px-4 text-right font-mono font-bold text-slate-900 border-r border-slate-200">{fmt(r.tCount)}</td>
-                    {shiftColumns.map(c => (
-                      <td key={c} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200">{fmt(r.perShift[c] || 0)}</td>
+                    {shiftColumns.map((c, ci) => (
+                      <td key={c} className={`py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 ${SHIFT_TINTS[ci % SHIFT_TINTS.length]}`}>{fmt(r.perShift[c] || 0)}</td>
                     ))}
                   </tr>
                 ))

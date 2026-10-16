@@ -1540,7 +1540,11 @@ export class TransactionService {
   // formula — hissa = (totalSale - |comm|) * hissaPercentage — validated against one
   // reference row from the live site; treat as an approximation, not a guaranteed match.
   // TPC's exact formula could not be determined and is left at 0.
-  static async getDailyReport(filters: { shiftId: number; date?: string; agentId?: number }) {
+  // beforeDeclarationId (optional): only the slips saved before that declaration's time — Trans
+  // Before-After Declare's P&L-Before (the report as it stood when the result was declared).
+  // Compared inside the database, so the stored wall-clock times are never re-zoned. Off for the
+  // Daily Report itself.
+  static async getDailyReport(filters: { shiftId: number; date?: string; agentId?: number; beforeDeclarationId?: number }) {
     const [shift] = await db.select().from(shifts).where(eq(shifts.id, filters.shiftId));
     if (!shift) throw new NotFoundError('Shift not found');
 
@@ -1580,7 +1584,10 @@ export class TransactionService {
       and(
         eq(transactions.shiftId, filters.shiftId),
         ne(transactions.status, 'VOIDED'),
-        sql`${transactions.createdAt}::date = ${dateFilter}::date`
+        sql`${transactions.createdAt}::date = ${dateFilter}::date`,
+        ...(filters.beforeDeclarationId
+          ? [sql`${transactions.createdAt} < (SELECT d.declared_at FROM declarations d WHERE d.id = ${filters.beforeDeclarationId})`]
+          : []),
       )
     );
 
@@ -4134,15 +4141,17 @@ export class TransactionService {
       role: staff.role,
       username: staff.username,
       shiftName: shifts.name,
-      count: sql<number>`COUNT(${transactions.id})::int`,
+      // live: number entries per shift (B18 JAI LUXMI 284 = its Productivity Report T-Count)
+      count: sql<number>`COALESCE(SUM((SELECT COUNT(*) FROM transaction_entries e WHERE e.transaction_id = ${transactions.id})), 0)::int`,
     })
       .from(transactions)
       .innerJoin(staff, eq(transactions.createdBy, staff.userId))
       .innerJoin(shifts, eq(transactions.shiftId, shifts.id))
       .where(and(
         ne(transactions.status, 'VOIDED'),
-        sql`${transactions.createdAt}::date >= ${filters.fromDate}::date`,
-        sql`${transactions.createdAt}::date <= ${filters.toDate}::date`,
+        // index-friendly day range (no ::date cast on the column)
+        sql`${transactions.createdAt} >= ${filters.fromDate}::date`,
+        sql`${transactions.createdAt} < (${filters.toDate}::date + 1)`,
       ))
       .groupBy(staff.userId, staff.fullName, staff.mobile, staff.address, staff.role, staff.username, shifts.name);
 
@@ -4161,11 +4170,12 @@ export class TransactionService {
         });
       }
       const entry = byStaff.get(r.userId)!;
-      entry.perShift[r.shiftName] = r.count;
-      entry.tCount += r.count;
+      entry.perShift[r.shiftName] = Number(r.count) || 0;
+      entry.tCount += Number(r.count) || 0;
     }
 
-    return Array.from(byStaff.values()).sort((a, b) => a.name.localeCompare(b.name));
+    // live order: fewest entries first (SUBHASH 104 … B10 9019)
+    return Array.from(byStaff.values()).sort((a, b) => a.tCount - b.tCount || a.name.localeCompare(b.name));
   }
 
   // Per-staff audit stats: Mistake = voided, Modify = edited after creation (updatedAt !=
@@ -4216,10 +4226,17 @@ export class TransactionService {
   // matches the declared number, HARUF_ANDAR/BAHAR match its tens/units digit) — just
   // bucketed by whether the transaction landed before or after declarations.declaredAt.
   private static async computeBeforeAfterTotals(shiftId: number, date: string) {
-    const [decl] = await db.select().from(declarations)
+    let [decl] = await db.select().from(declarations)
       .where(and(eq(declarations.shiftId, shiftId), sql`${declarations.declaredAt}::date = ${date}::date`))
       .orderBy(desc(declarations.declaredAt))
       .limit(1);
+    // A late shift declared after midnight carries the next day's date on its declaration
+    if (!decl) {
+      [decl] = await db.select().from(declarations)
+        .where(and(eq(declarations.shiftId, shiftId), sql`${declarations.declaredAt}::date = (${date}::date + 1)`))
+        .orderBy(declarations.declaredAt)
+        .limit(1);
+    }
 
     const txRows = await db.select().from(transactions).where(and(
       eq(transactions.shiftId, shiftId),
@@ -4261,12 +4278,28 @@ export class TransactionService {
       if (isBefore) payoutBefore += payout; else payoutAfter += payout;
     }
 
-    const plBefore = saleBefore - payoutBefore;
-    const plAfter = saleAfter - payoutAfter;
+    void payoutBefore; void payoutAfter;
+    // Live (JAI LUXMI 16-10): Sale-Before 32989 / Sale-After 32989 / P&L 8237 / 8237 — the P&L is
+    // the Daily Report's Profit (Σ Debit − Σ Credit) for the shift and day:
+    //   Before = the slips saved before the result was declared (the book as declared)
+    //   After  = every slip now (the book as it stands) — so Sale-After is the whole day's sale,
+    //            not just what came in after; Difference = After − Before
+    // Undeclared day → the Daily Report has no result yet, P&L reads 0 on both.
+    const saleAll = saleBefore + saleAfter;
+    let plBefore = 0;
+    let plAfter = 0;
+    if (decl) {
+      const [beforeRpt, nowRpt] = await Promise.all([
+        this.getDailyReport({ shiftId, date, beforeDeclarationId: decl.id }),
+        this.getDailyReport({ shiftId, date }),
+      ]);
+      plBefore = beforeRpt.profit || 0;
+      plAfter = nowRpt.profit || 0;
+    }
 
     return {
       declaration: decl,
-      saleBefore, saleAfter, saleDiff: saleAfter - saleBefore,
+      saleBefore, saleAfter: saleAll, saleDiff: saleAll - saleBefore,
       plBefore, plAfter, plDiff: plAfter - plBefore,
     };
   }
@@ -4323,40 +4356,43 @@ export class TransactionService {
     };
   }
 
+  // P&L Before-After Declare (pl_before_after_declare): one row per shift per declared DAY in
+  // From–To (the shift's cycle day, as the Daily Report — not the day the declaration was saved),
+  // oldest day first, then shift A-Z (live 15-10 → 16-10). Result = that day's number; S / PL
+  // Before-After-Diff as Trans Before-After Declare (P&L = the Daily Report Profit). A day that
+  // was declared again (ReDeclare) is still one row.
   static async getPlBeforeAfterDeclare(filters: { fromDate: string; toDate: string; shiftId?: number }) {
-    const conditions = [
-      sql`${declarations.declaredAt}::date >= ${filters.fromDate}::date`,
-      sql`${declarations.declaredAt}::date <= ${filters.toDate}::date`,
-    ];
-    if (filters.shiftId) conditions.push(eq(declarations.shiftId, filters.shiftId));
-
-    const declRows = await db.select({
-      shiftId: declarations.shiftId,
-      shiftName: shifts.name,
-      winningNumber: declarations.winningNumber,
-      declaredDate: sql<string>`${declarations.declaredAt}::date`,
-    })
-      .from(declarations)
-      .innerJoin(shifts, eq(declarations.shiftId, shifts.id))
-      .where(and(...conditions))
-      .orderBy(desc(declarations.declaredAt));
-
-    const results = [];
-    for (const d of declRows) {
-      const totals = await this.computeBeforeAfterTotals(d.shiftId, d.declaredDate);
-      results.push({
-        date: d.declaredDate,
-        shiftName: d.shiftName,
-        result: d.winningNumber,
+    const shiftCond = filters.shiftId ? pgSql`AND s.id = ${filters.shiftId}` : pgSql``;
+    const days = await pgSql<Array<{ shift_id: number; shift_name: string; day: string; result: string }>>`
+      SELECT s.id AS shift_id, s.name AS shift_name, c.cycle_date AS day, c.declared_number AS result
+      FROM shift_cycles c JOIN shifts s ON s.id = c.shift_id
+      WHERE c.cycle_date BETWEEN ${filters.fromDate} AND ${filters.toDate}
+        AND c.declared_number IS NOT NULL ${shiftCond}
+      UNION
+      SELECT s.id, s.name, s.open_date, s.declared_number
+      FROM shifts s
+      WHERE s.open_date BETWEEN ${filters.fromDate} AND ${filters.toDate}
+        AND s.declared_number IS NOT NULL ${shiftCond}
+        AND NOT EXISTS (
+          SELECT 1 FROM shift_cycles c2
+          WHERE c2.shift_id = s.id AND c2.cycle_date = s.open_date AND c2.declared_number IS NOT NULL
+        )
+      ORDER BY day, shift_name
+    `;
+    return Promise.all(days.map(async d => {
+      const totals = await this.computeBeforeAfterTotals(d.shift_id, d.day);
+      return {
+        date: d.day,
+        shiftName: d.shift_name,
+        result: String(d.result || '').padStart(2, '0'),
         saleBefore: totals.saleBefore,
         saleAfter: totals.saleAfter,
         saleDiff: totals.saleDiff,
         plBefore: totals.plBefore,
         plAfter: totals.plAfter,
         plDiff: totals.plDiff,
-      });
-    }
-    return results;
+      };
+    }));
   }
 
   // Transactions entered after a role's normal cutoff (shiftRoleConfig.closeTime, the same

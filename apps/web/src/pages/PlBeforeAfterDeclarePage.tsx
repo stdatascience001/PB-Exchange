@@ -19,8 +19,13 @@ interface PlRow {
   plDiff: number;
 }
 
-const todayInputDate = () => new Date().toISOString().slice(0, 10);
-const fmt = (n: number) => Math.round(n || 0).toLocaleString('en-IN');
+// Browser-local today (toISOString() is UTC and gave yesterday before 05:30 IST)
+const todayInputDate = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+// Whole numbers without grouping, signed, as live prints them (32989, 8237)
+const fmt = (n: number) => String(Math.round(n || 0) + 0);
 
 export const PlBeforeAfterDeclarePage: React.FC<PlBeforeAfterDeclarePageProps> = ({ shifts = [] }) => {
   const [shiftId, setShiftId] = useState('');
@@ -118,7 +123,8 @@ export const PlBeforeAfterDeclarePage: React.FC<PlBeforeAfterDeclarePageProps> =
               className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 cursor-pointer min-w-32 shadow-xs"
             >
               <option value="">-- ALL SHIFT --</option>
-              {shifts.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              {/* only the Active shifts (Master → Shift: Active), as the other shift pickers */}
+              {shifts.filter(s => s.isActive !== false).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
             <DateDMYInput value={fromDate} onChange={setFromDate} idPrefix="plbad-fromDate" separator="-" onEnterFromYear={() => focusById('plbad-toDate-dd')} />
             <DateDMYInput value={toDate} onChange={setToDate} idPrefix="plbad-toDate" separator="-" onEnterFromYear={() => focusById('plbad-search-btn')} />
