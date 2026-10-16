@@ -144,6 +144,20 @@ export class TransactionController {
     }
   }
 
+  static async productivityAuditDetail(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await TransactionService.getProductivityAuditDetail({
+        fromDate: req.query.fromDate as string,
+        toDate: req.query.toDate as string,
+        shiftId: req.query.shiftId ? parseInt(req.query.shiftId as string, 10) : undefined,
+        userId: parseInt((req.query.userId || req.query.staffId) as string, 10) || 0,
+      });
+      return sendSuccess(res, result, 'Productivity audit detail retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
   static async productivityAudit(req: Request, res: Response, next: NextFunction) {
     try {
       const fromDate = req.query.fromDate as string;

@@ -66,10 +66,14 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
   const [dd, setDd] = useState(() => dateStr.slice(8, 10));
   const [mm, setMm] = useState(() => dateStr.slice(5, 7));
   const [yyyy, setYyyy] = useState(() => dateStr.slice(0, 4));
+  // A part keeps what was typed when it is the same number (3 stays "3", not "03"; a 0 only if
+  // typed), and an emptied part stays empty while typing; a real change still shows
   useEffect(() => {
-    setDd(dateStr.slice(8, 10));
-    setMm(dateStr.slice(5, 7));
-    setYyyy(dateStr.slice(0, 4));
+    const keepTyped = (typed: string, next: string) =>
+      typed !== '' && parseInt(typed, 10) === parseInt(next, 10) ? typed : next;
+    setDd(prev => keepTyped(prev, dateStr.slice(8, 10)));
+    setMm(prev => keepTyped(prev, dateStr.slice(5, 7)));
+    setYyyy(prev => keepTyped(prev, dateStr.slice(0, 4)));
   }, [dateStr]);
   const commitDate = (d: string, m: string, y: string) => {
     const di = parseInt(d, 10), mi = parseInt(m, 10), yi = parseInt(y, 10);

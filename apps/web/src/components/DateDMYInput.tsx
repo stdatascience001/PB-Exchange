@@ -15,16 +15,22 @@ interface DateDMYInputProps {
 // Date box shown as DD / MM / YYYY (three parts, as the live panels do) instead of the
 // browser's own locale picker. Enter steps day -> month -> year; Up/Down steps the focused
 // part (wrapping within the month / year); only digits can be typed.
+// Keep what was typed when it is the same number (3 = 03): no "0" forced in front, and a part
+// emptied while typing stays empty
+const keepTyped = (typed: string, next: string) =>
+  typed !== '' && parseInt(typed, 10) === parseInt(next, 10) ? typed : next;
+
 export const DateDMYInput: React.FC<DateDMYInputProps> = ({ value, onChange, idPrefix, onEnterFromYear, separator = '/' }) => {
   const [dd, setDd] = useState(() => value.slice(8, 10));
   const [mm, setMm] = useState(() => value.slice(5, 7));
   const [yyyy, setYyyy] = useState(() => value.slice(0, 4));
 
-  // Follow the value when it's set from outside
+  // Follow the value when it's set from outside — but leave a part as typed when it is the same
+  // number (typing 3 keeps "3", not "03"; you add a 0 only if you want one)
   useEffect(() => {
-    setDd(value.slice(8, 10));
-    setMm(value.slice(5, 7));
-    setYyyy(value.slice(0, 4));
+    setDd(prev => keepTyped(prev, value.slice(8, 10)));
+    setMm(prev => keepTyped(prev, value.slice(5, 7)));
+    setYyyy(prev => keepTyped(prev, value.slice(0, 4)));
   }, [value]);
 
   const commit = (d: string, m: string, y: string) => {

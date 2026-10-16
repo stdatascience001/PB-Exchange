@@ -4180,44 +4180,108 @@ export class TransactionService {
 
   // Per-staff audit stats: Mistake = voided, Modify = edited after creation (updatedAt !=
   // createdAt) — both derived from fields already on the transactions table.
+  // Productivity Audit (rpt_productivity_trans_audit) — the AUDITORS' work, not the operators':
+  // every Valid / Mistake verdict given on Declare Trans-Audit in From–To (audit_logs, action
+  // AUDIT), the latest verdict per slip counting once. Per auditor (live S09, TALLY OPERATOR):
+  //   T-Party = parties of the slips audited    T-Count = slips audited = Valid + Mistake
+  //   Modify  = slips edited after the verdict  T-Amount = Σ those slips' amount
+  // Shift filters on the slip's shift. Index-friendly day range on audit_logs.created_at.
+  private static async productivityAuditEvents(filters: { fromDate: string; toDate: string; shiftId?: number; userId?: number }) {
+    const shiftCond = filters.shiftId ? pgSql`AND t.shift_id = ${filters.shiftId}` : pgSql``;
+    const userCond = filters.userId ? pgSql`AND a.actor_id = ${filters.userId}` : pgSql``;
+    return pgSql<Array<{
+      actor_id: number; transaction_id: number; audited_at: string; status: string; remark: string | null;
+      party_id: number; party_name: string; shift_name: string; total_amount: string; modified: boolean;
+    }>>`
+      SELECT * FROM (
+        SELECT DISTINCT ON (a.actor_id, t.id)
+               a.actor_id, t.id AS transaction_id, a.created_at::text AS audited_at,
+               a.after_data->>'auditStatus' AS status, a.after_data->>'mistakeRemark' AS remark,
+               t.party_id, l.party_name, sh.name AS shift_name, t.total_amount,
+               (t.updated_at > a.created_at) AS modified
+        FROM audit_logs a
+        JOIN transactions t ON t.id::text = a.entity_id
+        JOIN ledgers l ON l.id = t.party_id
+        JOIN shifts sh ON sh.id = t.shift_id
+        WHERE a.action = 'AUDIT' AND a.entity_type = 'TRANSACTION'
+          AND a.created_at >= ${filters.fromDate}::date AND a.created_at < (${filters.toDate}::date + 1)
+          AND a.after_data->>'auditStatus' IN ('VALID', 'MISTAKE')
+          ${shiftCond} ${userCond}
+        ORDER BY a.actor_id, t.id, a.created_at DESC
+      ) x
+      ORDER BY x.actor_id, x.audited_at, x.transaction_id
+    `;
+  }
+
   static async getProductivityAudit(filters: { fromDate: string; toDate: string; shiftId?: number }) {
-    const conditions = [
-      sql`${transactions.createdAt}::date >= ${filters.fromDate}::date`,
-      sql`${transactions.createdAt}::date <= ${filters.toDate}::date`,
-    ];
-    if (filters.shiftId) conditions.push(eq(transactions.shiftId, filters.shiftId));
+    const events = await this.productivityAuditEvents(filters);
+    const actorIds = Array.from(new Set(events.map(e => e.actor_id)));
+    if (actorIds.length === 0) return [];
+    const [staffRows, userRows] = await Promise.all([
+      db.select({ userId: staff.userId, name: staff.fullName, mobile: staff.mobile, address: staff.address, role: staff.role, username: staff.username })
+        .from(staff).where(inArray(staff.userId, actorIds)),
+      db.select({ id: users.id, username: users.username }).from(users).where(inArray(users.id, actorIds)),
+    ]);
+    const staffById = new Map(staffRows.map(s => [s.userId, s]));
+    const userById = new Map(userRows.map(u => [u.id, u.username]));
+    const agg = new Map<number, { parties: Set<number>; count: number; valid: number; mistake: number; modify: number; amount: number }>();
+    for (const e of events) {
+      const a = agg.get(e.actor_id) || { parties: new Set<number>(), count: 0, valid: 0, mistake: 0, modify: 0, amount: 0 };
+      a.parties.add(e.party_id);
+      a.count += 1;
+      if (e.status === 'MISTAKE') a.mistake += 1; else a.valid += 1;
+      if (e.modified) a.modify += 1;
+      a.amount += parseFloat(e.total_amount) || 0;
+      agg.set(e.actor_id, a);
+    }
+    return Array.from(agg.entries()).map(([actorId, a]) => {
+      const st = staffById.get(actorId);
+      const username = st?.username || userById.get(actorId) || '-';
+      return {
+        staffId: actorId,
+        name: st?.name || username,
+        mobile: st?.mobile || '-',
+        address: st?.address || '-',
+        role: st?.role || '-',
+        username,
+        tParty: a.parties.size,
+        tCount: a.count,
+        valid: a.valid,
+        mistake: a.mistake,
+        modify: a.modify,
+        tAmount: a.amount,
+      };
+    }).sort((a, b) => a.tCount - b.tCount || a.name.localeCompare(b.name));
+  }
 
-    const rows = await db.select({
-      userId: staff.userId,
-      name: staff.fullName,
-      mobile: staff.mobile,
-      address: staff.address,
-      role: staff.role,
-      tParty: sql<number>`COUNT(DISTINCT ${transactions.partyId})::int`,
-      tCount: sql<number>`COUNT(${transactions.id})::int`,
-      valid: sql<number>`COUNT(*) FILTER (WHERE ${transactions.status} != 'VOIDED')::int`,
-      mistake: sql<number>`COUNT(*) FILTER (WHERE ${transactions.status} = 'VOIDED')::int`,
-      modify: sql<number>`COUNT(*) FILTER (WHERE ${transactions.updatedAt} != ${transactions.createdAt})::int`,
-      tAmount: sql<string>`COALESCE(SUM(CASE WHEN ${transactions.status} != 'VOIDED' THEN ${transactions.totalAmount}::numeric ELSE 0 END), 0)`,
-    })
-      .from(transactions)
-      .innerJoin(staff, eq(transactions.createdBy, staff.userId))
-      .where(and(...conditions))
-      .groupBy(staff.userId, staff.fullName, staff.mobile, staff.address, staff.role);
-
-    return rows.map(r => ({
-      staffId: r.userId,
-      name: r.name,
-      mobile: r.mobile || '-',
-      address: r.address || '-',
-      role: r.role || '-',
-      tParty: r.tParty,
-      tCount: r.tCount,
-      valid: r.valid,
-      mistake: r.mistake,
-      modify: r.modify,
-      tAmount: parseFloat(r.tAmount),
-    })).sort((a, b) => a.name.localeCompare(b.name));
+  // Productivity Audit → click a Name (live "TRANSACTION PRODUCTIVITY REPORT"): that auditor's
+  // verdicts in time order — Party, Shift, Added Time (when the verdict was given), Diff Time
+  // (since the previous verdict; the first reads START), Status (VALID / MISTAKE + its remark),
+  // T-Amount, Update By (the auditor), Update Date.
+  static async getProductivityAuditDetail(filters: { fromDate: string; toDate: string; shiftId?: number; userId: number }) {
+    if (!filters.userId) throw new AppError('Please select a user!');
+    const events = await this.productivityAuditEvents(filters);
+    const [u] = await db.select({ username: users.username }).from(users).where(eq(users.id, filters.userId));
+    let prev: number | null = null;
+    return events.map(e => {
+      const at = new Date(e.audited_at.replace(' ', 'T')).getTime();
+      const diff = prev === null || !Number.isFinite(at) ? null : Math.max(0, Math.round((at - prev) / 1000));
+      if (Number.isFinite(at)) prev = at;
+      return {
+        transactionId: e.transaction_id,
+        partyName: e.party_name,
+        shiftName: e.shift_name,
+        auditedAt: e.audited_at,
+        // seconds since the previous verdict; null on the first (START)
+        diffSeconds: diff,
+        status: e.status,
+        remark: e.remark || '',
+        modified: e.modified,
+        tAmount: parseFloat(e.total_amount) || 0,
+        updatedBy: u?.username || '-',
+        updatedAt: e.audited_at,
+      };
+    });
   }
 
   // Shared before/after-declare split, reused by both getTransBeforeAfterDeclare (row-level,

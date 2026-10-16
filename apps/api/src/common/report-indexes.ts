@@ -15,6 +15,8 @@ const REPORT_INDEXES = [
   'CREATE INDEX CONCURRENTLY IF NOT EXISTS shift_cycles_shift_date_status_idx ON shift_cycles(shift_id, cycle_date, status)',
   // Productivity Report: each operator's slips in a date range
   'CREATE INDEX CONCURRENTLY IF NOT EXISTS trans_created_by_date_idx ON transactions(created_by, created_at)',
+  // Productivity Audit: the verdicts (audit_logs AUDIT) in a date range
+  'CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_action_date_idx ON audit_logs(action, created_at)',
 ];
 
 export async function ensureReportIndexes(): Promise<void> {

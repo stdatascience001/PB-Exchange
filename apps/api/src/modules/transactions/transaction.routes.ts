@@ -49,6 +49,7 @@ router.get('/productivity-report', TransactionController.productivityReport);
 router.get('/productivity-detail', TransactionController.productivityDetail);
 router.get('/productivity-shift', TransactionController.productivityShift);
 router.get('/productivity-audit', TransactionController.productivityAudit);
+router.get('/productivity-audit/detail', TransactionController.productivityAuditDetail);
 router.get('/before-after-declare', TransactionController.beforeAfterDeclare);
 router.get('/pl-before-after-declare', TransactionController.plBeforeAfterDeclare);
 router.get('/after-timing', TransactionController.afterTiming);

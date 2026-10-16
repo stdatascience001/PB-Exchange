@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ShiftDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, X } from 'lucide-react';
 import { DateDMYInput } from '../components/DateDMYInput.js';
 
 interface ProductivityAuditPageProps {
@@ -15,6 +15,7 @@ interface ProductivityAuditRow {
   mobile: string;
   address: string;
   role: string;
+  username?: string;
   tParty: number;
   tCount: number;
   valid: number;
@@ -23,8 +24,45 @@ interface ProductivityAuditRow {
   tAmount: number;
 }
 
-const todayInputDate = () => new Date().toISOString().slice(0, 10);
-const fmt = (n: number) => Math.round(n || 0).toLocaleString('en-IN');
+// GET /transactions/productivity-audit/detail — one auditor's verdicts (Name click popup)
+interface AuditVerdict {
+  transactionId: number;
+  partyName: string;
+  shiftName: string;
+  auditedAt: string;
+  diffSeconds: number | null;
+  status: string;
+  remark: string;
+  modified: boolean;
+  tAmount: number;
+  updatedBy: string;
+  updatedAt: string;
+}
+
+// Browser-local today (toISOString() is UTC and gave yesterday before 05:30 IST)
+const todayInputDate = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+// Whole numbers without grouping, as live prints them (11, 39870)
+const fmt = (n: number) => String(Math.round(n || 0));
+// Popup durations as live: 00:00:45; the first verdict reads START
+const hms = (sec: number | null) => {
+  if (sec === null) return 'START';
+  const s = Math.max(0, Math.round(sec));
+  return [Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60].map(n => String(n).padStart(2, '0')).join(':');
+};
+// Popup stamps as live: 16-10-2026 19:11 (stored wall-clock values, printed as stored)
+const stamp = (v: string) => {
+  if (!v) return '-';
+  const [d, t] = v.replace('T', ' ').slice(0, 16).split(' ');
+  return `${d.split('-').reverse().join('-')} ${t || ''}`.trim();
+};
+const TH = 'py-2.5 px-3 border-r border-[#223b63]';
+const TD = 'py-2 px-3 font-semibold text-slate-700 border-r border-slate-200';
+// Live column order (12): Sr. | Name | Mobile | Address | User Type | User | T-Party | T-Count |
+// Valid | Mistake | Modify | T-Amount
+const AUDIT_COLS = ['Sr.', 'Name', 'Mobile', 'Address', 'User Type', 'User', 'T-Party', 'T-Count', 'Valid', 'Mistake', 'Modify', 'T-Amount'];
 
 export const ProductivityAuditPage: React.FC<ProductivityAuditPageProps> = ({ shifts = [], onNavigate }) => {
   const [fromDate, setFromDate] = useState(todayInputDate());
@@ -32,20 +70,52 @@ export const ProductivityAuditPage: React.FC<ProductivityAuditPageProps> = ({ sh
   const [shiftId, setShiftId] = useState('');
   const [rows, setRows] = useState<ProductivityAuditRow[]>([]);
   const [loading, setLoading] = useState(false);
+  // Only the latest Search may fill the table
+  const reqRef = useRef(0);
+  // Name click → TRANSACTION PRODUCTIVITY REPORT popup (that auditor's verdicts)
+  const [detailFor, setDetailFor] = useState<ProductivityAuditRow | null>(null);
+  const [detail, setDetail] = useState<AuditVerdict[]>([]);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   const fetchList = async () => {
+    const reqId = ++reqRef.current;
     setLoading(true);
     try {
       const params = new URLSearchParams({ fromDate, toDate });
       if (shiftId) params.append('shiftId', shiftId);
       const res = await apiRequest<ProductivityAuditRow[]>(`/transactions/productivity-audit?${params.toString()}`);
-      if (res.data) setRows(res.data);
+      if (reqId !== reqRef.current) return;
+      setRows(res.data || []);
     } catch (err) {
+      if (reqId !== reqRef.current) return;
       console.warn('Failed to load productivity audit:', err);
     } finally {
-      setLoading(false);
+      if (reqId === reqRef.current) setLoading(false);
     }
   };
+
+  const openDetail = async (r: ProductivityAuditRow) => {
+    setDetailFor(r);
+    setDetail([]);
+    setDetailLoading(true);
+    try {
+      const params = new URLSearchParams({ fromDate, toDate, userId: String(r.staffId) });
+      if (shiftId) params.append('shiftId', shiftId);
+      const res = await apiRequest<AuditVerdict[]>(`/transactions/productivity-audit/detail?${params.toString()}`);
+      setDetail(res.data || []);
+    } catch (err) {
+      console.warn('Failed to load productivity audit detail:', err);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+  // Esc closes the popup
+  useEffect(() => {
+    if (!detailFor) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDetailFor(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [detailFor]);
 
   // Live flow: the page opens with the cursor on From's day and an empty table; Enter walks
   // From DD -> MM -> YYYY -> To DD -> MM -> YYYY -> Shift -> Search, and the report loads on
@@ -78,8 +148,8 @@ export const ProductivityAuditPage: React.FC<ProductivityAuditPageProps> = ({ sh
       return;
     }
     const csvContent = 'data:text/csv;charset=utf-8,' +
-      ['Name,Mobile,Address,User Type,T-Party,T-Count,Valid,Mistake,Modify,T-Amount'].concat(
-        rows.map(r => `"${r.name}","${r.mobile}","${r.address}","${r.role}",${r.tParty},${r.tCount},${r.valid},${r.mistake},${r.modify},${r.tAmount}`)
+      ['Sr,Name,Mobile,Address,User Type,User,T-Party,T-Count,Valid,Mistake,Modify,T-Amount'].concat(
+        rows.map((r, i) => `${i + 1},"${r.name}","${r.mobile}","${r.address}","${r.role}","${r.username || ''}",${r.tParty},${r.tCount},${r.valid},${r.mistake},${r.modify},${fmt(r.tAmount)}`)
       ).join('\n');
     const link = document.createElement('a');
     link.setAttribute('href', encodeURI(csvContent));
@@ -113,7 +183,8 @@ export const ProductivityAuditPage: React.FC<ProductivityAuditPageProps> = ({ sh
               className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 cursor-pointer min-w-32 shadow-xs"
             >
               <option value="">ALL</option>
-              {shifts.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              {/* only the Active shifts (Master → Shift: Active), as the other shift pickers */}
+              {shifts.filter(s => s.isActive !== false).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
             <button id="prodaudit-search-btn" type="submit" disabled={loading} className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5">
               Search
@@ -126,51 +197,125 @@ export const ProductivityAuditPage: React.FC<ProductivityAuditPageProps> = ({ sh
           </button>
         </form>
 
-        <div className="overflow-x-auto flex-1">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
+        <div className="overflow-auto flex-1 max-h-[calc(100vh-190px)]">
+          <table className="w-auto min-w-[1200px] text-left text-xs border-separate border-spacing-0">
+            <thead className="sticky top-0 z-10">
               <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
-                <th className="py-2.5 px-3 border-r border-[#223b63] w-12 text-center">Sr.</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Name</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Mobile</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">Address</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63]">User Type</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63] text-right">T-Party</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63] text-right">T-Count</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63] text-right">Valid</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63] text-right">Mistake</th>
-                <th className="py-2.5 px-4 border-r border-[#223b63] text-right">Modify</th>
-                <th className="py-2.5 px-4 text-right">T-Amount</th>
+                {AUDIT_COLS.map((c, ci) => (
+                  <th key={c} className={`${TH} ${ci === 0 ? 'w-10' : ci < 6 ? 'w-40' : 'w-20'} ${ci >= 6 ? 'text-right' : 'text-center'}`}>{c}</th>
+                ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-200 font-sans text-xs whitespace-nowrap">
+            <tbody className="font-sans text-xs whitespace-nowrap">
               {loading ? (
-                <tr><td colSpan={11} className="py-14 text-center text-slate-400 font-medium">Loading...</td></tr>
+                <tr><td colSpan={12} className="py-14 text-center text-slate-400 font-medium">Loading...</td></tr>
               ) : !hasSearched ? (
-                <tr><td colSpan={11} className="py-14" /></tr>
+                <tr><td colSpan={12} className="py-14" /></tr>
               ) : rows.length === 0 ? (
-                <tr><td colSpan={11} className="py-14 text-center text-slate-400 font-medium">No records found for this filter.</td></tr>
+                <tr><td colSpan={12} className="py-14 text-center text-slate-400 font-medium">No records found for this filter.</td></tr>
               ) : (
                 rows.map((r, idx) => (
-                  <tr key={r.staffId} className="hover:bg-slate-50 transition-colors">
-                    <td className="py-2 px-3 text-center font-mono text-slate-600 border-r border-slate-200">{idx + 1}</td>
-                    <td className="py-2 px-4 font-bold text-slate-900 uppercase border-r border-slate-200">{r.name}</td>
-                    <td className="py-2 px-4 font-mono text-slate-700 border-r border-slate-200">{r.mobile}</td>
-                    <td className="py-2 px-4 text-slate-700 uppercase border-r border-slate-200">{r.address}</td>
-                    <td className="py-2 px-4 text-slate-700 uppercase border-r border-slate-200">{r.role}</td>
-                    <td className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200">{fmt(r.tParty)}</td>
-                    <td className="py-2 px-4 text-right font-mono font-bold text-slate-900 border-r border-slate-200">{fmt(r.tCount)}</td>
-                    <td className="py-2 px-4 text-right font-mono text-emerald-700 border-r border-slate-200">{fmt(r.valid)}</td>
-                    <td className="py-2 px-4 text-right font-mono text-rose-700 border-r border-slate-200">{fmt(r.mistake)}</td>
-                    <td className="py-2 px-4 text-right font-mono text-amber-700 border-r border-slate-200">{fmt(r.modify)}</td>
-                    <td className="py-2 px-4 text-right font-mono font-bold text-slate-900">{fmt(r.tAmount)}</td>
+                  <tr key={r.staffId} className="even:bg-slate-50/60 hover:bg-slate-50 [&>td]:border-b [&>td]:border-slate-200">
+                    <td className={`${TD} text-center`}>{idx + 1}</td>
+                    <td
+                      className={`${TD} text-center uppercase bg-[#f1f1f1] cursor-pointer hover:text-blue-700 hover:underline`}
+                      onClick={() => openDetail(r)}
+                      title="Show this auditor's Valid / Mistake list"
+                    >
+                      {r.name}
+                    </td>
+                    <td className={`${TD} text-center`}>{r.mobile}</td>
+                    <td className={`${TD} text-center uppercase`}>{r.address}</td>
+                    <td className={`${TD} text-center uppercase`}>{r.role}</td>
+                    <td className={`${TD} text-center uppercase bg-[#f1f1f1]`}>{r.username || '-'}</td>
+                    <td className={`${TD} text-right`}>{fmt(r.tParty)}</td>
+                    <td className={`${TD} text-right`}>{fmt(r.tCount)}</td>
+                    <td className={`${TD} text-right`}>{fmt(r.valid)}</td>
+                    <td className={`${TD} text-right`}>{fmt(r.mistake)}</td>
+                    <td className={`${TD} text-right`}>{fmt(r.modify)}</td>
+                    <td className={`${TD} text-right`}>{fmt(r.tAmount)}</td>
                   </tr>
                 ))
               )}
             </tbody>
+            {/* Live footer repeats the column names */}
+            {!loading && hasSearched && rows.length > 0 && (
+              <tfoot className="sticky bottom-0 z-10">
+                <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
+                  {AUDIT_COLS.map((c, ci) => (
+                    <td key={c} className={`${TH} ${ci >= 6 ? 'text-right' : 'text-center'}`}>{c}</td>
+                  ))}
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </div>
+
+      {/* Name click (live): TRANSACTION PRODUCTIVITY REPORT — the auditor's verdicts in time order */}
+      {detailFor && (
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setDetailFor(null); }}
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-start justify-center p-3 pt-10 z-50 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-[1720px] overflow-hidden border border-slate-300 flex flex-col max-h-[85vh]">
+            <div className="bg-[#1f4277] text-white px-4 py-3 flex items-center justify-between">
+              <h2 className="text-sm font-bold tracking-tight uppercase">Transaction Productivity Report</h2>
+              <button type="button" onClick={() => setDetailFor(null)} className="text-white hover:text-slate-300 p-0.5" title="Close (Esc)">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="overflow-auto flex-1">
+              <table className="w-full text-xs border-separate border-spacing-0">
+                <thead className="sticky top-0 z-10">
+                  <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
+                    <th className={`${TH} w-12 text-left`}>Sr.</th>
+                    <th className={`${TH} text-left`}>Party</th>
+                    <th className={`${TH} w-28 text-center`}>Shift</th>
+                    <th className={`${TH} w-32 text-center`}>Added Time</th>
+                    <th className={`${TH} w-24 text-center`}>Diff Time</th>
+                    <th className={`${TH} w-20 text-center`}>Status</th>
+                    <th className={`${TH} w-24 text-right`}>T-Amount</th>
+                    <th className={`${TH} w-28 text-center`}>Update By</th>
+                    <th className="py-2.5 px-3 w-32 text-center">Update Date</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detailLoading ? (
+                    <tr><td colSpan={9} className="py-10 text-center text-slate-400">Loading...</td></tr>
+                  ) : detail.length === 0 ? (
+                    <tr><td colSpan={9} className="py-10 text-center text-slate-400">No audits found.</td></tr>
+                  ) : detail.map((d, i) => {
+                    const mistake = d.status === 'MISTAKE';
+                    return (
+                      <tr key={d.transactionId} className="even:bg-slate-50/60 [&>td]:border-b [&>td]:border-slate-200">
+                        <td className={TD}>{i + 1}</td>
+                        {/* live: a MISTAKE slip's party in red */}
+                        <td className={`${TD} uppercase ${mistake ? '!text-red-600 font-bold' : ''}`}>{d.partyName}</td>
+                        <td className={`${TD} text-center uppercase`}>{d.shiftName}</td>
+                        <td className={`${TD} text-center`}>{stamp(d.auditedAt)}</td>
+                        <td className={`${TD} text-center`}>{hms(d.diffSeconds)}</td>
+                        <td className={`${TD} text-center`}>
+                          {/* live: the Mistake remark shows on hover */}
+                          <span
+                            title={mistake && d.remark ? d.remark : undefined}
+                            className={`inline-block px-2 py-0.5 rounded-xs text-[9px] font-bold text-white ${mistake ? 'bg-red-600' : 'bg-[#00897b]'}`}
+                          >
+                            {mistake ? 'MISTAKE' : 'VALID'}
+                          </span>
+                        </td>
+                        <td className={`${TD} text-right`}>{fmt(d.tAmount)}</td>
+                        <td className={`${TD} text-center uppercase`}>{d.updatedBy}</td>
+                        <td className="py-2 px-3 font-semibold text-slate-700 text-center">{stamp(d.updatedAt)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

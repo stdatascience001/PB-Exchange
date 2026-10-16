@@ -429,6 +429,7 @@ export async function runMigrations() {
     -- Productivity Report: when the operator started the slip (created_at = when it was saved)
     ALTER TABLE transactions ADD COLUMN IF NOT EXISTS started_at TIMESTAMP;
     CREATE INDEX IF NOT EXISTS trans_created_by_date_idx ON transactions(created_by, created_at);
+    CREATE INDEX IF NOT EXISTS audit_action_date_idx ON audit_logs(action, created_at);
     CREATE INDEX IF NOT EXISTS voucher_entries_ledger_idx ON voucher_entries(ledger_id, voucher_id);
     CREATE INDEX IF NOT EXISTS voucher_entries_voucher_idx ON voucher_entries(voucher_id);
     CREATE INDEX IF NOT EXISTS vouchers_type_date_idx ON vouchers(voucher_type, created_at);
