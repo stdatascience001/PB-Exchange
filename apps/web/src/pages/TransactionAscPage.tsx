@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ShiftDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
+import { useFitToViewport } from '../utils/useFitToViewport.js';
 import { DateDMYInput } from '../components/DateDMYInput.js';
 
 const DECLARE_MODE = false;
@@ -124,9 +125,17 @@ export const TransactionAscPage: React.FC<TransactionAscPageProps> = ({ shifts =
     document.body.removeChild(link);
   };
 
+  // The page fills the room under the header; the list scrolls inside its own box (live), with
+  // the header row on top and the total row at the bottom always in view
+  const { ref: pageRef, height: pageHeight } = useFitToViewport<HTMLDivElement>(420);
+
   return (
-    <div className="min-h-full bg-[#eaedf2] p-2.5 sm:p-3 flex flex-col justify-between text-slate-800 select-none font-sans text-xs">
-      <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden flex flex-col flex-1">
+    <div
+      ref={pageRef}
+      style={pageHeight ? { height: pageHeight, maxHeight: pageHeight } : undefined}
+      className="min-h-full bg-[#eaedf2] p-2.5 sm:p-3 flex flex-col justify-between text-slate-800 select-none font-sans text-xs overflow-hidden"
+    >
+      <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden flex flex-col flex-1 min-h-0">
         <form onSubmit={handleSearch} className="p-2 sm:p-2.5 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white">
           <div className="flex flex-wrap items-center gap-2.5">
             <span className="font-bold text-sm text-slate-900 tracking-tight mr-2">{PAGE_TITLE}</span>
@@ -176,9 +185,9 @@ export const TransactionAscPage: React.FC<TransactionAscPageProps> = ({ shifts =
           </button>
         </form>
 
-        <div className="overflow-x-auto flex-1">
+        <div className="overflow-auto flex-1 min-h-0 pbmax-table-scrollbar">
           <table className="w-full text-left text-xs border-collapse">
-            <thead>
+            <thead className="sticky top-0 z-10">
               <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
                 <th className="py-2.5 px-3 border-r border-[#223b63] w-12 text-center">Sr</th>
                 <th className="py-2.5 px-4 border-r border-[#223b63]">Party</th>
@@ -215,7 +224,7 @@ export const TransactionAscPage: React.FC<TransactionAscPageProps> = ({ shifts =
             {/* Footer row as on the live report: row count, the column names again, and the
                 Sale / P&L Amount totals of the rows listed. Shown only when there are rows. */}
             {!loading && list.length > 0 && (
-              <tfoot>
+              <tfoot className="sticky bottom-0 z-10">
                 <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
                   <td className="py-2.5 px-3 border-r border-[#223b63] text-center">{list.length}</td>
                   <td className="py-2.5 px-4 border-r border-[#223b63]">Party</td>

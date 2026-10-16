@@ -139,10 +139,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   };
 
   return (
-    <div className="min-h-full bg-[#eaedf2] p-4 sm:p-5 flex flex-col justify-between text-slate-800 select-none">
+    <div className="min-h-full bg-[#f7f1f1] p-4 sm:p-4 flex flex-col justify-between text-slate-800 select-none">
       <div>
         {/* Top Market Cards Grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5 mb-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-x-3 lg:gap-x-3 gap-y-3 mb-4">
           {metrics?.shifts.filter((s) => s.isActive !== false).map((s) => {
             const isDeclared = s.declaredNumber !== null && s.declaredNumber !== undefined;
 
@@ -153,23 +153,23 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   onSelectShift(s as any);
                   window.open(`/transaction_add/${s.id}`, '_blank');
                 }}
-                className="bg-white rounded-2xl shadow-sm hover:shadow-md transition-shadow border border-slate-200/60 p-3.5 min-h-[96px] flex items-center justify-between cursor-pointer group"
+                className="bg-white rounded-md shadow-[0_1px_4px_rgba(0,0,0,0.06)] hover:shadow-md transition-shadow px-4 py-3 min-h-[80px] flex items-center justify-between cursor-pointer group"
               >
                 {/* Declared Card Layout */}
                 {isDeclared ? (
                   <>
                     <div className="flex flex-col justify-center min-w-0 pr-2">
-                      <span className="text-[11px] sm:text-xs font-bold text-slate-500 tracking-wider uppercase truncate mb-1">
+                      <span className="text-[11px] font-semibold text-slate-400 uppercase truncate mb-1.5">
                         {s.name}
                       </span>
-                      <span className="text-[11px] font-bold text-emerald-600 font-sans tracking-wide">
+                      <span className="text-xs font-bold text-[#7ac143] font-sans">
                         {s.openDate}
                       </span>
                     </div>
 
                     {/* Pink Badge with Declared Number */}
-                    <div className="shrink-0 bg-[#ec135d] text-white rounded-2xl px-3.5 py-1.5 shadow-sm shadow-pink-500/20 text-center min-w-[50px]">
-                      <span className="text-xl sm:text-2xl font-black italic tracking-tight font-serif leading-none">
+                    <div className="shrink-0 w-12 h-12 rounded-xl bg-gradient-to-br from-[#f73b7f] to-[#e3124d] text-white flex items-center justify-center shadow-[0_4px_10px_rgba(233,30,99,0.35)]">
+                      <span className="text-2xl font-bold italic tracking-tight font-serif leading-none">
                         {s.declaredNumber}
                       </span>
                     </div>
@@ -177,18 +177,18 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 ) : (
                   /* Open/Pending Card Layout with Live Dynamic Metrics */
                   <div className="flex flex-col justify-between w-full h-full">
-                    <span className="text-[11px] sm:text-xs font-bold text-slate-800 tracking-wider uppercase truncate">
+                    <span className="text-xs font-bold text-slate-900 uppercase truncate">
                       {s.name}
                     </span>
 
-                    <div className="flex items-baseline justify-between mt-2">
-                      <span className="text-lg sm:text-xl font-bold text-[#00897b] font-sans tracking-tight">
+                    <div className="flex items-baseline justify-between mt-1">
+                      <span className="text-xl font-bold text-[#0d9488] font-sans tracking-tight">
                         {money(s.totalAmount) > 0 ? money(s.totalAmount).toLocaleString('en-IN') : '0'}
                       </span>
                       {/* Total Amount after each party's own Commission/Hissa/Kat (Rebate) is
                           deducted — same per-party ledger-config approach as the Collection report. */}
                       {money(s.totalAmount) > 0 && (
-                        <span className="border border-emerald-300 bg-emerald-50 text-emerald-700 rounded-md px-2 py-0.5 text-[11px] sm:text-xs font-bold font-mono tracking-tight">
+                        <span className="text-[11px] font-bold text-[#7ac143] font-sans tracking-tight">
                           {roundHalfUp(money(s.netAmount)).toLocaleString('en-IN')}
                         </span>
                       )}
@@ -201,22 +201,18 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         </div>
 
         {/* Bottom Three Operational Panels */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
           {/* Panel 1: Declare Needed (hidden entirely for MANAGER/DATA ENTRY OPERATOR) */}
           {!hideDeclarePanels && (
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200/60 p-4 h-[290px] flex flex-col relative">
-            <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-100">
-              <h2 className="text-base font-bold text-slate-800">
+          <div className="bg-white rounded-md shadow-[0_1px_4px_rgba(0,0,0,0.06)] px-5 py-4 h-[385px] flex flex-col relative">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-slate-800">
                 Declare Needed
               </h2>
-              {redeclareRows.length > 0 && (
-                <span className="px-2 py-0.5 bg-rose-100 text-rose-700 text-xs font-bold rounded-full">
-                  {redeclareRows.length}
-                </span>
-              )}
+
             </div>
 
-            <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2 pr-1">
+            <div className="flex-1 overflow-y-auto custom-scrollbar space-y-1 pr-4">
               {redeclareRows.length === 0 ? (
                 <div className="h-full flex items-center justify-center text-xs text-slate-400">
                   No shifts pending declaration
@@ -233,19 +229,19 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                       onSelectShift(d as any);
                       onNavigate('declare');
                     }}
-                    className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 hover:bg-rose-50 border border-slate-100 hover:border-rose-200 transition-colors cursor-pointer"
+                    className="flex items-end justify-between py-2 hover:bg-rose-50/60 transition-colors cursor-pointer"
                   >
                     <div>
-                      <div className="text-xs font-bold text-slate-800 uppercase">
+                      <div className="text-[13px] font-bold text-slate-900 uppercase">
                         {d.name} | {d.openDate}
                       </div>
-                      <div className="text-[10px] text-slate-500 font-sans mt-0.5">
+                      <div className="text-[11px] text-slate-400 font-sans mt-1">
                         {d.terminal || 'T1'} | {d.timestamp || d.openDate}
                       </div>
                     </div>
                     <button
                       type="button"
-                      className="px-3 py-1 bg-[#dc2626] hover:bg-[#b91c1c] text-white rounded-full text-[11px] font-bold shadow-xs cursor-pointer transition-colors"
+                      className="px-3 py-0.5 bg-[#dc2626] hover:bg-[#b91c1c] text-white rounded-full text-[10px] font-semibold cursor-pointer transition-colors"
                     >
                       {d.isDeclared ? 'ReDeclare' : 'Declare'}
                     </button>
@@ -264,19 +260,15 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
 
           {/* Panel 2: Un-Verified Shifts (hidden entirely for MANAGER/DATA ENTRY OPERATOR) */}
           {!hideDeclarePanels && (
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200/60 p-4 h-[290px] flex flex-col relative">
-            <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-100">
-              <h2 className="text-base font-bold text-slate-800">
+          <div className="bg-white rounded-md shadow-[0_1px_4px_rgba(0,0,0,0.06)] px-5 py-4 h-[385px] flex flex-col relative">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-slate-800">
                 Un-Verified Shifts
               </h2>
-              {metrics && metrics.unverifiedShifts.length > 0 && (
-                <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs font-bold rounded-full">
-                  {metrics.unverifiedShifts.length}
-                </span>
-              )}
+
             </div>
 
-            <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2 pr-1">
+            <div className="flex-1 overflow-y-auto custom-scrollbar space-y-1 pr-4">
               {!metrics || metrics.unverifiedShifts.length === 0 ? (
                 <div className="h-full flex items-center justify-center text-xs text-slate-400">
                   All declared shifts verified
@@ -289,11 +281,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                       onSelectShift(u as any);
                       onNavigate('audit');
                     }}
-                    className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 hover:bg-amber-50 border border-slate-100 hover:border-amber-200 transition-colors cursor-pointer"
+                    className="flex items-end justify-between py-2 hover:bg-amber-50/60 transition-colors cursor-pointer"
                   >
                     <div>
-                      <div className="text-xs font-bold text-slate-800 uppercase">{u.name}</div>
-                      <div className="text-[10px] text-slate-500 font-sans">{u.openDate}</div>
+                      <div className="text-[13px] font-bold text-slate-900 uppercase">{u.name}</div>
+                      <div className="text-[11px] text-slate-400 font-sans mt-1">{u.openDate}</div>
                     </div>
                     <div className="flex items-center gap-2">
                       {u.declaredNumber && (
@@ -304,7 +296,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                       <button
                         type="button"
                         onClick={(e) => handleVerifyShift(u, e)}
-                        className="px-3 py-1 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-slate-950 font-bold rounded-lg text-xs shadow-sm transition-colors cursor-pointer"
+                        className="px-3 py-0.5 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-slate-950 font-semibold rounded-full text-[10px] transition-colors cursor-pointer"
                       >
                         Verify
                       </button>
@@ -323,14 +315,14 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           )}
 
           {/* Panel 3: Staff Working */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200/60 p-4 h-[290px] flex flex-col relative">
-            <div className="flex items-center justify-between mb-2 pb-2 border-b border-slate-100">
-              <h2 className="text-base font-bold text-slate-800">
+          <div className="bg-white rounded-md shadow-[0_1px_4px_rgba(0,0,0,0.06)] px-5 py-4 h-[385px] flex flex-col relative">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-slate-800">
                 Staff Working
               </h2>
             </div>
 
-            <div className="flex-1 overflow-y-auto custom-scrollbar divide-y divide-slate-100 pr-1">
+            <div className="flex-1 overflow-y-auto custom-scrollbar divide-y divide-slate-200 pr-4">
               {!metrics || metrics.staffWorking.length === 0 ? (
                 <div className="h-full flex items-center justify-center text-xs text-slate-400">
                   No staff currently working
@@ -346,30 +338,30 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   const second = parts[1] || st.username || first;
 
                   return (
-                    <div key={st.id} className="py-2.5 first:pt-1">
-                      <div className="text-xs tracking-wide mb-1 flex items-center gap-1.5">
+                    <div key={st.id} className="py-3 first:pt-1">
+                      <div className="text-[13px] mb-1.5 flex items-center gap-1.5">
                         <span className="font-bold text-slate-900">{first}</span>
                         <span className="text-slate-400 font-normal">|</span>
-                        <span className="font-bold text-[#7c3aed]">{second}</span>
+                        <span className="font-normal text-slate-500 text-xs">{second}</span>
                       </div>
                       <div className="flex items-center justify-between text-[11px]">
                         <div className="flex items-center gap-2">
                           <span
-                            className={`px-2 py-0.5 text-white text-[10px] font-bold rounded ${
+                            className={`px-2.5 py-0.5 text-white text-[9px] font-bold rounded-full ${
                               isWorking ? 'bg-[#00897b]' : 'bg-[#dc2626]'
                             }`}
                           >
                             {isWorking ? 'WORKING' : 'IDLE'}
                           </span>
                           <span
-                            className={`font-semibold uppercase text-[10px] tracking-wide ${
-                              isAdminRole ? 'text-[#7c3aed] font-bold' : 'text-slate-500'
+                            className={`uppercase text-[11px] ${
+                              isAdminRole ? 'text-[#7c3aed] font-semibold' : 'text-slate-500'
                             }`}
                           >
                             {st.designation}
                           </span>
                         </div>
-                        <span className="text-slate-400 font-medium text-[10px] font-sans">
+                        <span className="text-slate-500 text-[11px] font-sans">
                           {st.timestamp}
                         </span>
                       </div>

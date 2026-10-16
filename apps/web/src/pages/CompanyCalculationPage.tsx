@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { ShiftDto, JantriViewDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
+import { useFitToViewport } from '../utils/useFitToViewport.js';
 import { declaredCellKeys, useDeclaredNumber, hlCls } from '../utils/declaredHighlight.js';
 import { ArrowLeft, RotateCw } from 'lucide-react';
 import { toast } from 'react-toastify';
@@ -346,8 +347,16 @@ export const CompanyCalculationPage: React.FC<CompanyCalculationPageProps> = ({ 
     </button>
   );
 
+  // The page fills the room under the header; the jantri panels and the NO / SALE-PL list each
+  // scroll inside themselves (own scrollbars, as live) instead of stretching the page
+  const { ref: pageRef, height: pageHeight } = useFitToViewport<HTMLDivElement>(480);
+
   return (
-    <div className="min-h-full bg-[#eaedf2] p-2.5 sm:p-3 flex flex-col gap-2.5 text-slate-800 select-none font-sans text-xs">
+    <div
+      ref={pageRef}
+      style={pageHeight ? { height: pageHeight, maxHeight: pageHeight } : undefined}
+      className="min-h-full bg-[#eaedf2] p-2.5 sm:p-3 flex flex-col gap-2.5 text-slate-800 select-none font-sans text-xs overflow-hidden"
+    >
       <form onSubmit={handleSearch} className="bg-white rounded-md shadow-sm border border-slate-300 p-2.5 flex flex-wrap items-center gap-2.5">
         <button type="button" onClick={() => onNavigate && onNavigate('dashboard')} className="p-1 text-slate-800 hover:bg-slate-100 rounded">
           <ArrowLeft className="w-4 h-4" />
@@ -378,8 +387,8 @@ export const CompanyCalculationPage: React.FC<CompanyCalculationPageProps> = ({ 
         </button>
       </form>
 
-      <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden flex-1 flex flex-col">
-        <div className="flex border-b border-slate-200 px-2">
+      <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden flex-1 flex flex-col min-h-0">
+        <div className="flex border-b border-slate-200 px-2 flex-shrink-0">
           {tabBtn('main', 'Main')}
           {tabBtn('pnl', 'P&L')}
         </div>
@@ -387,8 +396,8 @@ export const CompanyCalculationPage: React.FC<CompanyCalculationPageProps> = ({ 
         {loading ? (
           <div className="py-16 text-center text-slate-400">Loading...</div>
         ) : tab === 'main' ? (
-          <div className="flex-1 flex overflow-hidden">
-            <div className="flex-1 overflow-y-auto p-1.5 space-y-1.5">
+          <div className="flex-1 flex overflow-hidden min-h-0">
+            <div className="flex-1 min-h-0 overflow-y-auto p-1.5 space-y-1.5 pbmax-table-scrollbar">
               <div className="flex flex-col xl:flex-row gap-1.5">
                 <JantriPanel
                   hl={declaredKeys}
@@ -416,7 +425,7 @@ export const CompanyCalculationPage: React.FC<CompanyCalculationPageProps> = ({ 
             </div>
 
             {/* SALE ASC */}
-            <div className="w-48 border-l border-slate-300 flex flex-col overflow-hidden">
+            <div className="w-48 border-l border-slate-300 flex flex-col overflow-hidden min-h-0">
               <button
                 type="button"
                 onClick={() => setSaleDesc(d => !d)}
@@ -429,7 +438,7 @@ export const CompanyCalculationPage: React.FC<CompanyCalculationPageProps> = ({ 
                 <div className="py-1 text-center border-r border-[#2b446f]">NO</div>
                 <div className="py-1 text-center">SALE/PL</div>
               </div>
-              <div className="flex-1 overflow-y-auto divide-y divide-slate-200">
+              <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-200 pbmax-table-scrollbar">
                 {saleRows.length === 0 ? (
                   <div className="py-6 text-center text-slate-400">No data</div>
                 ) : (
@@ -448,7 +457,7 @@ export const CompanyCalculationPage: React.FC<CompanyCalculationPageProps> = ({ 
           </div>
         ) : (
           /* P&L tab: one card per number */
-          <div className="flex-1 overflow-y-auto bg-black p-1">
+          <div className="flex-1 min-h-0 overflow-y-auto bg-black p-1 pbmax-table-scrollbar">
             <div className="grid grid-cols-2 sm:grid-cols-5 xl:grid-cols-10 gap-1">
               {pnl.map(p => (
                 <div key={p.n} className="bg-white text-[9px] font-semibold leading-tight">

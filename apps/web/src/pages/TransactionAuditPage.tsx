@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
 import { ShiftDto, UserSession, LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { displayNumber } from '../utils/entryDisplay.js';
@@ -401,8 +401,29 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
     return Array.from(map.values()).sort((a, b) => b.totalAmount - a.totalAmount);
   }, [list]);
 
+  // Full-screen list: the page is exactly as tall as the room left under the header (measured, so
+  // a taller / shorter header never pushes it past the screen) — the list then fills it all
+  const pageRef = useRef<HTMLDivElement>(null);
+  const [pageHeight, setPageHeight] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = pageRef.current;
+      if (!el) return;
+      const top = el.getBoundingClientRect().top + (el.parentElement?.scrollTop || 0);
+      const h = Math.max(520, Math.floor(window.innerHeight - top));
+      setPageHeight(prev => (prev === h ? prev : h));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, []);
+
   return (
-    <div className="h-[calc(100vh-82px)] max-h-[calc(100vh-82px)] min-h-[520px] bg-[#eaedf2] p-2 sm:p-2.5 flex flex-col justify-between text-slate-800 select-none font-sans text-xs overflow-hidden">
+    <div
+      ref={pageRef}
+      style={pageHeight ? { height: pageHeight, maxHeight: pageHeight } : undefined}
+      className="h-[calc(100vh-82px)] max-h-[calc(100vh-82px)] min-h-[520px] bg-[#eaedf2] p-2 sm:p-2.5 flex flex-col justify-between text-slate-800 select-none font-sans text-xs overflow-hidden"
+    >
       {/* Outer Card matching pbmax1.com Live Screenshot 1 & 2 */}
       <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden flex flex-col flex-1 min-h-0">
         
@@ -641,8 +662,10 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
+                                // View shows the slip's numbers in the right-side Party panel (live) —
+                                // no Audit Slip popup; Valid / Mistake stay on the row's own buttons
                                 setViewingTx(tx);
-                                setShowViewModal(true);
+                                setSelectedTx(tx);
                               }}
                               className="px-2.5 py-0.5 bg-[#1662c6] hover:bg-[#1354ab] text-white text-[10px] font-bold rounded shadow-xs transition-colors cursor-pointer"
                             >
@@ -698,7 +721,7 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
           </div>
 
           {/* RIGHT: Live Party Breakdown Panel matching Screenshot 1 & 2 */}
-          <div className="w-full lg:w-72 bg-white flex flex-col border-t lg:border-t-0 border-slate-300 flex-shrink-0">
+          <div className="w-full lg:w-72 bg-white flex flex-col border-t lg:border-t-0 border-slate-300 flex-shrink-0 min-h-0 overflow-hidden">
             {/* Header */}
             <div className="bg-[#152847] text-white font-bold text-[11px] py-2 px-3 border-b border-[#223b63] flex-shrink-0">
               Party: <span className="text-amber-300 font-bold">{selectedTx?.partyName || '-'}</span>
@@ -719,7 +742,8 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
                 selectedTx.entries.map((ent, i) => (
                   <div key={i} className="grid grid-cols-2 py-1.5 px-3 hover:bg-slate-50 font-mono text-xs text-slate-800">
                     <span className="font-bold text-blue-700">{displayNumber(ent)}</span>
-                    <span className="text-right font-semibold">₹{ent.amount.toLocaleString('en-IN')}</span>
+                    {/* number only, no ₹ (live) */}
+                    <span className="text-right font-semibold">{ent.amount.toLocaleString('en-IN')}</span>
                   </div>
                 ))
               )}

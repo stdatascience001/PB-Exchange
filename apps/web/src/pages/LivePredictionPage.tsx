@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useFitToViewport } from '../utils/useFitToViewport.js';
 import { ShiftDto, UserSession, PredictionDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { toast } from 'react-toastify';
@@ -439,8 +440,15 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
   // actually scroll — without that bound, `flex-1 overflow-y-auto` never clips and the whole
   // document stretches into one long list instead. Every flex ancestor of a scroll area also
   // needs min-h-0, otherwise its default min-height:auto lets it grow past the bound again.
+  // The page fills exactly the room under the header (re-measured on any size change), so the
+  // browser never shows a page scrollbar — every panel scrolls inside itself
+  const { ref: pageRef, height: pageHeight } = useFitToViewport<HTMLDivElement>(520);
   return (
-    <div className="h-[calc(100vh-82px)] max-h-[calc(100vh-82px)] min-h-[520px] bg-[#eaedf2] p-2.5 sm:p-3 flex flex-col justify-between text-slate-800 select-none font-sans text-xs overflow-hidden">
+    <div
+      ref={pageRef}
+      style={pageHeight ? { height: pageHeight, maxHeight: pageHeight } : undefined}
+      className="h-[calc(100vh-82px)] max-h-[calc(100vh-82px)] min-h-[520px] bg-[#eaedf2] p-2.5 sm:p-3 flex flex-col justify-between text-slate-800 select-none font-sans text-xs overflow-hidden"
+    >
       <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden flex flex-col flex-1 min-h-0">
         <form onSubmit={handleSearch} className="p-2 sm:p-2.5 flex flex-wrap items-center gap-2.5 border-b border-slate-200 bg-white">
           <button
@@ -485,7 +493,7 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
 
         <div className="flex-1 min-h-0 flex overflow-hidden">
           {/* 1. NUMBERS — Result 30 Days / Number / Sale / Amt */}
-          <div className="w-64 flex-shrink-0 flex flex-col min-h-0 border-r border-slate-300 overflow-hidden">
+          <div className="w-64 lg:w-[23rem] flex-shrink-0 flex flex-col min-h-0 border-r border-slate-300 overflow-hidden">
             {/* Header lives inside the scroller as a sticky thead (same approach as the party
                 table below) so the scrollbar's gutter can't push the body columns out of
                 alignment with a separately-rendered header table. */}
@@ -518,16 +526,16 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
                         onClick={() => handleNumberClick(n.number)}
                         className={`cursor-pointer hover:bg-amber-50 ${isFocused ? 'bg-amber-100' : ''}`}
                       >
-                        <td className="py-1.5 px-2 text-center border-r border-slate-200">
+                        <td className="py-2 px-2 text-center border-r border-slate-200">
                           {winCount > 0 ? (
-                            <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-emerald-500 text-white text-[10px] font-bold">
+                            <span className="inline-flex items-center justify-center w-6 h-5 rounded-xs bg-[#00897b] text-white text-[10px] font-bold">
                               {winCount}
                             </span>
                           ) : null}
                         </td>
-                        <td className="py-1.5 px-2 text-center font-mono font-bold text-slate-800 border-r border-slate-200">{n.number}</td>
-                        <td className="py-1.5 px-2 text-right font-mono text-slate-700 border-r border-slate-200">{inr(n.sale)}</td>
-                        <td className={`py-1.5 px-2 text-right font-mono ${n.profitLoss < 0 ? 'text-rose-700 font-bold' : 'text-slate-700'}`}>
+                        <td className="py-2 px-2 text-center font-bold text-[13px] text-slate-700 border-r border-slate-200">{n.number}</td>
+                        <td className="py-2 px-2 text-right text-[13px] font-semibold text-slate-700 border-r border-slate-200">{inr(n.sale)}</td>
+                        <td className={`py-2 px-2 text-right text-[13px] font-bold ${n.profitLoss < 0 ? 'text-rose-600' : 'text-[#16a34a]'}`}>
                           {inr(n.profitLoss)}
                         </td>
                       </tr>
@@ -576,8 +584,8 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
                   ) : (
                     sortedParties.map((p, idx) => (
                       <tr key={p.partyId} className={`hover:bg-slate-50 ${selectedParties.includes(p.partyId) ? 'bg-amber-50' : ''}`}>
-                        <td className="py-1.5 px-2 text-center font-mono text-slate-600 border-r border-slate-200">{idx + 1}.</td>
-                        <td className="py-1.5 px-2 text-center border-r border-slate-200">
+                        <td className="py-2.5 px-2 text-center text-[13px] font-semibold text-slate-600 border-r border-slate-200">{idx + 1}.</td>
+                        <td className="py-2.5 px-2 text-center border-r border-slate-200">
                           <input
                             type="checkbox"
                             checked={selectedParties.includes(p.partyId)}
@@ -585,23 +593,23 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
                             className="cursor-pointer align-middle"
                           />
                         </td>
-                        <td className="py-1.5 px-2 border-r border-slate-200">
+                        <td className="py-2.5 px-2 border-r border-slate-200 bg-[#f4f4f4]">
                           <button
                             type="button"
                             onClick={() => openGrid(p.partyName, [p.partyId])}
                             title="Show this party's numbers"
-                            className="font-bold text-slate-900 uppercase hover:text-[#1662c6] hover:underline cursor-pointer text-left"
+                            className="text-[13px] font-bold text-slate-700 uppercase hover:text-[#1662c6] hover:underline cursor-pointer text-left"
                           >
                             {p.partyName}
                           </button>
                         </td>
-                        <td className="py-1.5 px-2 text-right font-mono text-slate-800 border-r border-slate-200">{inr(p.sale)}</td>
-                        <td className={`py-1.5 px-2 text-right font-mono font-bold border-r border-slate-200 ${p.pnl >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                        <td className="py-2.5 px-2 text-right text-[13px] font-semibold text-slate-700 border-r border-slate-200">{inr(p.sale)}</td>
+                        <td className={`py-2.5 px-2 text-right text-[13px] font-bold border-r border-slate-200 ${p.pnl >= 0 ? 'text-[#16a34a]' : 'text-rose-600'}`}>
                           {inr(p.pnl)}
                         </td>
-                        <td className="py-1.5 px-2 text-center">
+                        <td className="py-2.5 px-2 text-center">
                           {p.lastWin > 0 ? (
-                            <span className="inline-flex items-center justify-center min-w-5 px-1.5 h-5 rounded bg-[#dc2626] text-white text-[10px] font-bold">
+                            <span className={`inline-flex items-center justify-center min-w-6 px-1.5 h-5 rounded-xs text-white text-[10px] font-bold ${p.lastWin === 1 ? 'bg-[#00897b]' : 'bg-[#dc2626]'}`}>
                               {p.lastWin}
                             </span>
                           ) : (
@@ -614,14 +622,14 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
                 </tbody>
               </table>
             </div>
-            <div className="bg-[#152847] text-white text-xs font-bold py-2 px-3 flex items-center justify-between">
+            <div className="bg-[#152847] text-white text-base font-bold py-2.5 px-3 flex items-center justify-between">
               <span>
                 Number: {focusNumber ? focusPadded : '-'} | Profit: {inr(focusPreview ? focusPreview.profitLoss : (data?.netCollected ?? 0))}
               </span>
               <button
                 type="button"
                 onClick={openSelectedJantri}
-                className="px-3 py-1 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-[10px] rounded shadow-xs"
+                className="px-8 py-1.5 bg-[#00897b] hover:bg-[#00796b] text-white font-bold text-sm rounded-xs shadow-xs"
               >
                 Jantri
               </button>
@@ -645,8 +653,10 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
                       title="Show this group's numbers"
                       className="cursor-pointer hover:bg-amber-50"
                     >
-                      <td className="py-1.5 px-2 font-bold text-slate-900 uppercase text-[11px]">{a.agentName}</td>
-                      <td className="py-1.5 px-2 text-right font-mono font-bold text-emerald-700 text-[11px]">{inr(a.sale)}</td>
+                      <td colSpan={2} className="py-1 px-2 text-center leading-tight">
+                        <div className="font-bold text-slate-700 uppercase text-[12px]">{a.agentName}</div>
+                        <div className="font-bold text-[#16a34a] text-[12px]">{inr(a.sale)}</div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -658,7 +668,7 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
               Prediction page has no Number / Declare / ReDeclare / UnDeclare panel; it only
               shows the declared shift's data, so the panel is left out in declare mode. */}
           {!isDeclareMode && (
-          <div className="w-72 flex-shrink-0 flex flex-col min-h-0 overflow-hidden">
+          <div className="w-72 lg:w-96 flex-shrink-0 flex flex-col min-h-0 overflow-hidden">
             <div className="bg-[#152847] flex items-stretch">
               <span className="text-white font-bold text-[11px] py-2 px-2 flex items-center">Number</span>
               <input
@@ -692,8 +702,8 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
                     <tr><td colSpan={3} className="py-6 text-center text-slate-400">No results declared yet.</td></tr>
                   ) : history.map(h => (
                     <tr key={h.id} className="hover:bg-slate-50">
-                      <td className="py-1.5 px-2 border-r border-slate-200 text-center">
-                        <div className="font-mono font-bold text-slate-900">{h.winningNumber}</div>
+                      <td className="py-1.5 px-2 border-r border-slate-200 text-center leading-tight">
+                        <div className="font-bold text-[13px] text-slate-700">{h.winningNumber}</div>
                         <div className="text-[10px] text-slate-500">{formatDateOnly(h.declaredAt)}</div>
                       </td>
                       <td className="py-1.5 px-1 text-center border-r border-slate-200">
@@ -702,7 +712,7 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
                           disabled={!isCurrentCycleRow(h)}
                           onClick={() => handleReDeclare(h)}
                           title={!isCurrentCycleRow(h) ? 'ReDeclare only supported for the current cycle' : 'Reverse and re-declare this result'}
-                          className="px-2 py-0.5 bg-[#1662c6] hover:bg-[#1354ab] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold rounded"
+                          className="px-2.5 py-1 bg-[#1e4f9c] hover:bg-[#173f7d] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-semibold rounded-xs"
                         >
                           ReDeclare
                         </button>
@@ -711,7 +721,7 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
                         <button
                           type="button"
                           onClick={() => handleUnDeclare(h.id)}
-                          className="px-2 py-0.5 bg-[#dc2626] hover:bg-[#b91c1c] text-white text-[10px] font-bold rounded"
+                          className="px-2.5 py-1 bg-[#1e4f9c] hover:bg-[#173f7d] text-white text-[10px] font-semibold rounded-xs"
                         >
                           UnDeclare
                         </button>

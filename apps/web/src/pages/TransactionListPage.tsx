@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useLayoutEffect } from 'react';
 import { ShiftDto, UserSession } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { toast } from 'react-toastify';
@@ -774,9 +774,29 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
   const staffOptions = Array.from(new Set(list.map(t => (t.addedBy || '').trim()).filter(Boolean)))
     .sort((a, b) => a.localeCompare(b));
   const totalSum = visibleList.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0);
+  // Full-screen list: the page is exactly as tall as the room left under the header (measured, so
+  // a taller / shorter header never pushes it past the screen) — the list then fills it all
+  const pageRef = useRef<HTMLDivElement>(null);
+  const [pageHeight, setPageHeight] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = pageRef.current;
+      if (!el) return;
+      const top = el.getBoundingClientRect().top + (el.parentElement?.scrollTop || 0);
+      const h = Math.max(520, Math.floor(window.innerHeight - top));
+      setPageHeight(prev => (prev === h ? prev : h));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, []);
 
   return (
-    <div className="h-[calc(100vh-82px)] max-h-[calc(100vh-82px)] min-h-[520px] bg-[#eaedf2] p-2 sm:p-2.5 flex flex-col justify-between text-slate-800 select-none font-sans text-xs overflow-hidden">
+    <div
+      ref={pageRef}
+      style={pageHeight ? { height: pageHeight, maxHeight: pageHeight } : undefined}
+      className="h-[calc(100vh-82px)] max-h-[calc(100vh-82px)] min-h-[520px] bg-[#eaedf2] p-2 sm:p-2.5 flex flex-col justify-between text-slate-800 select-none font-sans text-xs overflow-hidden"
+    >
       {/* Outer Card matching pbmax1.com Screenshot 1 & 2 */}
       <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden flex flex-col flex-1 min-h-0">
         {/* Subheader Filter Bar matching Screenshot 1 */}
@@ -1097,7 +1117,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
           </div>
 
           {/* RIGHT: Live Party Breakdown Panel matching Screenshot 1, 2 & 3 */}
-          <div className="w-full lg:w-72 bg-white flex flex-col border-t lg:border-t-0 border-slate-300 flex-shrink-0">
+          <div className="w-full lg:w-72 bg-white flex flex-col border-t lg:border-t-0 border-slate-300 flex-shrink-0 min-h-0 overflow-hidden">
             {/* Header matching Screenshot 1 & 3: Displays clicked party name with Add (F2) & Jantri View (F3) */}
             <div className="bg-[#152847] text-white font-bold text-[11px] py-2 px-3 border-b border-[#223b63] flex items-center justify-between flex-shrink-0">
               <span className="uppercase truncate tracking-wide">{selectedTx?.partyName || 'Party'}</span>
