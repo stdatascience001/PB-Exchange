@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { UserSession, ShiftDto } from '@pb/types';
-import { ChevronDown, LogOut, User, Lock, X, Eye, EyeOff } from 'lucide-react';
+import { ChevronDown, LogOut, User, Lock, X, Eye, EyeOff, Highlighter } from 'lucide-react';
+import { DeclareHighlightModal } from './DeclareHighlightModal.js';
 import { apiRequest } from '../api/client.js';
 import {
   isAdminRole, ADMIN_RESTRICTED_PAGES, ADMIN_RESTRICTED_TOP_MENUS,
@@ -62,6 +63,10 @@ export const Navbar: React.FC<NavbarProps> = ({
       clearInterval(interval);
     };
   }, [showLastDayBadge]);
+
+  // Declare Highlight popup (Super Admin / Developer): which pages highlight the declared result
+  const canManageHighlight = ['SUPER ADMIN', 'SUPER_ADMIN', 'DEVELOPER'].includes(String(user?.roleName || '').toUpperCase());
+  const [showHighlightModal, setShowHighlightModal] = useState(false);
 
   // Change Password Modal State
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -423,6 +428,20 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <LogOut className="h-4 w-4 text-slate-600" />
                     <span>Sign Out</span>
                   </button>
+
+                  {/* Super Admin / Developer: per-page Declare Result highlight switches */}
+                  {canManageHighlight && (
+                    <button
+                      onClick={() => {
+                        setShowUserMenu(false);
+                        setShowHighlightModal(true);
+                      }}
+                      className="w-full px-4 py-2 text-left text-slate-700 hover:bg-slate-100 hover:text-slate-900 flex items-center gap-3 font-semibold transition-colors"
+                    >
+                      <Highlighter className="h-4 w-4 text-slate-600" />
+                      <span>Declare Highlight</span>
+                    </button>
+                  )}
                 </div>
               </div>
             )}
@@ -505,6 +524,8 @@ export const Navbar: React.FC<NavbarProps> = ({
           );
         })}
       </nav>
+
+      <DeclareHighlightModal open={showHighlightModal} onClose={() => setShowHighlightModal(false)} />
 
       {/* Change Password Modal matching PB Exchange Design */}
       {showPasswordModal && (

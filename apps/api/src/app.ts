@@ -22,6 +22,7 @@ import { agentRoutes } from './modules/agents/agent.routes.js';
 import { voucherRoutes } from './modules/vouchers/voucher.routes.js';
 import { messageRoutes } from './modules/messages/message.routes.js';
 import { payrollRoutes } from './modules/payroll/payroll.routes.js';
+import { settingsRoutes } from './modules/settings/settings.routes.js';
 
 export function createApp() {
   const app = express();
@@ -63,6 +64,7 @@ export function createApp() {
   v1.use('/vouchers', voucherRoutes);
   v1.use('/messages', messageRoutes);
   v1.use('/payroll', payrollRoutes);
+  v1.use('/settings', settingsRoutes);
 
   app.use(env.API_PREFIX, v1);
 

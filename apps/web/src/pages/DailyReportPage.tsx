@@ -342,6 +342,7 @@ export const DailyReportPage: React.FC<DailyReportPageProps> = ({ shifts = [], o
       </div>
 
       <PartyJantriModal
+        highlightPage="daily-report"
         open={!!partyJantri && !!data}
         onClose={() => setPartyJantri(null)}
         shiftId={data ? String(data.shiftId) : ''}

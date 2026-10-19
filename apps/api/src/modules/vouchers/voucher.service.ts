@@ -386,7 +386,7 @@ export class VoucherService {
       // calendar day the Active list's created_at::date filter uses.
       await pgSql`
         INSERT INTO voucher_deletion_log (voucher_id, voucher_type, voucher_date, snapshot, deleted_by, deleted_at)
-        VALUES (${v.id}, ${v.voucherType}, ${snapshot.createdAt.slice(0, 10)}::date, ${pgSql.json(snapshot)}, ${deletedBy}, ${now})`;
+        VALUES (${v.id}, ${v.voucherType}, ${snapshot.createdAt.slice(0, 10)}::date, ${JSON.stringify(snapshot)}::jsonb, ${deletedBy}, ${now})`;
     } catch (err) {
       console.warn('Failed to archive deleted voucher', id, err);
     }

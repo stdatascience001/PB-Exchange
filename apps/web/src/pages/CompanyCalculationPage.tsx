@@ -167,7 +167,7 @@ export const CompanyCalculationPage: React.FC<CompanyCalculationPageProps> = ({ 
   );
   const selectedShift = shiftOptions.find(s => s.id === activeShift?.id) || shiftOptions[0] || null;
   // declared number + its Andar / Bahar haruf shown in green on every panel
-  const declaredKeys = declaredCellKeys(useDeclaredNumber(selectedShift?.id, fromDate));
+  const declaredKeys = declaredCellKeys(useDeclaredNumber(selectedShift?.id, fromDate, 'company-calculation'));
 
   // Fall back to the first active shift when the app-wide selection is an inactive one.
   useEffect(() => {

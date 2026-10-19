@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { apiRequest } from '../api/client.js';
-import { declaredCellKeys, hlCls } from '../utils/declaredHighlight.js';
+import { declaredCellKeys, hlCls, useDeclareHighlightEnabled, DeclareHighlightPage } from '../utils/declaredHighlight.js';
 
 interface CollectionGrid {
   grid: { number: string; totalAmount: number }[];
@@ -23,6 +23,8 @@ interface PartyJantriModalProps {
   // Each cell rounded up to whole 50s (Daily Report, the default). Admin Cash passes false:
   // the party's exact amounts, Grand Total = its sale for that shift + day.
   round50?: boolean;
+  // Super Admin's Declare Highlight switch for the page this opens on (unset = always highlight)
+  highlightPage?: DeclareHighlightPage;
 }
 
 // Daily Report → click a Party name (live): that party's own jantri for the shift and day —
@@ -30,7 +32,8 @@ interface PartyJantriModalProps {
 // to whole 50s. Live JAI LUXMI 12-10: ANKUSH KUMAR 15/85 every number it played shows 50, the
 // six it didn't (37, 39, 59, 73, 93, 95) stay blank, Grand Total 4,700; GANGA NAGAR 20,400;
 // HANUMANGARH B9 117 -> 150. Server: /transactions/collection?round50=true, one party.
-export const PartyJantriModal: React.FC<PartyJantriModalProps> = ({ open, onClose, shiftId, date, partyId, partyName, title, round50 = true }) => {
+export const PartyJantriModal: React.FC<PartyJantriModalProps> = ({ open, onClose, shiftId, date, partyId, partyName, title, round50 = true, highlightPage }) => {
+  const highlightOn = useDeclareHighlightEnabled(highlightPage);
   const [result, setResult] = useState<CollectionGrid | null>(null);
   const [loading, setLoading] = useState(false);
   const backdropDownRef = useRef(false);
@@ -92,7 +95,7 @@ export const PartyJantriModal: React.FC<PartyJantriModalProps> = ({ open, onClos
   const amt = (v: number) => (v > 0 ? <span className="font-bold text-[13px] text-slate-900 font-mono">{v}</span> : null);
 
   // declared number + its Andar / Bahar haruf shown in green (32 -> 32, A3, B2)
-  const declaredKeys = declaredCellKeys(result?.declaredNumber);
+  const declaredKeys = declaredCellKeys(highlightOn ? result?.declaredNumber : null);
 
   const harufRow = (side: 'A' | 'B') => (
     <tr>

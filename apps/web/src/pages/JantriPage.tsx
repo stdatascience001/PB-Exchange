@@ -142,7 +142,7 @@ export const JantriPage: React.FC<JantriPageProps> = ({
   const selectedShift = activeShift && availableShifts.some(s => s.id === activeShift.id) ? activeShift : availableShifts[0];
 
   // declared number + its Andar / Bahar haruf shown in green
-  const declaredKeys = declaredCellKeys(useDeclaredNumber(selectedShift?.id, dateStr));
+  const declaredKeys = declaredCellKeys(useDeclaredNumber(selectedShift?.id, dateStr, declareModeOnly ? 'declare-jantri' : undefined));
 
   const gridByNumber = useMemo(() => {
     const map = new Map<string, { totalAmount: number; liability: number }>();

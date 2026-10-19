@@ -4,7 +4,7 @@ import { toast } from 'react-toastify';
 import { LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { PartyPicker } from './PartyPicker.js';
-import { declaredCellKeys } from '../utils/declaredHighlight.js';
+import { declaredCellKeys, useDeclareHighlightEnabled, DeclareHighlightPage } from '../utils/declaredHighlight.js';
 
 interface CollectionGrid {
   grid: { number: string; totalAmount: number }[];
@@ -26,6 +26,8 @@ interface HplJantriModalProps {
   // with both ticked): live HYDRABAD NIGHT 08-10 DK ROHIT 50% 100 -> 45 -> 50, DK ROHIT 20%
   // 1000 -> 720 -> 750, book 1,100. It loads straight away, has no Party box, and an Export.
   variant?: 'hpl' | 'main';
+  // Super Admin's Declare Highlight switch for the page this opens on (unset = always highlight)
+  highlightPage?: DeclareHighlightPage;
 }
 
 // HPL - JANTRI (live): the shift's jantri at each party's net — its Commission taken off, then
@@ -37,7 +39,8 @@ interface HplJantriModalProps {
 //   Amount Less  that much taken off every cell (a cell at 0 or below drops out)
 //   Less %age    every remaining cell cut by that percentage
 // It opens with an empty grid; Submit loads the shift's live slips for the day.
-export const HplJantriModal: React.FC<HplJantriModalProps> = ({ open, onClose, shiftId, shiftName, date, parties, variant = 'hpl' }) => {
+export const HplJantriModal: React.FC<HplJantriModalProps> = ({ open, onClose, shiftId, shiftName, date, parties, variant = 'hpl', highlightPage }) => {
+  const highlightOn = useDeclareHighlightEnabled(highlightPage);
   const isMain = variant === 'main';
   const [party, setParty] = useState('');
   const [amountLess, setAmountLess] = useState('');
@@ -177,7 +180,7 @@ export const HplJantriModal: React.FC<HplJantriModalProps> = ({ open, onClose, s
 
   const cell = (k: string) => cells.get(k) || 0;
   // declared number + its Andar / Bahar haruf, shown in green
-  const declaredKeys = declaredCellKeys(result?.declaredNumber);
+  const declaredKeys = declaredCellKeys(highlightOn ? result?.declaredNumber : null);
   const cellCls = (k: string) => declaredKeys.has(k) ? cellBox.replace('bg-white', 'bg-green-600') : cellBox;
   const amtCls = (k: string) => `font-bold text-[13px] font-mono ${declaredKeys.has(k) ? 'text-white' : 'text-slate-900'}`;
   const rowTotal = (r: number) => Array.from({ length: 10 }, (_, c) => cell(String(r * 10 + c + 1))).reduce((a, b) => a + b, 0);

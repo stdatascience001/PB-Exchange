@@ -44,7 +44,7 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
     return `${year}-${month}-${day}`;
   });
   // declared number + its Andar / Bahar haruf shown in green
-  const declaredKeys = declaredCellKeys(useDeclaredNumber(shiftId, dateStr));
+  const declaredKeys = declaredCellKeys(useDeclaredNumber(shiftId, dateStr, declareModeOnly ? 'declare-collection' : undefined));
   const [parties, setParties] = useState<LedgerDto[]>([]);
   const [partySearch, setPartySearch] = useState('');
   const [addedParties, setAddedParties] = useState<LedgerDto[]>([]);

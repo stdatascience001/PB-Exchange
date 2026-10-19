@@ -3,7 +3,7 @@ import { X } from 'lucide-react';
 import type { TransactionItem } from '../pages/TransactionListPage.js';
 import { harufOf } from '../utils/entryDisplay.js';
 import { apiRequest } from '../api/client.js';
-import { declaredCellKeys } from '../utils/declaredHighlight.js';
+import { declaredCellKeys, useDeclareHighlightEnabled, DeclareHighlightPage } from '../utils/declaredHighlight.js';
 
 interface JantriViewModalProps {
   open: boolean;
@@ -16,6 +16,8 @@ interface JantriViewModalProps {
   // (32 -> 32, A3, B2) are shown in green. Pages that don't pass them are unchanged.
   shiftId?: string;
   date?: string;
+  // Super Admin's Declare Highlight switch for the page this opens on (unset = always highlight)
+  highlightPage?: DeclareHighlightPage;
 }
 
 export { declaredCellKeys } from '../utils/declaredHighlight.js';
@@ -26,7 +28,8 @@ export { declaredCellKeys } from '../utils/declaredHighlight.js';
 //   - default:                the selected slip's entries only
 //   - Consolidate Jantri:     every loaded slip of the selected party (all slips if none)
 //   - Cut Consolidate Jantri: each cell shown at 90% (rounded)
-export const JantriViewModal: React.FC<JantriViewModalProps> = ({ open, onClose, selectedTx, list, shiftId, date }) => {
+export const JantriViewModal: React.FC<JantriViewModalProps> = ({ open, onClose, selectedTx, list, shiftId, date, highlightPage }) => {
+  const highlightOn = useDeclareHighlightEnabled(highlightPage);
   const [isConsolidated, setIsConsolidated] = useState(false);
   const [declaredNumber, setDeclaredNumber] = useState<string | null>(null);
 
@@ -39,7 +42,7 @@ export const JantriViewModal: React.FC<JantriViewModalProps> = ({ open, onClose,
       .catch(() => { if (alive) setDeclaredNumber(null); });
     return () => { alive = false; };
   }, [open, shiftId, date]);
-  const declaredKeys = declaredCellKeys(declaredNumber);
+  const declaredKeys = declaredCellKeys(highlightOn ? declaredNumber : null);
   const tdCls = (k: string) => `relative h-8 sm:h-9 border border-slate-300 text-right px-1 sm:px-1.5 align-middle ${declaredKeys.has(k) ? 'bg-green-600' : 'bg-white'}`;
   const amtCls = (k: string) => `font-bold text-xs sm:text-[13px] font-mono ${declaredKeys.has(k) ? 'text-white' : 'text-slate-900'}`;
   const [isCutConsolidated, setIsCutConsolidated] = useState(false);

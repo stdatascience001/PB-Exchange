@@ -430,6 +430,14 @@ export async function runMigrations() {
     ALTER TABLE transactions ADD COLUMN IF NOT EXISTS started_at TIMESTAMP;
     CREATE INDEX IF NOT EXISTS trans_created_by_date_idx ON transactions(created_by, created_at);
     CREATE INDEX IF NOT EXISTS audit_action_date_idx ON audit_logs(action, created_at);
+
+    -- System-wide settings (key -> JSON): e.g. which pages highlight the declared result
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key VARCHAR(100) PRIMARY KEY,
+      value JSONB NOT NULL,
+      updated_by VARCHAR(100),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
     CREATE INDEX IF NOT EXISTS voucher_entries_ledger_idx ON voucher_entries(ledger_id, voucher_id);
     CREATE INDEX IF NOT EXISTS voucher_entries_voucher_idx ON voucher_entries(voucher_id);
     CREATE INDEX IF NOT EXISTS vouchers_type_date_idx ON vouchers(voucher_type, created_at);

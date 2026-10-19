@@ -1081,8 +1081,10 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
         list={visibleList}
         shiftId={selectedShiftId}
         date={dateStr}
+        highlightPage="declare-transactions"
       />
       <HplJantriModal
+        highlightPage="declare-transactions"
         open={showHPLModal}
         onClose={() => setShowHPLModal(false)}
         shiftId={selectedShiftId}
@@ -1091,6 +1093,7 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
         parties={partiesList}
       />
       <HplJantriModal
+        highlightPage="declare-transactions"
         variant="main"
         open={showMainJantri}
         onClose={() => setShowMainJantri(false)}

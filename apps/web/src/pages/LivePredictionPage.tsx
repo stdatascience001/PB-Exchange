@@ -88,7 +88,7 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
 
   const selectedShift = shifts.find(s => String(s.id) === shiftId);
   // declared number + its Andar / Bahar haruf shown in green in the Jantri popup
-  const declaredKeys = declaredCellKeys(useDeclaredNumber(shiftId, dateStr));
+  const declaredKeys = declaredCellKeys(useDeclaredNumber(shiftId, dateStr, isDeclareMode ? 'declare-prediction' : undefined));
 
   const fetchPrediction = async (id: string, date: string, number?: string) => {
     if (!id) return;

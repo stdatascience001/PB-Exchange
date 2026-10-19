@@ -871,6 +871,11 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
         onClose={() => setShowJantriModal(false)}
         selectedTx={selectedTx}
         list={list}
+        // Declare Trans-Audit: the declared result highlighted in its Jantri View (per the Super
+        // Admin's switch); Live Trans-Audit is undeclared, so it passes nothing as before
+        shiftId={isDeclareMode ? selectedShiftId : undefined}
+        date={isDeclareMode ? declareDate : undefined}
+        highlightPage={isDeclareMode ? 'declare-trans-audit' : undefined}
       />
 
       {/* Party Wise -> "Party Trans Count" popup (live): Search | Excel, then SR / PARTY /
