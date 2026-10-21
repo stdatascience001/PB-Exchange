@@ -166,6 +166,26 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
       .catch(() => {});
   }, []);
   // Live: with Shift left on "-- CHOOSE --" these only say "Message — Please choose a valid shift!"
+  // Add (F2): Super Admin / Developer enter a slip into the chosen shift's cycle of the date on
+  // screen (/declare_transaction_add/:shiftId/:date, "<SHIFT> [DECLARE]"); every other role keeps
+  // opening the normal Add page as before.
+  const canDeclareAdd = user?.roleName === 'SUPER ADMIN' || user?.roleName === 'DEVELOPER';
+  const openAdd = () => {
+    if (!selectedShiftId) { shiftNotChosenToast(); return; }
+    if (!canDeclareAdd) { window.open(`/transaction_add/${selectedShiftId}`, '_blank'); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Message</div>
+          <div className="text-sm mt-0.5">Please select a valid date!</div>
+        </div>,
+        { toastId: 'decl-no-date' }
+      );
+      return;
+    }
+    window.open(`/declare_transaction_add/${selectedShiftId}/${dateStr}`, '_blank');
+  };
+
   const shiftNotChosenToast = () => {
     toast.error(
       <div>
@@ -354,8 +374,7 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'F2') {
         e.preventDefault();
-        if (!selectedShiftId) shiftNotChosenToast();
-        else window.open(`/transaction_add/${selectedShiftId}`, '_blank');
+        openAdd();
       } else if (e.key === 'F3') {
         // Jantri View popup for the selected slip's party (Consolidate / Cut toggles inside)
         e.preventDefault();
@@ -804,7 +823,7 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
             <button
               id="decl-add-btn"
               type="button"
-              onClick={() => (selectedShiftId ? window.open(`/transaction_add/${selectedShiftId}`, '_blank') : shiftNotChosenToast())}
+              onClick={openAdd}
               className="px-4 py-1.5 bg-[#1662c6] hover:bg-[#1354ab] active:bg-[#0f4691] text-white font-bold text-xs rounded shadow-xs transition-colors cursor-pointer outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#1662c6]"
             >
               Add (F2)

@@ -56,6 +56,8 @@ router.get('/after-timing', TransactionController.afterTiming);
 router.get('/:id/entries', TransactionController.getEntries);
 router.get('/:id', TransactionController.getById);
 router.post('/', validate(createTransactionSchema), TransactionController.create);
+// Declare Transactions → Add (Super Admin): a slip into a shift's cycle of ?date=, declared or not
+router.post('/declare', requireRoles('DEVELOPER', 'SUPER ADMIN'), validate(createTransactionSchema), TransactionController.createDeclared);
 router.patch('/:id', requireRoles('DEVELOPER', 'SUPER ADMIN', 'ADMIN'), TransactionController.update);
 router.patch('/:id/entries', TransactionController.updateEntries);
 router.patch('/:id/declare-entries', requireRoles('DEVELOPER', 'SUPER ADMIN', 'ADMIN'), TransactionController.updateDeclaredEntries);

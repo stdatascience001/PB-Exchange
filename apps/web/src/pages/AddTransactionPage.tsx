@@ -137,6 +137,11 @@ interface AddTransactionPageProps {
   // Time Left sits at 00:00:00, no copy-to-shift panel, and Save Now goes to
   // PATCH /transactions/:id/declare-entries. Every other mode is unchanged.
   declareEdit?: boolean;
+  // Declare add — /declare_transaction_add/:shiftId/:date (Declare Transactions' "Add", Super
+  // Admin): a new slip into that shift's cycle of this date (YYYY-MM-DD), declared or not. Same
+  // "<SHIFT> [DECLARE]" header / red Time Left 00:00:00 as declare edit, the copy-to-shift panel
+  // stays, and Save Now goes to POST /transactions/declare?date=.
+  declareAddDate?: string;
   user?: UserSession | null;
 }
 
@@ -149,8 +154,11 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   editShiftId,
   editTransactionId,
   declareEdit = false,
+  declareAddDate,
   user,
 }) => {
+  // Either declare mode: no cut-off / time-over / "already declared" block on Save
+  const declareMode = declareEdit || !!declareAddDate;
   // When set, Save Now updates this existing transaction's entries instead of creating a new one.
   const [editingTxNumericId, setEditingTxNumericId] = useState<number | null>(null);
   // Declare edit: the slip's own entry date (its cycle), shown on the Date badge
@@ -436,6 +444,10 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   // Falls back to today only until the shift has loaded.
   const formatDate = () => {
     if (declareEdit && editTxDate) return editTxDate;
+    if (declareAddDate) {
+      const [year, month, day] = declareAddDate.split('-');
+      return `${day}-${month}-${year}`;
+    }
     const openDate = resolvedShift?.openDate || activeShift?.openDate;
     if (openDate && /^\d{4}-\d{2}-\d{2}$/.test(openDate)) {
       const [year, month, day] = openDate.split('-');
@@ -630,10 +642,10 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   // check on the frontend so the page visibly blocks it instead of only failing on Save.
   // DEVELOPER/SUPER ADMIN are exempt on the backend too, so `isEntryAllowedForRole` (computed
   // per-role in ShiftService.listShifts) already comes back true for them regardless of time.
-  const isCutoffBlocked = !declareEdit && resolvedShift?.isEntryAllowedForRole === false;
+  const isCutoffBlocked = !declareMode && resolvedShift?.isEntryAllowedForRole === false;
   // Declare edit exists precisely to change a declared shift's slip, so "declared" only
   // blocks Save in the other modes.
-  const isDeclaredBlocked = isShiftDeclared && !declareEdit;
+  const isDeclaredBlocked = isShiftDeclared && !declareMode;
 
   // Directly opening (or refreshing) this page's URL once the role's entry window has already
   // closed shouldn't leave the user stranded on a page they can't do anything on — send them
@@ -668,11 +680,14 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
       (currentId != null
         ? s.id !== currentId
         : s.name.toUpperCase() !== currentShiftName.toUpperCase()) &&
-      !s.declaredNumber &&
-      s.status !== 'DECLARED' &&
-      s.status !== 'AUDITED'
+      // Declare add copies into the other shifts' cycles of the same date — declared ones too
+      (!!declareAddDate || (
+        !s.declaredNumber &&
+        s.status !== 'DECLARED' &&
+        s.status !== 'AUDITED'
+      ))
     );
-  }, [allShifts, currentShiftName, resolvedShift?.id, activeShift?.id]);
+  }, [allShifts, currentShiftName, resolvedShift?.id, activeShift?.id, declareAddDate]);
 
   const toggleCopyShift = (shiftId: number) => {
     setSelectedCopyShiftIds(prev =>
@@ -710,7 +725,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
     // Shift's time is over (Time Left reached 00:00:00) — entries stay in the grid, the slip
     // just isn't saved. The API flag covers a page opened after the cut-off; the local
     // countdown covers the cut-off passing while the page is already open.
-    const isTimeOver = !declareEdit && !resolvedShift?.hasTimeOverride && (
+    const isTimeOver = !declareMode && !resolvedShift?.hasTimeOverride && (
       resolvedShift?.isTransactionTimeOver === true ||
       (resolvedShift?.isTransactionTimeOver === false && timeLeftSeconds <= 0)
     );
@@ -787,7 +802,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
         elapsedMs: slipStartRef.current !== null ? Math.max(0, Date.now() - slipStartRef.current) : undefined,
       };
 
-      const res = await apiRequest('/transactions', {
+      const createUrl = declareAddDate ? `/transactions/declare?date=${declareAddDate}` : '/transactions';
+      const res = await apiRequest(createUrl, {
         method: 'POST',
         body: JSON.stringify(payload),
       });
@@ -796,7 +812,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
       if (selectedCopyShiftIds.length > 0) {
         for (const cShiftId of selectedCopyShiftIds) {
           try {
-            await apiRequest('/transactions', {
+            await apiRequest(createUrl, {
               method: 'POST',
               body: JSON.stringify({ ...payload, shiftId: cShiftId }),
             });
@@ -1451,9 +1467,9 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
           notifyTransactionsChanged([resolvedShift?.id]);
           window.close();
         } else if (onNavigate) {
-          onNavigate(declareEdit ? 'declare-transactions' : 'transaction-list', declareEdit ? undefined : (resolvedShift ? String(resolvedShift.id) : undefined));
+          onNavigate(declareMode ? 'declare-transactions' : 'transaction-list', declareMode ? undefined : (resolvedShift ? String(resolvedShift.id) : undefined));
         } else {
-          window.location.href = declareEdit ? '/declare_transaction_list' : '/transaction_list';
+          window.location.href = declareMode ? '/declare_transaction_list' : '/transaction_list';
         }
         return;
       }
@@ -1528,9 +1544,9 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
                 notifyTransactionsChanged([resolvedShift?.id]);
                 window.close();
               } else if (onNavigate) {
-                onNavigate(declareEdit ? 'declare-transactions' : 'transaction-list', declareEdit ? undefined : (resolvedShift ? String(resolvedShift.id) : undefined));
+                onNavigate(declareMode ? 'declare-transactions' : 'transaction-list', declareMode ? undefined : (resolvedShift ? String(resolvedShift.id) : undefined));
               } else {
-                window.location.href = declareEdit ? '/declare_transaction_list' : '/transaction_list';
+                window.location.href = declareMode ? '/declare_transaction_list' : '/transaction_list';
               }
             }}
             title="Exit / Back (Shift + Esc)"
@@ -1624,8 +1640,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
           <div className="bg-[#ef4444] text-white text-xs font-bold px-3 py-1 rounded-full whitespace-nowrap shadow-xs">
             Date: {formatDate()}
           </div>
-          <div className={`${declareEdit ? 'bg-[#ef4444]' : 'bg-[#16a34a]'} text-white text-xs font-bold px-3 py-1 rounded-full whitespace-nowrap shadow-xs font-mono`}>
-            Time Left: {formatTimeLeft(declareEdit ? 0 : timeLeftSeconds)}
+          <div className={`${declareMode ? 'bg-[#ef4444]' : 'bg-[#16a34a]'} text-white text-xs font-bold px-3 py-1 rounded-full whitespace-nowrap shadow-xs font-mono`}>
+            Time Left: {formatTimeLeft(declareMode ? 0 : timeLeftSeconds)}
           </div>
         </div>
       </div>
@@ -1861,7 +1877,7 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
         {/* COLUMN 3: Right - Shift Copy, Narration, Grand Total */}
         <div className="w-72 sm:w-80 flex flex-col bg-white flex-shrink-0">
           {/* Header matching Screenshot 2 (green for LIVE, pink for DECLARED, amber for cutoff-closed) */}
-          {declareEdit ? (
+          {declareMode ? (
             <div className="bg-[#dc2626] text-white font-bold text-center py-2 text-base uppercase tracking-wide flex-shrink-0 shadow-xs">
               {currentShiftName} [DECLARE]
             </div>

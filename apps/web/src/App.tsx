@@ -265,6 +265,13 @@ export const getRouteInfo = (): RouteInfo => {
     return { page: 'declare-transaction-edit', param: declareTxEditMatch[1], param2: declareTxEditMatch[2] };
   }
 
+  // Match /declare_transaction_add/:shiftId/:date — Declare Transactions' "Add" (Super Admin): the
+  // slip-entry UI on that shift's cycle of that date ("<SHIFT> [DECLARE]")
+  const declareTxAddMatch = pathname.match(/^\/declare[-_]transaction[-_]add\/([^\/]+)\/(\d{4}-\d{2}-\d{2})$/);
+  if (declareTxAddMatch) {
+    return { page: 'declare-transaction-add', param: declareTxAddMatch[1], param2: declareTxAddMatch[2] };
+  }
+
   // Match /declare_transaction_list/:shiftId — Declare Transactions opened on that shift
   const declareTxListMatch = pathname.match(/^\/declare[-_]transaction[-_]list\/([^\/]+)$/);
   if (declareTxListMatch) {
@@ -575,6 +582,20 @@ export const App: React.FC = () => {
         editShiftId={routeInfo.param}
         editTransactionId={routeInfo.param2}
         declareEdit
+        user={user}
+      />
+    );
+  }
+
+  if (currentPage === 'declare-transaction-add') {
+    return (
+      <AddTransactionPage
+        shifts={shifts}
+        activeShift={activeShift}
+        onSelectShift={(s) => setActiveShift(s)}
+        onNavigate={navigateTo}
+        transactionId={routeInfo.param}
+        declareAddDate={routeInfo.param2}
         user={user}
       />
     );

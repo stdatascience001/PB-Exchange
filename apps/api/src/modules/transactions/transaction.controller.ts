@@ -14,6 +14,17 @@ export class TransactionController {
     }
   }
 
+  // Declare Transactions → Add: a slip into the shift's cycle of ?date=YYYY-MM-DD (declared or not)
+  static async createDeclared(req: Request, res: Response, next: NextFunction) {
+    try {
+      const date = String(req.query.date || '');
+      const result = await TransactionService.createTransaction(req.body, req.user!, { declareDate: date });
+      return sendSuccess(res, result, 'Transaction slip created successfully', 201);
+    } catch (err) {
+      next(err);
+    }
+  }
+
   static async dailyReport(req: Request, res: Response, next: NextFunction) {
     try {
       const shiftId = parseInt(req.query.shiftId as string, 10);

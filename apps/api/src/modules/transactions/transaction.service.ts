@@ -217,15 +217,35 @@ export class TransactionService {
     }
   }
 
-  static async createTransaction(input: TransactionCreateInput, user: UserSession) {
+  static async createTransaction(
+    input: TransactionCreateInput,
+    user: UserSession,
+    // Declare Transactions → Add (/declare_transaction_add/:shiftId/:date): a slip entered into
+    // that shift's cycle of that date, declared or not ("<SHIFT> [DECLARE]"). The slip carries
+    // that date (slip number + created_at) so every report counts it in that cycle. Every other
+    // caller keeps the cut-off / "already declared" blocks below.
+    opts?: { declareDate?: string }
+  ) {
+    const declareDate = opts?.declareDate;
+    if (declareDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(declareDate)) {
+      throw new AppError('Please select a valid date', 400);
+    }
+
     // 1. Enforce shift cutoff for this role
-    await ShiftService.assertShiftOpenForRole(input.shiftId, user.roleId, user.roleName, user.userId);
+    if (!declareDate) await ShiftService.assertShiftOpenForRole(input.shiftId, user.roleId, user.roleName, user.userId);
 
     // 2. Fetch Shift & Party details
     const [shift] = await db.select().from(shifts).where(eq(shifts.id, input.shiftId));
     if (!shift) throw new NotFoundError('Shift not found');
 
-    if (shift.status === 'DECLARED' || shift.status === 'AUDITED' || shift.declaredNumber) {
+    if (declareDate) {
+      // Today or an earlier day — never a date still to come
+      const now = new Date();
+      const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      if (declareDate > today) {
+        throw new AppError('Future date is not allowed', 400);
+      }
+    } else if (shift.status === 'DECLARED' || shift.status === 'AUDITED' || shift.declaredNumber) {
       throw new AppError(`Shift ${shift.name} result is already declared. Transactions are closed.`, 400);
     }
 
@@ -285,7 +305,7 @@ export class TransactionService {
     }
 
     // 6. Generate Slip Number
-    const dateStr = shift.openDate.replace(/-/g, '');
+    const dateStr = (declareDate || shift.openDate).replace(/-/g, '');
     const randPart = crypto.randomBytes(3).toString('hex').toUpperCase();
     const slipNumber = `SLIP-${dateStr}-${shift.name.slice(0, 3)}-${randPart}`;
 
@@ -325,6 +345,15 @@ export class TransactionService {
 
       await tx.insert(transactionEntries).values(entriesToInsert);
 
+      // Declare add: the slip sits on its cycle's date (at the time of day it was saved)
+      if (declareDate) {
+        const [moved] = await tx.update(transactions).set({
+          createdAt: sql`${declareDate}::date + ${transactions.createdAt}::time`,
+          updatedAt: sql`${declareDate}::date + ${transactions.createdAt}::time`,
+        }).where(eq(transactions.id, header.id)).returning();
+        if (moved) Object.assign(header, moved);
+      }
+
       if (keepStart) {
         await tx.execute(sql`UPDATE transactions SET started_at = created_at - (${Math.round(elapsedMs)} * interval '1 millisecond') WHERE id = ${header.id}`);
       }
@@ -335,7 +364,7 @@ export class TransactionService {
         action: 'CREATE',
         entityType: 'TRANSACTION',
         entityId: header.id.toString(),
-        afterData: { slipNumber, totalAmount, entryCount: preparedEntries.length },
+        afterData: { slipNumber, totalAmount, entryCount: preparedEntries.length, ...(declareDate ? { declareDate } : {}) },
       });
 
       // Update creator staff live activity status & timestamp
@@ -347,8 +376,8 @@ export class TransactionService {
       return header;
     });
 
-    // 8. Atomic Redis Jantri Increments
-    try {
+    // 8. Atomic Redis Jantri Increments (the cache holds only the shift's live cycle)
+    if (!declareDate || declareDate === shift.openDate) try {
       const jantriKey = `jantri:${shift.id}:${shift.openDate}`;
       const pipeline = redis.pipeline();
       for (const e of preparedEntries) {
@@ -1787,6 +1816,8 @@ export class TransactionService {
     // +362.5 -> 363). `+ 0` turns −0 into 0.
     const roundAway = (v: number) => Math.sign(v) * Math.round(Math.abs(v)) + 0;
     const roundHalfUp = (v: number) => Math.round(v) + 0;
+    // Company ledgers (X DB …) on the day — kept out of the Master Total's sale columns, below
+    const companyPartyIds = new Set<number>();
     let rows = Array.from(perParty.entries()).map(([partyId, agg]) => {
       const party = partyById.get(partyId);
       const commissionRate = parseFloat(party?.commissionRate || '0');
@@ -1808,6 +1839,7 @@ export class TransactionService {
 
       // A Company ledger's row (live): Agent NA, Rate blank, S-Hissa 0 — its Hissa still applies
       const isCompany = !!party && TransactionService.isCompanyLedger(party);
+      if (isCompany) companyPartyIds.add(partyId);
       return {
         partyId,
         partyName: party?.partyName || 'UNKNOWN',
@@ -1956,6 +1988,8 @@ export class TransactionService {
 
     const sum = (key: 'totalSale' | 'dSale' | 'aSale' | 'comm' | 'oDara' | 'oAkhar' | 'hissa' | 'debit' | 'credit') =>
       rows.reduce((s, r) => s + r[key], 0);
+    const saleSum = (key: 'totalSale' | 'dSale' | 'aSale') =>
+      rows.reduce((s, r) => s + (companyPartyIds.has(r.partyId) ? 0 : r[key]), 0);
 
 
     return {
@@ -1969,9 +2003,12 @@ export class TransactionService {
       profit: Math.round(sum('debit') - sum('credit')),
       rows,
       masterTotal: {
-        totalSale: sum('totalSale'),
-        dSale: sum('dSale'),
-        aSale: sum('aSale'),
+        // Live: Total / D / A-Sale add up the parties' sale only — a Company ledger's (negative)
+        // sale stays on its own row. DELHI BAZAAR 19-10: X DB −49,950 left out -> 632,710 /
+        // 613,930, while its Comm (4,995), O-Dara, Hissa and Credit still count in their totals.
+        totalSale: saleSum('totalSale'),
+        dSale: saleSum('dSale'),
+        aSale: saleSum('aSale'),
         comm: sum('comm'),
         oDara: sum('oDara'),
         oAkhar: sum('oAkhar'),
