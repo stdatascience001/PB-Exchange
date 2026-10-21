@@ -919,13 +919,20 @@ export const LedgersPage: React.FC = () => {
   // Hissa Party's Percent tops out at 99. Live: "Transfer hissa has been exceeded max limit: 99",
   // the row stays as typed and the cursor goes back to Hissa Party (text selected).
   const HISSA_MAX = 99;
+  // All Hissa Party rows together (the ones already added + the one being added) top out at 90.
+  // Live: rows 10 + 80 = 90, adding 30 -> "Transfer hissa has been exceeded max limit: 90", the
+  // row stays as typed and the cursor goes back to Hissa Party (text selected), same as above.
+  const HISSA_TOTAL_MAX = 90;
   const hissaPctExceeded = (): boolean => {
     const pct = parseFloat(newHissaPercent);
-    if (isNaN(pct) || pct <= HISSA_MAX) return false;
+    if (isNaN(pct)) return false;
+    const total = hissaLinks.reduce((s, l) => s + (parseFloat(String(l.percent)) || 0), 0) + pct;
+    const limit = pct > HISSA_MAX ? HISSA_MAX : total > HISSA_TOTAL_MAX ? HISSA_TOTAL_MAX : null;
+    if (limit === null) return false;
     toast.error(
       <div>
         <div className="font-bold text-base">Message</div>
-        <div className="text-sm mt-0.5">Transfer hissa has been exceeded max limit: {HISSA_MAX}</div>
+        <div className="text-sm mt-0.5">Transfer hissa has been exceeded max limit: {limit}</div>
       </div>,
       { toastId: 'reconfig-hissa-max' }
     );

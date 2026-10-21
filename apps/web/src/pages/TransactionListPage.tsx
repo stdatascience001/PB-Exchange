@@ -29,6 +29,9 @@ export interface TransactionItem {
   mistakeEdited?: boolean;
   // Slip was edited after it was entered — Updated column shows in red (live list)
   isEdited?: boolean;
+  // Added / updated by a DEVELOPER / SUPER ADMIN / ADMIN user — a DATA ENTRY OPERATOR gets no
+  // Edit / Delete on it (the server refuses them too)
+  adminLocked?: boolean;
   isAudited?: boolean;
   createdAt: string;
   updatedAt: string;
@@ -1065,6 +1068,8 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
                             >
                               View
                             </button>
+                            {/* DATA ENTRY OPERATOR: no Edit / Delete on a slip an Admin-level user added / updated */}
+                            {!(ownDataOnly && tx.adminLocked) && (<>
                             <button
                               type="button"
                               onClick={(e) => {
@@ -1087,6 +1092,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
                             >
                               Delete
                             </button>
+                            </>)}
                           </div>
                           )}
                         </td>

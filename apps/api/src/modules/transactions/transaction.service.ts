@@ -176,6 +176,47 @@ export class TransactionService {
     return this.startedAtReady;
   }
 
+  // DATA ENTRY OPERATOR may change only slips nobody above them has touched: a slip added or
+  // updated by a DEVELOPER / SUPER ADMIN / ADMIN user (audit_logs CREATE / UPDATE by such a user,
+  // or entered by one) is locked for the operator — no Edit / Delete.
+  static readonly OPERATOR_LOCKING_ROLES = ['DEVELOPER', 'SUPER ADMIN', 'ADMIN'];
+  static readonly OPERATOR_ROLE = 'DATA ENTRY OPERATOR';
+
+  private static async adminTouchedTxIds(txIds: number[]): Promise<Set<number>> {
+    const out = new Set<number>();
+    const ids = Array.from(new Set(txIds)).filter(Boolean);
+    for (let i = 0; i < ids.length; i += 5000) {
+      const chunk = ids.slice(i, i + 5000);
+      const rows = await pgSql<Array<{ id: number }>>`
+        SELECT t.id
+        FROM transactions t
+        WHERE t.id IN ${pgSql(chunk)}
+          AND (
+            EXISTS (SELECT 1 FROM users u JOIN roles r ON r.id = u.role_id
+                    WHERE u.id = t.created_by AND r.name IN ${pgSql(this.OPERATOR_LOCKING_ROLES)})
+            OR EXISTS (SELECT 1 FROM audit_logs a JOIN users u ON u.id = a.actor_id JOIN roles r ON r.id = u.role_id
+                       WHERE a.entity_type = 'TRANSACTION' AND a.entity_id = t.id::text
+                         AND a.action IN ('CREATE', 'UPDATE')
+                         AND r.name IN ${pgSql(this.OPERATOR_LOCKING_ROLES)})
+          )
+      `;
+      for (const r of rows) out.add(Number(r.id));
+    }
+    return out;
+  }
+
+  // Server-side guard for Edit / Delete by a DATA ENTRY OPERATOR: only their own slip, and not
+  // one an Admin-level user has added or updated
+  private static async assertOperatorMayChange(tx: { id: number; createdBy: number }, user: UserSession) {
+    if (user.roleName !== this.OPERATOR_ROLE) return;
+    if (tx.createdBy !== user.userId) {
+      throw new ForbiddenError('You can edit or delete only your own entries');
+    }
+    if ((await this.adminTouchedTxIds([tx.id])).has(tx.id)) {
+      throw new ForbiddenError('This entry was added or updated by an Admin — it cannot be edited or deleted');
+    }
+  }
+
   static async createTransaction(input: TransactionCreateInput, user: UserSession) {
     // 1. Enforce shift cutoff for this role
     await ShiftService.assertShiftOpenForRole(input.shiftId, user.roleId, user.roleName, user.userId);
@@ -528,6 +569,9 @@ export class TransactionService {
     const needsName = list.filter(t => placeholder(t.addedBy) || placeholder(t.updatedBy)).map(t => t.createdBy);
     const nameByUser = await this.resolveActorNames(needsName);
     const actorMap = await this.actorDisplayMap();
+    // DATA ENTRY OPERATOR's list (scoped to their own slips): which ones an Admin-level user has
+    // added / updated — the page hides Edit / Delete on those. Other roles: not needed, not run.
+    const adminLocked = filters.ownerUserId ? await this.adminTouchedTxIds(txIds) : new Set<number>();
 
     // Slips edited after they were entered (Edit / amount change) — their Updated column shows
     // in red on the live list. Read from the UPDATE rows every edit already writes to
@@ -544,6 +588,7 @@ export class TransactionService {
     return list.map(({ partyDaraRate, partyAkharRate, partyCommissionRate, ...t }) => ({
       ...t,
       isEdited: editedIds.has(String(t.id)),
+      adminLocked: adminLocked.has(t.id),
       addedBy: this.showActor(actorMap, (placeholder(t.addedBy) ? nameByUser.get(t.createdBy) : t.addedBy) || t.addedBy) || 'SYSTEM',
       updatedBy: this.showActor(actorMap, (placeholder(t.updatedBy) ? nameByUser.get(t.createdBy) : t.updatedBy) || t.updatedBy) || 'SYSTEM',
       shiftName: t.shiftName || 'UNKNOWN',
@@ -682,6 +727,7 @@ export class TransactionService {
   ) {
     const [existing] = await db.select().from(transactions).where(eq(transactions.id, id));
     if (!existing) throw new NotFoundError('Transaction not found');
+    await this.assertOperatorMayChange(existing, user);
     if (opts?.declaredEdit && existing.status === 'VOIDED') {
       throw new AppError('Transaction is deleted', 400);
     }
@@ -845,6 +891,7 @@ export class TransactionService {
   static async deleteTransaction(id: number, user: UserSession) {
     const [existing] = await db.select().from(transactions).where(eq(transactions.id, id));
     if (!existing) throw new NotFoundError('Transaction not found');
+    await this.assertOperatorMayChange(existing, user);
     if (existing.status === 'VOIDED') throw new AppError('Transaction is already deleted', 400);
 
     const oldEntries = await this.getTransactionEntries(id);
