@@ -273,7 +273,8 @@ export class TransactionController {
       const search = req.query.search as string;
       const date = req.query.date as string | undefined;
       const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
-      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
+      // no ?limit= → the service decides (every slip of a shift / day, else 100)
+      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
 
       // DATA ENTRY OPERATOR only ever sees the slips they entered themselves; every other
       // role gets undefined here and the unrestricted list, exactly as before.

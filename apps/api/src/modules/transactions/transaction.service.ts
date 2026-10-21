@@ -18,16 +18,47 @@ export class TransactionService {
   //
   // Until now createTransaction never wrote these columns at all, so every new slip fell back
   // to the transactions table's 'SYSTEM' default and the list showed "SYSTEM" for everyone.
+  // Live shows the staff USERNAME there (B09, ADM1 — not "GAGGU LDH STAFF A/C"): the staff
+  // record's username, else the login username.
+  private static staffUsername(staffUsername?: string | null, loginUsername?: string | null): string | null {
+    const u = (staffUsername || '').trim();
+    if (u && u.toUpperCase() !== 'NONE') return u;
+    const l = (loginUsername || '').trim();
+    return l && l.toUpperCase() !== 'NONE' ? l : null;
+  }
+
   private static async resolveActorName(user: { userId: number; username?: string }): Promise<string> {
     try {
-      const [row] = await db.select({ fullName: staff.fullName })
+      const [row] = await db.select({ username: staff.username })
         .from(staff).where(eq(staff.userId, user.userId)).limit(1);
-      const full = row?.fullName?.trim();
-      if (full) return full;
+      const name = this.staffUsername(row?.username, user.username);
+      if (name) return name;
     } catch (err) {
       console.warn('[Transactions] actor name lookup failed:', err);
     }
     return user.username || 'SYSTEM';
+  }
+
+  // Slips saved before the switch above carry the staff FULL NAME ("GAGGU LDH STAFF A/C"); shown
+  // as that staff's username instead (ADM1). Display only — nothing stored is rewritten.
+  private static async actorDisplayMap(): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    try {
+      const rows = await db.select({ fullName: staff.fullName, username: staff.username, login: users.username })
+        .from(staff).leftJoin(users, eq(users.id, staff.userId));
+      for (const r of rows) {
+        const full = (r.fullName || '').trim().toUpperCase();
+        const name = this.staffUsername(r.username, r.login);
+        if (full && name && full !== name.toUpperCase()) out.set(full, name);
+      }
+    } catch (err) {
+      console.warn('[Transactions] actor display lookup failed:', err);
+    }
+    return out;
+  }
+  private static showActor(map: Map<string, string>, v?: string | null): string | null | undefined {
+    if (!v) return v;
+    return map.get(v.trim().toUpperCase()) || v;
   }
 
   // Bulk form of the above, for resolving a whole page of rows in one round trip.
@@ -41,7 +72,8 @@ export class TransactionService {
         username: users.username,
         fullName: staff.fullName,
       }).from(users).leftJoin(staff, eq(staff.userId, users.id)).where(inArray(users.id, ids));
-      for (const r of rows) out.set(r.userId, r.fullName?.trim() || r.username);
+      // username (live), as resolveActorName
+      for (const r of rows) out.set(r.userId, r.username);
     } catch (err) {
       console.warn('[Transactions] bulk actor name lookup failed:', err);
     }
@@ -386,7 +418,15 @@ export class TransactionService {
     listMode?: 'ACTIVE' | 'DELETED';
   }) {
     const page = Math.max(1, filters.page || 1);
-    const limit = Math.min(200, Math.max(1, filters.limit || 100));
+    // A list scoped to a shift / day / party (Live Transactions, Declare Transactions, Trans
+    // Audit) returns every slip of it — it used to stop at 100, so on a busy shift SUPER ADMIN
+    // (who sees every operator's slips) got only the latest 100 while 200+ had been entered.
+    // An unscoped call keeps the old default of 100; an explicit ?limit= is honoured.
+    const MAX_LIST = 50000;
+    const scoped = !!(filters.shiftId || filters.date || filters.partyId);
+    const limit = filters.limit
+      ? Math.min(MAX_LIST, Math.max(1, filters.limit))
+      : (scoped ? MAX_LIST : 100);
     const offset = (page - 1) * limit;
 
     const conditions = [];
@@ -460,9 +500,12 @@ export class TransactionService {
 
     // Fetch entries for all retrieved transactions to support right-panel live preview
     const txIds = list.map(t => t.id);
-    const allEntries = txIds.length > 0
-      ? await db.select().from(transactionEntries).where(inArray(transactionEntries.transactionId, txIds))
-      : [];
+    // in chunks, so a few thousand slips never exceed Postgres' bind-parameter limit
+    const allEntries: Array<typeof transactionEntries.$inferSelect> = [];
+    for (let i = 0; i < txIds.length; i += 5000) {
+      const chunk = txIds.slice(i, i + 5000);
+      allEntries.push(...await db.select().from(transactionEntries).where(inArray(transactionEntries.transactionId, chunk)));
+    }
 
     const entriesMap = new Map<number, { numberValue: string; amount: number; rate: number; entryType: string }[]>();
     for (const e of allEntries) {
@@ -484,6 +527,7 @@ export class TransactionService {
     const placeholder = (v?: string | null) => !v || !v.trim() || v.trim().toUpperCase() === 'SYSTEM';
     const needsName = list.filter(t => placeholder(t.addedBy) || placeholder(t.updatedBy)).map(t => t.createdBy);
     const nameByUser = await this.resolveActorNames(needsName);
+    const actorMap = await this.actorDisplayMap();
 
     // Slips edited after they were entered (Edit / amount change) — their Updated column shows
     // in red on the live list. Read from the UPDATE rows every edit already writes to
@@ -500,8 +544,8 @@ export class TransactionService {
     return list.map(({ partyDaraRate, partyAkharRate, partyCommissionRate, ...t }) => ({
       ...t,
       isEdited: editedIds.has(String(t.id)),
-      addedBy: (placeholder(t.addedBy) ? nameByUser.get(t.createdBy) : t.addedBy) || t.addedBy || 'SYSTEM',
-      updatedBy: (placeholder(t.updatedBy) ? nameByUser.get(t.createdBy) : t.updatedBy) || t.updatedBy || 'SYSTEM',
+      addedBy: this.showActor(actorMap, (placeholder(t.addedBy) ? nameByUser.get(t.createdBy) : t.addedBy) || t.addedBy) || 'SYSTEM',
+      updatedBy: this.showActor(actorMap, (placeholder(t.updatedBy) ? nameByUser.get(t.createdBy) : t.updatedBy) || t.updatedBy) || 'SYSTEM',
       shiftName: t.shiftName || 'UNKNOWN',
       partyName: t.partyName || 'UNKNOWN',
       // Slips saved before the rate was written carry the column default — show the party's
@@ -4052,7 +4096,9 @@ export class TransactionService {
              g.start_at::text AS start_at, g.end_at::text AS end_at,
              GREATEST(EXTRACT(EPOCH FROM (g.end_at - g.start_at)), 0) AS taken_s,
              CASE WHEN g.prev_end IS NULL THEN NULL ELSE GREATEST(EXTRACT(EPOCH FROM (g.start_at - g.prev_end)), 0) END AS gap_s,
-             g.entries, g.total_amount, g.updated_by, g.updated_at::text AS updated_at
+             -- slip amount as entered: a Company party's slip is stored negative (signedAmount),
+             -- but the operator still entered that much (live X DB 49950, not -49950)
+             g.entries, ABS(g.total_amount) AS total_amount, g.updated_by, g.updated_at::text AS updated_at
       FROM g
       JOIN ledgers l ON l.id = g.party_id
       JOIN shifts sh ON sh.id = g.shift_id
@@ -4114,6 +4160,7 @@ export class TransactionService {
   static async getProductivityDetail(filters: { fromDate: string; toDate: string; shiftId?: number; userId: number }) {
     if (!filters.userId) throw new AppError('Please select a user!');
     const slips = await this.productivitySlips(filters);
+    const actorMap = await this.actorDisplayMap();
     return slips.map(s => ({
       transactionId: s.id,
       partyName: s.party_name,
@@ -4124,7 +4171,7 @@ export class TransactionService {
       freeTime: s.gap_s === null ? 0 : Math.round(parseFloat(s.gap_s) || 0),
       tCount: Number(s.entries) || 0,
       tAmount: parseFloat(s.total_amount) || 0,
-      updatedBy: s.updated_by || '-',
+      updatedBy: this.showActor(actorMap, s.updated_by) || '-',
       updatedAt: s.updated_at,
     }));
   }
