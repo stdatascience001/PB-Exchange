@@ -6,6 +6,7 @@ import { DateDMYInput } from '../components/DateDMYInput.js';
 import { toast } from 'react-toastify';
 import { PartyJantriModal } from '../components/PartyJantriModal.js';
 import { HissaCutsModal, HissaCut } from '../components/HissaCutsModal.js';
+import { useFitToViewport } from '../utils/useFitToViewport.js';
 
 interface DailyReportPageProps {
   shifts?: ShiftDto[];
@@ -176,9 +177,17 @@ export const DailyReportPage: React.FC<DailyReportPageProps> = ({ shifts = [], o
     document.body.removeChild(link);
   };
 
+  // The page fills the screen under the header and the party list scrolls inside itself (its
+  // header row and Master Total stay in view), instead of the whole page scrolling
+  const { ref: pageRef, height: pageHeight } = useFitToViewport<HTMLDivElement>(420);
+
   return (
-    <div className="min-h-full bg-[#eaedf2] p-2.5 sm:p-3 flex flex-col justify-between text-slate-800 select-none font-sans text-xs">
-      <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden flex flex-col flex-1">
+    <div
+      ref={pageRef}
+      style={pageHeight ? { height: pageHeight } : undefined}
+      className={`${pageHeight ? '' : 'min-h-full '}bg-[#eaedf2] p-2.5 sm:p-3 flex flex-col justify-between text-slate-800 select-none font-sans text-xs overflow-hidden`}
+    >
+      <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden flex flex-col flex-1 min-h-0">
         <form onSubmit={handleSearch} className="p-2 sm:p-2.5 flex flex-wrap items-center gap-2.5 border-b border-slate-200 bg-white">
           <button type="button" onClick={() => onNavigate && onNavigate('dashboard')} className="p-1 text-slate-800 hover:bg-slate-100 rounded">
             <ArrowLeft className="w-4 h-4" />
@@ -236,7 +245,7 @@ export const DailyReportPage: React.FC<DailyReportPageProps> = ({ shifts = [], o
           </div>
         </form>
 
-        <div className="overflow-auto flex-1">
+        <div className="overflow-auto flex-1 min-h-0">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
               <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap sticky top-0 z-10">

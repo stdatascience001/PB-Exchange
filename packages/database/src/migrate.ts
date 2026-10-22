@@ -177,6 +177,9 @@ export async function runMigrations() {
     ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS dibba BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS d_amt NUMERIC(12, 2) NOT NULL DEFAULT 0.00;
     ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS user_name VARCHAR(50);
+    -- Automatic party lock (apps/api ledger-auto-lock.ts): last unlock by hand, last auto lock
+    ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS unlocked_at TIMESTAMP;
+    ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS auto_locked_at TIMESTAMP;
     ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS vapsi_tpr VARCHAR(50) NOT NULL DEFAULT '10 | NO';
     ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS has_limit BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE ledgers ADD COLUMN IF NOT EXISTS updated_by VARCHAR(100) NOT NULL DEFAULT 'A100';

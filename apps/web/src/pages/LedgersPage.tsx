@@ -708,13 +708,33 @@ export const LedgersPage: React.FC = () => {
     }
   };
 
+  // Locked column (live): LOCKED -> unlocks the party ("Ledger info (TransactionLock) has been
+  // updated successfully!"); NO can't be locked by hand — a party is locked only by the daily
+  // auto lock (14 days without an entry) -> "Invalid — Please enter all valid fields!".
   const handleToggleLock = async (l: LedgerItem) => {
+    if (!l.isLocked) {
+      toast.error(
+        <div>
+          <div className="font-bold text-base">Invalid</div>
+          <div className="text-sm mt-0.5">Please enter all valid fields!</div>
+        </div>,
+        { toastId: 'ledger-lock-invalid' }
+      );
+      return;
+    }
     try {
       await apiRequest(`/ledgers/${l.id}`, {
         method: 'PUT',
-        body: JSON.stringify({ isLocked: !l.isLocked }),
+        body: JSON.stringify({ isLocked: false }),
       });
       fetchLedgers();
+      toast.success(
+        <div>
+          <div className="font-bold text-base">Success</div>
+          <div className="text-sm mt-0.5">Ledger info (TransactionLock) has been updated successfully!</div>
+        </div>,
+        { toastId: `ledger-unlock-${l.id}` }
+      );
     } catch (err: any) {
       alert(err.message || 'Failed to update ledger lock status');
     }

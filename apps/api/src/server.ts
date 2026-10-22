@@ -3,6 +3,7 @@ import { createApp } from './app.js';
 import { env } from './config/env.js';
 import { ensureReportIndexes } from './common/report-indexes.js';
 import { initDbTimezone } from '@pb/database';
+import { startLedgerAutoLock } from './modules/ledgers/ledger-auto-lock.js';
 
 const app = createApp();
 
@@ -20,6 +21,8 @@ void initDbTimezone().then((dbTimeZone) => {
     console.log(`===============================================`);
     // Report indexes (built once, in the background, without locking the tables)
     void ensureReportIndexes();
+    // Daily 5:00 AM party auto lock (14 days without an entry)
+    startLedgerAutoLock();
   });
 });
 

@@ -1,6 +1,7 @@
 import { db, sql as pgSql, ledgers, agents, ledgerThirdPartyLinks, voucherEntries } from '@pb/database';
 import { eq, ilike, or, and, isNull, isNotNull, asc, inArray, sql } from 'drizzle-orm';
 import { AppError, NotFoundError } from '../../common/errors.js';
+import { recordLockChange } from './ledger-auto-lock.js';
 
 // Live ledger "AddedBy": who created the party (UpdatedBy only says who touched it last).
 // Rows created before this column existed have no creator on record and come back null.
@@ -297,7 +298,8 @@ export class LedgerService {
       dibba: data.dibba ?? false,
       dAmt: (data.dAmt ?? 0).toString(),
       vapsiTpr: data.vapsiTpr || '10 | NO',
-      isLocked: data.isLocked ?? false,
+      // A party is locked only by the daily auto lock (ledger-auto-lock.ts) — never on creation
+      isLocked: false,
       isRisky: data.isRisky ?? false,
       updatedBy: data.updatedBy || 'A100',
     }).returning();
@@ -347,12 +349,26 @@ export class LedgerService {
     if (data.isTransactionAllow !== undefined) updatePayload.isTransactionAllow = data.isTransactionAllow;
     if (data.updatedBy !== undefined) updatePayload.updatedBy = data.updatedBy;
 
+    // Locked by hand: only an UNLOCK is allowed (Developer / Super Admin / Admin — the route's
+    // roles); a party is locked only by the daily auto lock (ledger-auto-lock.ts). Live: clicking
+    // NO -> "Invalid — Please enter all valid fields!". An unlock starts the 15-day grace.
+    let lockChanged = false;
+    if (typeof data.isLocked === 'boolean') {
+      const [before] = await db.select({ isLocked: ledgers.isLocked }).from(ledgers).where(eq(ledgers.id, id));
+      if (before && !before.isLocked && data.isLocked) {
+        throw new AppError('Please enter all valid fields!', 400);
+      }
+      lockChanged = !!before && before.isLocked !== data.isLocked;
+    }
+
     const [updated] = await db.update(ledgers)
       .set(updatePayload)
       .where(eq(ledgers.id, id))
       .returning();
 
     if (!updated) throw new AppError('Ledger not found', 404);
+
+    if (lockChanged) await recordLockChange(id, data.isLocked);
 
     if (typeof data.loginActive === 'boolean') {
       await ensureLoginColumn();
