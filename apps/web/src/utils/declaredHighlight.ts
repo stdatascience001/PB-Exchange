@@ -37,45 +37,78 @@ export const DECLARE_HIGHLIGHT_PAGE_LABELS: Array<{ menu: string; page: DeclareH
   { menu: 'Reports', page: 'daily-report', label: 'Daily Report' },
 ];
 
-const HIGHLIGHT_EVENT = 'pb-declare-highlight-changed';
-let highlightCache: Record<string, boolean> | null = null;
-let highlightLoad: Promise<Record<string, boolean>> | null = null;
+// Role columns of the popup: a ticked page shows the highlight to a role only while that role is
+// ticked for it too (missing = ON).
+export const DECLARE_HIGHLIGHT_ROLES = [
+  'SUPER ADMIN',
+  'DEVELOPER',
+  'ADMIN',
+  'MANAGER',
+  'MARKETER',
+  'AUDITOR',
+  'DATA ENTRY OPERATOR',
+  'TALLY OPERATOR',
+] as const;
+export type DeclareHighlightRole = typeof DECLARE_HIGHLIGHT_ROLES[number];
+export type DeclareHighlightRoles = Record<string, Record<string, boolean>>;
+export interface DeclareHighlightSettings { pages: Record<string, boolean>; roles: DeclareHighlightRoles }
 
-export const loadDeclareHighlight = (force = false): Promise<Record<string, boolean>> => {
+const HIGHLIGHT_EVENT = 'pb-declare-highlight-changed';
+let highlightCache: DeclareHighlightSettings | null = null;
+let highlightLoad: Promise<DeclareHighlightSettings> | null = null;
+
+export const loadDeclareHighlightSettings = (force = false): Promise<DeclareHighlightSettings> => {
   if (!force && highlightCache) return Promise.resolve(highlightCache);
   if (!force && highlightLoad) return highlightLoad;
-  highlightLoad = apiRequest<{ pages: Record<string, boolean> }>('/settings/declare-highlight')
+  highlightLoad = apiRequest<{ pages: Record<string, boolean>; roles?: DeclareHighlightRoles }>('/settings/declare-highlight')
     .then(res => {
-      highlightCache = res.data?.pages || {};
+      highlightCache = { pages: res.data?.pages || {}, roles: res.data?.roles || {} };
       return highlightCache;
     })
     .catch(() => {
       highlightLoad = null;
-      return highlightCache || {};
+      return highlightCache || { pages: {}, roles: {} };
     });
   return highlightLoad;
 };
 
-// After the Super Admin saves: keep the new map and tell every open page
-export const publishDeclareHighlight = (pages: Record<string, boolean>) => {
-  highlightCache = { ...pages };
+// The page switches only (as before)
+export const loadDeclareHighlight = (force = false): Promise<Record<string, boolean>> =>
+  loadDeclareHighlightSettings(force).then(s => s.pages);
+
+// After the Super Admin saves: keep the new settings and tell every open page
+export const publishDeclareHighlight = (pages: Record<string, boolean>, roles?: DeclareHighlightRoles) => {
+  highlightCache = { pages: { ...pages }, roles: { ...(roles || highlightCache?.roles || {}) } };
   highlightLoad = Promise.resolve(highlightCache);
   window.dispatchEvent(new CustomEvent(HIGHLIGHT_EVENT, { detail: highlightCache }));
 };
 
-// Is the declared result highlighted on this page? No page given → always (unchanged pages).
+// The signed-in user's role (this tab's login)
+const currentRole = (): string => {
+  try {
+    const u = JSON.parse(sessionStorage.getItem('pb_user') || 'null');
+    // "SUPER_ADMIN" is the same role as "SUPER ADMIN"
+    return String(u?.roleName || '').toUpperCase().replace(/_/g, ' ');
+  } catch {
+    return '';
+  }
+};
+
+// Is the declared result highlighted on this page for this user? The page must be ticked, and the
+// user's role ticked for it. No page given → always.
 export const useDeclareHighlightEnabled = (page?: DeclareHighlightPage): boolean => {
-  const [map, setMap] = useState<Record<string, boolean> | null>(highlightCache);
+  const [settings, setSettings] = useState<DeclareHighlightSettings | null>(highlightCache);
   useEffect(() => {
     if (!page) return;
     let alive = true;
-    loadDeclareHighlight().then(m => { if (alive) setMap(m); });
-    const onChange = (e: Event) => setMap({ ...((e as CustomEvent).detail || {}) });
+    loadDeclareHighlightSettings().then(m => { if (alive) setSettings(m); });
+    const onChange = (e: Event) => setSettings((e as CustomEvent<DeclareHighlightSettings>).detail || null);
     window.addEventListener(HIGHLIGHT_EVENT, onChange);
     return () => { alive = false; window.removeEventListener(HIGHLIGHT_EVENT, onChange); };
   }, [page]);
   if (!page) return true;
-  return map?.[page] !== false;
+  if (settings?.pages?.[page] === false) return false;
+  return settings?.roles?.[page]?.[currentRole()] !== false;
 };
 
 // The shift's declared number for the day on screen (null while that day is undeclared),
