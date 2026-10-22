@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
 import { UnauthorizedError, ForbiddenError, AppError } from '../common/errors.js';
-import { isSessionActive, isIpTakenByOtherUser, SESSION_REPLACED_MESSAGE } from '../modules/auth/session-store.js';
+import { isSessionActive, hasNewerSessionOnIp, SESSION_REPLACED_MESSAGE } from '../modules/auth/session-store.js';
 import { extractClientIp } from './ip-block.middleware.js';
 import { UserSession, SystemRole } from '@pb/types';
 
@@ -15,12 +15,14 @@ declare global {
   }
 }
 
-// One account per IP (session-store.ts): a token whose session was replaced by a newer login
-// on the same IP is refused with code SESSION_REPLACED; the web app then signs out. A token
-// from before sessions existed (no sid) is refused once another account is logged in on the IP.
+// One session per account per IP (session-store.ts): a token whose session was replaced by a
+// newer login of the SAME account on the same IP is refused with code SESSION_REPLACED; the web
+// app then signs that tab out. Different accounts on one machine / network (separate tabs) never
+// replace each other. A token from before sessions existed (no sid) is refused once the same
+// account has logged in again on the IP.
 async function sessionReplaced(req: Request, decoded: UserSession & { sid?: string }): Promise<boolean> {
   if (decoded.sid) return !(await isSessionActive(decoded.sid));
-  return isIpTakenByOtherUser(extractClientIp(req), decoded.userId);
+  return hasNewerSessionOnIp(extractClientIp(req), decoded.userId);
 }
 
 export async function authenticate(req: Request, res: Response, next: NextFunction) {

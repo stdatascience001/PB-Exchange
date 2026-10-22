@@ -305,7 +305,8 @@ const getPageFromPath = (): string => {
 
 export const App: React.FC = () => {
   const [user, setUser] = useState<UserSession | null>(() => {
-    const saved = localStorage.getItem('pb_user');
+    // this tab's own login (sessionStorage — see LoginPage)
+    const saved = sessionStorage.getItem('pb_user');
     return saved ? JSON.parse(saved) : null;
   });
   const [routeInfo, setRouteInfo] = useState<RouteInfo>(getRouteInfo);
@@ -429,6 +430,9 @@ export const App: React.FC = () => {
   }, [navigateTo]);
 
   const handleLogout = () => {
+    sessionStorage.removeItem('pb_token');
+    sessionStorage.removeItem('pb_user');
+    // a login the old build kept in localStorage
     localStorage.removeItem('pb_token');
     localStorage.removeItem('pb_user');
     setUser(null);
@@ -436,12 +440,13 @@ export const App: React.FC = () => {
   };
 
   // Same account signed in again from this IP: this (older) session is over — sign out and
-  // say why. Only the newest login of an account on an IP stays active.
+  // say why. Only the newest login of an account on an IP stays active (other accounts in other
+  // tabs are not affected).
   const logoutRef = React.useRef(handleLogout);
   logoutRef.current = handleLogout;
   useEffect(() => {
     const onReplaced = (e: Event) => {
-      if (!localStorage.getItem('pb_token')) return;
+      if (!sessionStorage.getItem('pb_token')) return;
       logoutRef.current();
       toast.error(
         <div>

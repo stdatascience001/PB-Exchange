@@ -48,8 +48,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
         }),
       });
 
-      localStorage.setItem('pb_token', res.data.token);
-      localStorage.setItem('pb_user', JSON.stringify(res.data.user));
+      // Per tab (sessionStorage): every tab holds its own login, so another tab can sign in as a
+      // different user without touching this one. A tab opened from the app (window.open) starts
+      // with a copy of its opener's session. Any login left in localStorage by the old build goes.
+      sessionStorage.setItem('pb_token', res.data.token);
+      sessionStorage.setItem('pb_user', JSON.stringify(res.data.user));
+      localStorage.removeItem('pb_token');
+      localStorage.removeItem('pb_user');
       onLoginSuccess(res.data.user, res.data.token);
     } catch (err: any) {
       // Inactive staff (Staffs page Active = NO) signing in with the right password: off to Google
