@@ -776,7 +776,10 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
   // Staff dropdown: whoever added the slips loaded for this shift / date (not a fixed list)
   const staffOptions = Array.from(new Set(list.map(t => (t.addedBy || '').trim()).filter(Boolean)))
     .sort((a, b) => a.localeCompare(b));
-  const totalSum = visibleList.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0);
+  // Amount as entered (live / Productivity Report): a Company party's slip (X DB) is stored
+  // negative for the books, but the list shows and totals it as the operator entered it — 51850, not
+  // -51850. Display only; the stored amount is unchanged.
+  const totalSum = visibleList.reduce((acc, curr) => acc + Math.abs(curr.totalAmount || 0), 0);
   // Full-screen list: the page is exactly as tall as the room left under the header (measured, so
   // a taller / shorter header never pushes it past the screen) — the list then fills it all
   const pageRef = useRef<HTMLDivElement>(null);
@@ -1027,7 +1030,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
                         </td>
                         {/* Amount */}
                         <td className="py-1.5 px-3 text-right font-mono font-bold text-slate-900 border-r border-b border-slate-200">
-                          {Math.round(tx.totalAmount)}
+                          {Math.round(Math.abs(tx.totalAmount))}
                         </td>
                         {/* Added */}
                         <td className="py-1 px-3 border-r border-b border-slate-200 leading-snug">
