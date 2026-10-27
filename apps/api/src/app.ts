@@ -33,7 +33,7 @@ export function createApp() {
   // Security & logging middleware
   app.use(helmet());
   app.use(cors({
-    origin: env.CORS_ORIGIN,
+    origin: env.CORS_ORIGINS,
     credentials: true,
   }));
   app.use(morgan(env.NODE_ENV === 'development' ? 'dev' : 'combined'));

@@ -1,0 +1,57 @@
+{
+  "expo": {
+    "name": "PB Exchange",
+    "slug": "pb-exchange",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "scheme": "pbexchange",
+    "newArchEnabled": true,
+    "backgroundColor": "#F4F6F9",
+    "primaryColor": "#152847",
+    "splash": {
+      "backgroundColor": "#152847",
+      "resizeMode": "contain"
+    },
+    "androidStatusBar": {
+      "barStyle": "light-content",
+      "backgroundColor": "#0F1D35"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.pbexchange.app",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        },
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.pbexchange.app",
+      "softwareKeyboardLayoutMode": "pan",
+      "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "VIBRATE"
+      ]
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "14d98e15-7d1e-4c02-af29-5d95c3806f3d"
+      }
+    },
+    "owner": "driver-dost"
+  }
+}
