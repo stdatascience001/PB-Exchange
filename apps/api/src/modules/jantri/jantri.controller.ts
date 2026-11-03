@@ -53,4 +53,16 @@ export class JantriController {
       next(err);
     }
   }
+
+  // Live Prediction → click a party's Last-Win badge: its winning days (date + P&L)
+  static async getLastWinDetails(req: Request, res: Response, next: NextFunction) {
+    try {
+      const shiftId = parseInt(req.params.shiftId as string, 10);
+      const partyId = parseInt(req.params.partyId as string, 10);
+      const data = await JantriService.getLastWinDetails(shiftId, partyId);
+      return sendSuccess(res, data, 'Last Profit Party loaded!');
+    } catch (err) {
+      next(err);
+    }
+  }
 }

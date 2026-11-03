@@ -6,8 +6,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../theme';
 import { tap } from '../utils/haptics';
 
-// Inner screens (live app): ← TITLE on the navy bar
-export function BackHeader({ title, right }: { title: string; right?: React.ReactNode }) {
+// Inner screens (live app): ← TITLE on the navy bar. onBack: a full-screen popup's own close
+// (instead of leaving the screen).
+export function BackHeader({ title, right, onBack }: { title: string; right?: React.ReactNode; onBack?: () => void }) {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   return (
@@ -15,7 +16,7 @@ export function BackHeader({ title, right }: { title: string; right?: React.Reac
       <Pressable
         accessibilityLabel="Back"
         hitSlop={12}
-        onPress={() => { tap(); if (navigation.canGoBack()) navigation.goBack(); }}
+        onPress={() => { tap(); if (onBack) onBack(); else if (navigation.canGoBack()) navigation.goBack(); }}
         style={styles.back}
       >
         <MaterialIcons name="arrow-back" size={28} color={colors.white} />

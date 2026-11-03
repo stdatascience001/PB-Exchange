@@ -194,7 +194,9 @@ export class DashboardService {
     // one he did enter (HYDRABAD NIGHT, 23-09-2026) his card reads a real 100 / 72. So an
     // own-data role now gets real totals over its own rows (the queries above are already
     // filtered), and only the roles with no such evidence keep the blanket zero.
-    const zeroOutLiveTotals = hasReducedDeclarePanels && !ownUserId;
+    // TALLY OPERATOR's live dashboard shows the real Total / Net on every open card (NEW
+    // FARIDABAD 67,126 / 34,859, GHAZIABAD 404,086 / 251,591), so it keeps the whole book's totals.
+    const zeroOutLiveTotals = hasReducedDeclarePanels && !ownUserId && userRoleName !== 'TALLY OPERATOR';
 
     const shiftsWithMetrics: any[] = [];
     const declareNeeded: any[] = [];

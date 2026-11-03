@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ShiftDto, LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { DateDMYInput } from '../components/DateDMYInput.js';
+import { toast } from 'react-toastify';
 import { declaredCellKeys, useDeclaredNumber, hlCls } from '../utils/declaredHighlight.js';
 
 // Live Enter order across the filter bar: Shift -> DD -> MM -> YYYY -> Commission -> Hissa ->
@@ -43,6 +44,35 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
     const day = String(d.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
   });
+  // Page opened before the shifts list arrived (e.g. a refresh on /collection): the dropdown
+  // already shows its first shift, so that shift (or the app's active one) is the selection
+  // once the list is here — otherwise Submit said "Please select a shift." with one on screen.
+  useEffect(() => {
+    if (shiftId !== '' || availableShifts.length === 0) return;
+    const start = activeShift && availableShifts.some(s => s.id === activeShift.id) ? activeShift.id : availableShifts[0].id;
+    setShiftId(start);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableShifts]);
+
+  // A shift whose result isn't declared yet opens on its own date (its open cycle, e.g. a
+  // shift still on yesterday's book shows yesterday), once each time a shift is picked — a
+  // date typed afterwards stays as typed. A declared shift shows no date at all (live: SHRI
+  // GANESH, declared, leaves the date box without a date and Submit says "Record not
+  // avaliable!"); a date typed in for it still loads that day as before.
+  // (Collection only; Declare Collection keeps its own date handling.)
+  const selectedShift = useMemo(() => shifts.find(s => s.id === shiftId) || null, [shifts, shiftId]);
+  const isShiftDeclared = (s: ShiftDto | null) => !!(s && (s.declaredNumber || s.status === 'DECLARED' || s.status === 'AUDITED'));
+  const datedShiftRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (declareModeOnly || !selectedShift || datedShiftRef.current === selectedShift.id) return;
+    datedShiftRef.current = selectedShift.id;
+    if (isShiftDeclared(selectedShift)) {
+      setDateStr('');
+    } else if (/^\d{4}-\d{2}-\d{2}$/.test(selectedShift.openDate || '')) {
+      setDateStr(selectedShift.openDate);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedShift, declareModeOnly]);
   // declared number + its Andar / Bahar haruf shown in green
   const declaredKeys = declaredCellKeys(useDeclaredNumber(shiftId, dateStr, declareModeOnly ? 'declare-collection' : undefined));
   const [parties, setParties] = useState<LedgerDto[]>([]);
@@ -185,8 +215,29 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
   // totals (read-only) — per-party, so the Commission/Hissa/Dibba/Akh-Mix toggles apply each
   // party's own ledger-configured rates — matching the live "Collection" report instead of
   // erroring for a missing party.
+  const noRecordToast = () => {
+    toast.error(
+      <div>
+        <div className="font-bold text-base">Error</div>
+        <div className="text-sm mt-0.5">Record not avaliable!</div>
+      </div>,
+      { toastId: 'collection-no-record' }
+    );
+  };
+
   const handleLoadCollectionView = async () => {
     if (!shiftId) return;
+    // No date (a declared shift's empty date box): nothing to load — the grid stays empty (0)
+    // and the live error toast shows
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      if (!declareModeOnly) {
+        setAmounts({});
+        setHarufData([]);
+        setIsCollectionView(true);
+        noRecordToast();
+      }
+      return;
+    }
     setViewLoading(true);
     try {
       const params = new URLSearchParams();
@@ -216,6 +267,11 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
         setAmounts(newAmounts);
         setHarufData(res.data.haruf || []);
         setIsCollectionView(true);
+        // A declared shift with nothing in its book for this date (and filters): the live
+        // page's top-right "Error — Record not avaliable!" toast. The empty grid still draws.
+        const hasRecord = res.data.grid.some(g => g.totalAmount > 0)
+          || (res.data.haruf || []).some(h => h.andarAmount > 0 || h.baharAmount > 0);
+        if (!hasRecord && !declareModeOnly && isShiftDeclared(selectedShift)) noRecordToast();
         // As on live: once the report draws, the cursor lands on number 1's cell
         setTimeout(() => focusById('coll-cell-1'), 0);
       }
@@ -428,11 +484,17 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
                               {amounts[num] ? adjustedAmount(parseFloat(amounts[num])).toLocaleString('en-IN') : ''}
                             </span>
                           ) : (
+                            // Digits only, and no browser Up/Down spinner: a plain text box with
+                            // the numeric keypad, anything other than 0-9 ("-", "e", ".", "+")
+                            // is dropped as it is typed or pasted
                             <input
                               id={`coll-cell-${num}`}
-                              type="number"
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              autoComplete="off"
                               value={amounts[num] || ''}
-                              onChange={(e) => handleAmountChange(num, e.target.value)}
+                              onChange={(e) => handleAmountChange(num, e.target.value.replace(/\D/g, ''))}
                               className="w-full h-full text-right bg-transparent outline-none font-bold text-slate-900"
                             />
                           )}

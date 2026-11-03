@@ -55,3 +55,42 @@ export async function registerLoginFailure(ip: string, attemptedUsername: string
   markIpBlocked(ip);
   throw new AppError(blockedMessage(ip), 403, 'IP_BLOCKED');
 }
+
+// Per-username guard (any IP): the IP block above stops one address, this stops guessing one
+// account's password from many addresses. USERNAME_MAX_FAILURES wrong logins for a username
+// within STREAK_RESET_MS lock that username for USERNAME_LOCK_MINUTES; a right login clears it.
+const USERNAME_MAX_FAILURES = 10;
+const USERNAME_LOCK_MINUTES = 15;
+const usernameFailures = new Map<string, { count: number; lastAt: number; lockedUntil?: number }>();
+
+const usernameKey = (username: string) => (username || '').trim().toLowerCase();
+
+export function assertUsernameNotLocked(username: string) {
+  const entry = usernameFailures.get(usernameKey(username));
+  if (entry?.lockedUntil && entry.lockedUntil > Date.now()) {
+    const minutes = Math.ceil((entry.lockedUntil - Date.now()) / 60000);
+    throw new AppError(
+      `Too many wrong login attempts for this account. Please try again after ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+      429,
+      'ACCOUNT_LOCKED'
+    );
+  }
+}
+
+export function registerUsernameFailure(username: string) {
+  const key = usernameKey(username);
+  if (!key) return;
+  const now = Date.now();
+  const prev = usernameFailures.get(key);
+  const count = prev && now - prev.lastAt < STREAK_RESET_MS && !(prev.lockedUntil && prev.lockedUntil <= now) ? prev.count + 1 : 1;
+  usernameFailures.set(key, {
+    count,
+    lastAt: now,
+    lockedUntil: count >= USERNAME_MAX_FAILURES ? now + USERNAME_LOCK_MINUTES * 60 * 1000 : undefined,
+  });
+  if (usernameFailures.size > 50000) usernameFailures.clear();
+}
+
+export function clearUsernameFailures(username: string) {
+  usernameFailures.delete(usernameKey(username));
+}

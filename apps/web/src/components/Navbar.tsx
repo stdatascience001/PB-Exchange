@@ -56,11 +56,13 @@ export const Navbar: React.FC<NavbarProps> = ({
         // ignore — badge just stays hidden if this fails
       }
     };
+    // Loaded once (sign-in / page refresh); the automatic 10s poll is switched off — kept
+    // below, commented out, in case it is wanted back.
     fetchLastDay();
-    const interval = setInterval(fetchLastDay, 10000);
+    // const interval = setInterval(fetchLastDay, 10000);
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      // clearInterval(interval);
     };
   }, [showLastDayBadge]);
 
@@ -88,8 +90,9 @@ export const Navbar: React.FC<NavbarProps> = ({
       setPasswordError('Please enter your current password');
       return;
     }
-    if (!newPassword || newPassword.length < 4) {
-      setPasswordError('New password must be at least 4 characters long');
+    // Same strong-password rule as the API: 8+ characters, at least 1 number and 1 letter
+    if (!newPassword || newPassword.trim().length < 8 || !/\d/.test(newPassword) || !/[A-Za-z]/.test(newPassword)) {
+      setPasswordError('New password must be at least 8 characters, with at least 1 number and at least 1 letter');
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -594,7 +597,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     required
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="Enter new password (min 4 characters)"
+                    placeholder="Enter new password (min 8, letters + numbers)"
                     className="w-full px-3 py-2 pr-9 bg-white border border-slate-300 rounded font-medium text-slate-900 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                   <button

@@ -1,7 +1,7 @@
 import { MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, FlatList, Modal, Platform, Pressable, StyleSheet, Text, ToastAndroid, View } from 'react-native';
+import { Alert, FlatList, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, ToastAndroid, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { apiRequest, errorMessage } from '../api/client';
 import { BackHeader } from '../components/BackHeader';
@@ -22,9 +22,13 @@ import { failure, tap } from '../utils/haptics';
 // A shift whose number is already declared has no live slips: LIVE TRANSACTION stays empty and
 // the screen opens on DECLARED TRANSACTION, already on the shift's date and loaded. Switching to
 // LIVE there shows the "Record not avaliable!" toast, and its Jantri buttons go to DECLARED instead.
+// Tapping a slip (either tab) opens that slip's own "<SHIFT> JANTRI": its entries on the 1 … 100,
+// 000 … 999, 0000 … 9999 grid with the slip's TOTAL AMOUNT.
+interface SlipEntry { numberValue: string; amount: number; entryType: string }
 interface Slip {
   id: number; partyName: string; totalAmount: number; addedBy?: string; updatedBy?: string;
   createdAt: string; updatedAt?: string; isEdited?: boolean; status?: string; auditStatus?: string;
+  entries?: SlipEntry[];
 }
 type Tab = 'LIVE' | 'DECLARED';
 
@@ -47,6 +51,7 @@ export function ShiftTransactionsScreen() {
   const [search, setSearch] = useState('');
   const [jantriOpen, setJantriOpen] = useState(false);
   const [partiesOpen, setPartiesOpen] = useState(false);
+  const [openSlip, setOpenSlip] = useState<Slip | null>(null);
   // short bottom message (live app: Android toast); the web / iOS build draws its own pill
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -144,7 +149,10 @@ export function ShiftTransactionsScreen() {
           const diffMs = item.updatedAt ? new Date(item.updatedAt).getTime() - new Date(item.createdAt).getTime() : 0;
           const showDiff = !!item.isEdited && diffMs > 0;
           return (
-            <View style={[styles.row, mistake && styles.rowEdited, showDiff && styles.rowDiff]}>
+            <Pressable
+              onPress={() => { tap(); setOpenSlip(item); }}
+              style={({ pressed }) => [styles.row, mistake && styles.rowEdited, showDiff && styles.rowDiff, pressed && { backgroundColor: '#E2E8F0' }]}
+            >
               <Text style={styles.index}>{index + 1}.</Text>
               <View style={{ flex: 1 }}>
                 <Text style={styles.party} numberOfLines={1}>{item.partyName}</Text>
@@ -157,7 +165,7 @@ export function ShiftTransactionsScreen() {
                 <Text style={styles.amount}>{Math.round(Math.abs(num(item.totalAmount)))} /-</Text>
                 <Text style={styles.time}>{dmyTime(item.createdAt)}</Text>
               </View>
-            </View>
+            </Pressable>
           );
         }}
       />
@@ -189,6 +197,7 @@ export function ShiftTransactionsScreen() {
         </Pressable>
       </Modal>
 
+      <SlipJantriModal slip={openSlip} shiftName={params.shiftName} onClose={() => setOpenSlip(null)} />
       <PartySaleModal visible={partiesOpen} slips={slips || []} onClose={() => setPartiesOpen(false)} />
       <CalendarModal
         visible={calendar}
@@ -211,6 +220,53 @@ function PopButton({ label, color, onPress }: { label: string; color: string; on
     <Pressable onPress={() => { tap(); onPress(); }} style={({ pressed }) => [styles.popBtn, { backgroundColor: color }, pressed && { opacity: 0.85 }]}>
       <Text style={styles.popBtnText}>{label}</Text>
     </Pressable>
+  );
+}
+
+// One slip's Jantri (live app: tap a slip) — full screen, ← closes it. Its DARA entries on 1 … 100
+// (100 = "00"), Bahar haruf on 000 … 999, Andar haruf on 0000 … 9999, five to a row ("-" when
+// nothing); the slip's amount on the navy TOTAL AMOUNT bar.
+function SlipJantriModal({ slip, shiftName, onClose }: { slip: Slip | null; shiftName: string; onClose: () => void }) {
+  const insets = useSafeAreaInsets();
+  const rows = useMemo(() => {
+    const dara = new Map<string, number>();
+    const andar = new Map<string, number>();
+    const bahar = new Map<string, number>();
+    for (const e of slip?.entries || []) {
+      const m = e.entryType === 'HARUF_ANDAR' ? andar : e.entryType === 'HARUF_BAHAR' ? bahar : dara;
+      const k = e.entryType === 'DARA' ? String(e.numberValue).padStart(2, '0') : String(e.numberValue).slice(-1);
+      m.set(k, (m.get(k) || 0) + Math.abs(num(e.amount)));
+    }
+    const cells: Array<{ label: string; value: number }> = [];
+    for (let i = 1; i <= 100; i++) cells.push({ label: String(i), value: dara.get(i === 100 ? '00' : String(i).padStart(2, '0')) || 0 });
+    for (let d = 0; d <= 9; d++) cells.push({ label: String(d).repeat(3), value: bahar.get(String(d)) || 0 });
+    for (let d = 0; d <= 9; d++) cells.push({ label: String(d).repeat(4), value: andar.get(String(d)) || 0 });
+    const out: Array<typeof cells> = [];
+    for (let i = 0; i < cells.length; i += 5) out.push(cells.slice(i, i + 5));
+    return out;
+  }, [slip]);
+  return (
+    <Modal visible={!!slip} animationType="slide" onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: colors.canvas }}>
+        <BackHeader title={`${shiftName} JANTRI`} onBack={onClose} />
+        <ScrollView contentContainerStyle={{ paddingBottom: 8 }}>
+          {rows.map((r, i) => (
+            <View key={i} style={styles.jRow}>
+              {r.map((c) => (
+                <View key={c.label} style={styles.jCell}>
+                  <Text style={styles.jNum}>{c.label}</Text>
+                  <Text style={[styles.jVal, c.value !== 0 && styles.jValOn]} numberOfLines={1} adjustsFontSizeToFit>{c.value ? Math.round(c.value) : '-'}</Text>
+                </View>
+              ))}
+            </View>
+          ))}
+        </ScrollView>
+        <View style={[styles.footer, { paddingBottom: 14 + insets.bottom }]}>
+          <Text style={styles.footLabel}>TOTAL AMOUNT</Text>
+          <Text style={styles.footValue}>{Math.round(Math.abs(num(slip?.totalAmount)))}</Text>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -294,5 +350,10 @@ const styles = StyleSheet.create({
   saleCount: { width: 40, textAlign: 'right', color: colors.textMuted },
   toastWrap: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },
   toast: { backgroundColor: 'rgba(60,60,60,0.92)', color: colors.white, fontSize: 15, paddingHorizontal: 18, paddingVertical: 10, borderRadius: radius.pill, overflow: 'hidden' },
+  jRow: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: '#E2E8F0' },
+  jCell: { flex: 1, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', paddingHorizontal: 6, paddingVertical: 8, borderRightWidth: 1, borderRightColor: '#E2E8F0', backgroundColor: colors.surface, minHeight: 46 },
+  jNum: { fontSize: 14, color: '#666', alignSelf: 'flex-start' },
+  jVal: { fontSize: 13, color: '#666', marginLeft: 2, flexShrink: 1 },
+  jValOn: { fontSize: 17, color: '#E8642C', fontWeight: '500' },
   saleAmt: { width: 90, textAlign: 'right', fontWeight: '700', color: colors.navy },
 });

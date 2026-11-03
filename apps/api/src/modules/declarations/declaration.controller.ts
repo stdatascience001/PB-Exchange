@@ -7,8 +7,8 @@ export class DeclarationController {
   static async declare(req: Request, res: Response, next: NextFunction) {
     try {
       const shiftId = parseInt(req.params.shiftId as string, 10);
-      const { winningNumber } = req.body;
-      const result = await DeclarationService.declareResult(shiftId, winningNumber, req.user!);
+      const { winningNumber, cycleDate } = req.body;
+      const result = await DeclarationService.declareResult(shiftId, winningNumber, req.user!, cycleDate);
       return sendSuccess(res, result, 'Shift result declared successfully', 201);
     } catch (err) {
       next(err);

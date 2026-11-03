@@ -283,6 +283,34 @@ export class DeclarationSnapshotService {
     }
   }
 
+  // The cycle (shift day) each declaration was made for — not the day Declare was pressed: the
+  // snapshot's cycle_date written at declare time, else the backfill's rule below (the declared
+  // cycle with that number on/before the declare day, else the declare day itself). Live
+  // Prediction's result list shows it (MOHALI BAZAAR 27-10 declared on 29-10 -> 27-10) and
+  // UnDeclare reopens that cycle.
+  static async cycleDatesFor(declarationIds: number[]): Promise<Map<number, string>> {
+    const out = new Map<number, string>();
+    if (declarationIds.length === 0) return out;
+    await ensureTables();
+    const rows = await pgSql<Array<{ id: number; cycle_date: string }>>`
+      SELECT
+        d.id,
+        COALESCE(ds.cycle_date, (
+          SELECT c.cycle_date FROM shift_cycles c
+          WHERE c.shift_id = d.shift_id
+            AND c.declared_number = d.winning_number
+            AND c.status IN ('DECLARED', 'AUDITED')
+            AND c.cycle_date::date <= d.declared_at::date
+          ORDER BY c.cycle_date DESC LIMIT 1
+        ), d.declared_at::date::text) AS cycle_date
+      FROM declarations d
+      LEFT JOIN declaration_snapshots ds ON ds.declaration_id = d.id
+      WHERE d.id = ANY(${declarationIds})
+    `;
+    for (const r of rows) out.set(r.id, r.cycle_date);
+    return out;
+  }
+
   // Dashboard Declare Needed: declared cycles whose numbers no longer match what they were
   // declared on. A cheap change check (slips added/edited/deleted, or a party's ledger or TPC
   // link changed since the snapshot) picks candidates; only those are fully recomputed, and

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { apiRequest } from '../api/client.js';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, X } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { DateDMYInput } from '../components/DateDMYInput.js';
 
@@ -23,6 +23,21 @@ interface HvsRow {
   mobile: string;
   pnl: number;
   hpAmt: number;
+  vapsiAmt: number;
+  total: number;
+  closing: number;
+  tSettleAmt: number;
+}
+
+// Party Name popup: the parties under the clicked ledger as their HP Party
+// (GET /transactions/hvs-process/party), each with its HP-% and Vapsi-%
+interface HvsPartyRow {
+  partyId: number;
+  partyName: string;
+  pnl: number;
+  hpPct: number;
+  hpAmt: number;
+  vapsiPct: number;
   vapsiAmt: number;
   total: number;
   closing: number;
@@ -72,6 +87,15 @@ export const HvsProcessPage: React.FC<HvsProcessPageProps> = ({ onNavigate }) =>
   const [processing, setProcessing] = useState(false);
   // Only the latest Load Data may fill the table (Month / Agent switched while one is loading)
   const reqRef = useRef(0);
+  // the month the table was loaded for — the Party popup uses the same range
+  const loadedRangeRef = useRef<{ fromDate: string; toDate: string } | null>(null);
+
+  // Party Name popup
+  const [detailParty, setDetailParty] = useState<{ id: number; name: string } | null>(null);
+  const [detailRows, setDetailRows] = useState<HvsPartyRow[]>([]);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const detailReqRef = useRef(0);
+  const detailBackdropDownRef = useRef(false);
 
   // the loaded rows (the live page has no Party filter on top of them)
   const rows = allRows;
@@ -108,6 +132,7 @@ export const HvsProcessPage: React.FC<HvsProcessPageProps> = ({ onNavigate }) =>
       if (agentId) params.append('agentId', String(agentId));
       const res = await apiRequest<HvsRow[]>(`/transactions/hvs-process?${params.toString()}`);
       if (reqId !== reqRef.current) return;
+      loadedRangeRef.current = { fromDate, toDate };
       setRows(res.data || []);
       setChecked(new Set());
       setLoaded(true);
@@ -119,6 +144,63 @@ export const HvsProcessPage: React.FC<HvsProcessPageProps> = ({ onNavigate }) =>
     } finally {
       if (reqId === reqRef.current) setLoading(false);
     }
+  };
+
+  const openDetail = async (partyId: number, partyName: string) => {
+    const range = loadedRangeRef.current;
+    if (!range) return;
+    const reqId = ++detailReqRef.current;
+    setDetailParty({ id: partyId, name: partyName });
+    setDetailRows([]);
+    setDetailLoading(true);
+    try {
+      const params = new URLSearchParams({ ...range, partyId: String(partyId) });
+      const res = await apiRequest<{ rows: HvsPartyRow[] }>(`/transactions/hvs-process/party?${params.toString()}`);
+      if (reqId === detailReqRef.current) setDetailRows(res.data?.rows || []);
+    } catch (err: any) {
+      if (reqId === detailReqRef.current) notify('error', err?.message || 'Failed to load party detail', 'hvs-detail');
+    } finally {
+      if (reqId === detailReqRef.current) setDetailLoading(false);
+    }
+  };
+  const closeDetail = () => {
+    detailReqRef.current++;
+    setDetailParty(null);
+    setDetailLoading(false);
+  };
+
+  useEffect(() => {
+    if (!detailParty) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeDetail(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [detailParty]);
+
+  const detailTotals = useMemo(() => detailRows.reduce((t, r) => ({
+    pnl: t.pnl + r.pnl,
+    hpAmt: t.hpAmt + r.hpAmt,
+    vapsiAmt: t.vapsiAmt + r.vapsiAmt,
+    total: t.total + r.total,
+    closing: t.closing + r.closing,
+    tSettleAmt: t.tSettleAmt + r.tSettleAmt,
+  }), { pnl: 0, hpAmt: 0, vapsiAmt: 0, total: 0, closing: 0, tSettleAmt: 0 }), [detailRows]);
+
+  const handleExportDetail = () => {
+    if (!detailParty || detailRows.length === 0) {
+      alert('No records available to export.');
+      return;
+    }
+    const csvContent = 'data:text/csv;charset=utf-8,' +
+      ['SR.,PARTY,P&L,HP-%,HP-Amt,Vapsi-%,VAPSI-Amt,Total,Closing,T-Settle-Amt'].concat(
+        detailRows.map((r, i) => `${i + 1},"${r.partyName}",${fmt(r.pnl)},${r.hpPct},${fmt(r.hpAmt)},${r.vapsiPct},${fmt(r.vapsiAmt)},${fmt(r.total)},${fmt(r.closing)},${fmt(r.tSettleAmt)}`),
+        [`${detailRows.length},,${fmt(detailTotals.pnl)},,${fmt(detailTotals.hpAmt)},,${fmt(detailTotals.vapsiAmt)},${fmt(detailTotals.total)},${fmt(detailTotals.closing)},${fmt(detailTotals.tSettleAmt)}`]
+      ).join('\n');
+    const link = document.createElement('a');
+    link.setAttribute('href', encodeURI(csvContent));
+    link.setAttribute('download', `hvs_${detailParty.name.replace(/[^A-Za-z0-9]+/g, '_')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   // Footer sums (live: count, P&L, HP-Amt, Vapsi-Amt, Total, Closing, T-Settle-Amt)
@@ -271,7 +353,11 @@ export const HvsProcessPage: React.FC<HvsProcessPageProps> = ({ onNavigate }) =>
                     <td className={`${td} text-center`}>
                       <input type="checkbox" checked={checked.has(r.partyId)} onChange={() => toggleCheck(r.partyId)} />
                     </td>
-                    <td className={`${td} uppercase bg-[#f1f1f1]`}>{r.partyName}</td>
+                    <td className={`${td} uppercase bg-[#f1f1f1]`}>
+                      <button type="button" onClick={() => openDetail(r.partyId, r.partyName)} className="font-semibold uppercase text-left hover:text-[#1662c6] hover:underline" title="Show this party's HP parties">
+                        {r.partyName}
+                      </button>
+                    </td>
                     <td className={`${td} text-center uppercase`}>{r.agentName}</td>
                     <td className={`${td} text-center`}>{r.mobile}</td>
                     <td className={`${td} text-right`}>{fmt(r.pnl)}</td>
@@ -319,6 +405,92 @@ export const HvsProcessPage: React.FC<HvsProcessPageProps> = ({ onNavigate }) =>
           </button>
         </div>
       </div>
+
+      {/* Party Name popup (live "ZZ YUVRAJJ NEW HPT A/C"): the parties under it as HP Party */}
+      {detailParty && (
+        <div
+          onMouseDown={(e) => { detailBackdropDownRef.current = e.target === e.currentTarget; }}
+          onClick={(e) => {
+            if (detailBackdropDownRef.current && e.target === e.currentTarget) closeDetail();
+            detailBackdropDownRef.current = false;
+          }}
+          className="fixed inset-0 bg-black/60 flex items-center justify-center p-2 sm:p-4 z-50"
+        >
+          <div className="bg-white rounded-md shadow-2xl w-full max-w-[1140px] overflow-hidden max-h-[90vh] flex flex-col">
+            <div className="bg-[#24497e] text-white px-4 py-3 flex items-center justify-between">
+              <h2 className="text-base font-bold tracking-tight uppercase inline-flex items-center gap-2">
+                {detailParty.name}
+                {detailLoading && <span className="inline-block h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />}
+              </h2>
+              <button type="button" onClick={closeDetail} className="text-white hover:text-slate-200 p-0.5" title="Close (Esc)">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex justify-end px-6 pt-1.5 pb-0.5">
+              <button type="button" onClick={handleExportDetail} className="px-6 py-2 bg-[#0f9d7a] hover:bg-[#0c8567] text-white font-bold text-xs rounded-xs shadow-xs">
+                Excel
+              </button>
+            </div>
+            <div className="overflow-auto p-1">
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr className="bg-[#152847] text-white font-bold text-[12px] whitespace-nowrap">
+                    <th className={`${th} w-10 text-left`}>SR.</th>
+                    <th className={`${th} text-left`}>PARTY</th>
+                    <th className={`${th} text-right`}>P&amp;L</th>
+                    <th className={`${th} text-center`}>HP-%</th>
+                    <th className={`${th} text-center`}>HP-Amt</th>
+                    <th className={`${th} text-center`}>Vapsi-%</th>
+                    <th className={`${th} text-center`}>VAPSI-Amt</th>
+                    <th className={`${th} text-center`}>Total</th>
+                    <th className={`${th} text-center`}>Closing</th>
+                    <th className={`${th} text-center`}>T-Settle-Amt</th>
+                    <th className="py-2.5 px-3 w-14" />
+                  </tr>
+                </thead>
+                <tbody className="whitespace-nowrap">
+                  {detailLoading ? (
+                    <tr><td colSpan={11} className="py-10 text-center text-slate-400 font-medium">Loading...</td></tr>
+                  ) : detailRows.length === 0 ? (
+                    <tr><td colSpan={11} className="py-10 text-center text-slate-400 font-medium">Record not avaliable!</td></tr>
+                  ) : detailRows.map((r, i) => (
+                    <tr key={r.partyId} className={`border-b border-slate-200 ${i % 2 ? 'bg-[#f4f7fb]' : 'bg-white'}`}>
+                      <td className={`${td} text-center`}>{i + 1}</td>
+                      <td className={`${td} uppercase`}>{r.partyName}</td>
+                      <td className={`${td} text-right`}>{fmt(r.pnl)}</td>
+                      <td className={`${td} text-center`}>{fmt(r.hpPct)}</td>
+                      <td className={`${td} text-right`}>{fmt(r.hpAmt)}</td>
+                      <td className={`${td} text-center`}>{fmt(r.vapsiPct)}</td>
+                      <td className={`${td} text-right`}>{fmt(r.vapsiAmt)}</td>
+                      <td className={`${td} text-right`}>{fmt(r.total)}</td>
+                      <td className={`${td} text-right`}>{fmt(r.closing)}</td>
+                      <td className={`${td} text-center`}>{fmt(r.tSettleAmt)}</td>
+                      <td className="py-2 px-3" />
+                    </tr>
+                  ))}
+                </tbody>
+                {!detailLoading && detailRows.length > 0 && (
+                  <tfoot>
+                    <tr className="bg-[#152847] text-white font-bold text-[12px] whitespace-nowrap">
+                      <td className={`${th} text-center`}>Sr</td>
+                      <td className={th}>Party Name</td>
+                      <td className={`${th} text-right`}>{fmt(detailTotals.pnl)}</td>
+                      <td className={th}>HP-%</td>
+                      <td className={`${th} text-right`}>{fmt(detailTotals.hpAmt)}</td>
+                      <td className={th}>Vapsi-%</td>
+                      <td className={`${th} text-right`}>{fmt(detailTotals.vapsiAmt)}</td>
+                      <td className={`${th} text-right`}>{fmt(detailTotals.total)}</td>
+                      <td className={`${th} text-right`}>{fmt(detailTotals.closing)}</td>
+                      <td className={`${th} text-right`}>{fmt(detailTotals.tSettleAmt)}</td>
+                      <td className="py-2.5 px-3" />
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

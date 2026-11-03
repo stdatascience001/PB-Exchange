@@ -46,7 +46,13 @@ export const DeclareTransAscPage: React.FC<DeclareTransAscPageProps> = ({ shifts
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableShifts]);
   const [fromDate, setFromDate] = useState(todayInputDate());
+  // Live shows a single Date: the To date is kept (still sent to the API) but hidden, and
+  // follows the Date so the report covers that one day
   const [toDate, setToDate] = useState(todayInputDate());
+  const handleDateChange = (d: string) => {
+    setFromDate(d);
+    setToDate(d);
+  };
   const [minAmount, setMinAmount] = useState('');
   const [list, setList] = useState<EntryAscRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -73,8 +79,8 @@ export const DeclareTransAscPage: React.FC<DeclareTransAscPageProps> = ({ shifts
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shiftId, fromDate, toDate]);
 
-  // Live Enter flow: the page opens on Shift; Enter walks Shift -> From DD -> MM -> YYYY ->
-  // To DD -> MM -> YYYY -> Amount -> Search, and Enter on Search searches (spinner while it runs)
+  // Live Enter flow: the page opens on Shift; Enter walks Shift -> Date DD -> MM -> YYYY ->
+  // Amount -> Search, and Enter on Search searches (spinner while it runs)
   const focusDasc = (id: string) => {
     const el = document.getElementById(id) as HTMLInputElement | null;
     el?.focus();
@@ -114,6 +120,7 @@ export const DeclareTransAscPage: React.FC<DeclareTransAscPageProps> = ({ shifts
         <form onSubmit={handleSearch} className="p-2 sm:p-2.5 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white">
           <div className="flex flex-wrap items-center gap-2.5">
             <span className="font-bold text-sm text-slate-900 tracking-tight mr-2">{PAGE_TITLE}</span>
+            <label htmlFor="dasc-shift" className="font-semibold text-[13px] text-slate-700 ml-4 mr-1">Shift</label>
             <select
               id="dasc-shift"
               value={shiftId}
@@ -123,9 +130,10 @@ export const DeclareTransAscPage: React.FC<DeclareTransAscPageProps> = ({ shifts
             >
               {availableShifts.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
-            {/* DD / MM / YYYY as live; still sends YYYY-MM-DD */}
-            <DateDMYInput value={fromDate} onChange={setFromDate} idPrefix="dasc-from" onEnterFromYear={() => focusDasc('dasc-to-dd')} />
-            <DateDMYInput value={toDate} onChange={setToDate} idPrefix="dasc-to" onEnterFromYear={() => focusDasc('dasc-amount')} />
+            {/* DD / MM / YYYY as live; still sends YYYY-MM-DD. One Date as live — To stays hidden */}
+            <span className="font-semibold text-[13px] text-slate-700 ml-4 mr-1">Date</span>
+            <DateDMYInput value={fromDate} onChange={handleDateChange} idPrefix="dasc-from" onEnterFromYear={() => focusDasc('dasc-amount')} />
+            <label htmlFor="dasc-amount" className="font-semibold text-[13px] text-slate-700 ml-4 mr-1">Amount</label>
             <input
               id="dasc-amount"
               type="number"
@@ -139,7 +147,7 @@ export const DeclareTransAscPage: React.FC<DeclareTransAscPageProps> = ({ shifts
               id="dasc-search-btn"
               type="submit"
               disabled={loading}
-              className="px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5"
+              className="ml-4 px-5 py-1 bg-[#00897b] hover:bg-[#00796b] active:bg-[#00695c] text-white font-bold text-xs rounded shadow-xs transition-colors focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-80 inline-flex items-center gap-1.5"
             >
               Search
               {/* Spinner while the report loads, as on live */}

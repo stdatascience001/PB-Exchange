@@ -70,6 +70,8 @@ const fmt = (n: number) => String(Math.round(n || 0));
 
 const TH = 'py-2.5 px-3 border-r border-[#223b63]';
 const TD = 'py-2 px-3 font-semibold text-slate-700 border-r border-slate-200';
+// Name popup: a slip with more than 20 minutes of Free Time is shown in red (live 00:38:26)
+const FREE_TIME_ALERT_SEC = 20 * 60;
 // Live column order: Sr. | Name | Mobile | Address | User Type | User | Free Count | Free Time |
 // Time Taken | T-Time | T-Count | T-Amount
 const PROD_COLS = [
@@ -320,7 +322,13 @@ export const ProductivityReportPage: React.FC<ProductivityReportPageProps> = ({ 
                   ) : detail.length === 0 ? (
                     <tr><td colSpan={11} className="py-10 text-center text-slate-400">No slips found.</td></tr>
                   ) : detail.map((d, i) => (
-                    <tr key={d.transactionId} className="even:bg-slate-50/60 [&>td]:border-b [&>td]:border-slate-200">
+                    // Live: a slip whose Free Time is over 20 minutes shows in red (background #f03, white text)
+                    <tr
+                      key={d.transactionId}
+                      className={d.freeTime > FREE_TIME_ALERT_SEC
+                        ? 'bg-[#ff0033] [&>td]:!text-white [&>td]:border-b [&>td]:border-[#ff4d6d]'
+                        : 'even:bg-slate-50/60 [&>td]:border-b [&>td]:border-slate-200'}
+                    >
                       <td className={TD}>{i + 1}</td>
                       <td className={`${TD} uppercase`}>{d.partyName}</td>
                       <td className={`${TD} text-center uppercase`}>{d.shiftName}</td>

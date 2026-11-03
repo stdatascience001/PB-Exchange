@@ -37,7 +37,11 @@ export async function apiRequest<T>(
       }
       // This session was replaced by a newer login of the same account on the same IP:
       // the app signs this browser out.
-      if (error.code === 'SESSION_REPLACED' && typeof window !== 'undefined') {
+      // SESSION_EXPIRED: the 8-hour login has run out, or the account was made inactive.
+      // UNAUTHORIZED on a request that carried a token: the token itself is no longer accepted
+      // (bad signature / malformed), so that login is over too.
+      if ((error.code === 'SESSION_REPLACED' || error.code === 'SESSION_EXPIRED' || (error.code === 'UNAUTHORIZED' && token))
+        && typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('pb-session-replaced', { detail: error.message }));
       }
       if (error.code === 'IP_BLOCKED' && typeof window !== 'undefined') {

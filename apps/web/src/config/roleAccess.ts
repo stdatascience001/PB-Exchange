@@ -98,10 +98,12 @@ export function isPageAllowedForDataEntryOperator(pageKey: string): boolean {
   return DATA_ENTRY_OPERATOR_ALLOWED_PAGES.includes(pageKey);
 }
 
-// TALLY OPERATOR's live nav: Dashboard + a 3-item Transactions menu + a 1-item Reports menu.
+// TALLY OPERATOR's live nav: Dashboard + a 1-item Transactions menu + a 1-item Reports menu.
 export const TALLY_OPERATOR_ALLOWED_TOP_MENUS: string[] = ['dashboard', 'transactions', 'reports'];
 
-export const TALLY_OPERATOR_TRANSACTIONS_PAGES: string[] = ['transaction-list', 'declare-transactions', 'declare-trans-audit'];
+// Live Transactions and Declare Transactions are hidden from TALLY OPERATOR (menu + route
+// guard); only Declare Trans-Audit stays under Transactions.
+export const TALLY_OPERATOR_TRANSACTIONS_PAGES: string[] = ['declare-trans-audit'];
 
 export const TALLY_OPERATOR_REPORTS_PAGES: string[] = ['daily-report'];
 

@@ -46,6 +46,8 @@ interface DailyReportData {
   date?: string;
   // false: the shift's result isn't declared for that day (no rows)
   isDeclared?: boolean;
+  // the result declared for the picked shift and date ("11"), null when none
+  declaredNumber?: string | null;
   partyCount: number;
   profit: number;
   rows: DailyReportRow[];
@@ -232,7 +234,7 @@ export const DailyReportPage: React.FC<DailyReportPageProps> = ({ shifts = [], o
             {data && (
               <>
                 <span className="px-2.5 py-1 bg-slate-100 border border-slate-300 rounded text-xs font-bold text-slate-700">
-                  [K = {data.partyCount}]
+                  [K = {data.declaredNumber || '-'}]
                 </span>
                 <span className={`text-xs font-bold ${data.profit >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
                   Profit: {fmt(data.profit)}

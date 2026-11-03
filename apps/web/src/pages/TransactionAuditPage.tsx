@@ -8,6 +8,7 @@ import { TransactionItem } from './TransactionListPage.js';
 import { JantriViewModal } from '../components/JantriViewModal.js';
 import { MistakeActionModal } from '../components/MistakeActionModal.js';
 import { DateDMYInput } from '../components/DateDMYInput.js';
+import { isTallyOperatorRole } from '../config/roleAccess.js';
 
 interface TransactionAuditPageProps {
   shifts?: ShiftDto[];
@@ -52,13 +53,15 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
     const activeOnly = shifts.filter(s => s.isActive !== false);
     const base = activeOnly.length > 0 ? activeOnly : shifts;
     if (isDeclareMode) {
+      // TALLY OPERATOR (live): every active shift's slips for the Date, declared or not
+      if (isTallyOperatorRole(user?.roleName)) return base;
       // Declare Trans-Audit: declared shifts only — never falls back to undeclared ones
       return base.filter(s => !!s.declaredNumber || s.status === 'DECLARED' || s.status === 'AUDITED');
     } else {
       const live = base.filter(s => !s.declaredNumber && s.status !== 'DECLARED' && s.status !== 'AUDITED');
       return live.length > 0 ? live : base;
     }
-  }, [shifts, isDeclareMode]);
+  }, [shifts, isDeclareMode, user?.roleName]);
 
   // Both pages open on "-- ALL SHIFT --" (live). Declare Trans-Audit then lists every
   // declared shift's slips for its Date; a chosen shift narrows it to that one.

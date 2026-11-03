@@ -1,7 +1,9 @@
 import { db, sql as pgSql, staff, staffAssets, users, roles } from '@pb/database';
 import { eq, asc, desc, sql } from 'drizzle-orm';
-import { AppError } from '../../common/errors.js';
-import { hashPassword } from '../auth/auth.service.js';
+import { AppError, ForbiddenError } from '../../common/errors.js';
+import { hashPassword, isStrongPassword, WEAK_PASSWORD_MESSAGE } from '../auth/auth.service.js';
+import { forgetAccountStatus } from '../auth/account-status.js';
+import { UserSession } from '@pb/types';
 import { clearRedirectForUsernames } from '../../middleware/inactive-redirect.js';
 
 // Staff Salary/Assets: the Salary / Assets status a double-click sets (NULL = follow the data —
@@ -24,7 +26,50 @@ function ensureStaffFlagColumns(): Promise<void> {
   return staffFlagsReady;
 }
 
+// Who may manage whom: an account can only create / change staff whose role is not above its
+// own — ADMIN can't touch SUPER ADMIN / DEVELOPER accounts (or make one), SUPER ADMIN can't
+// touch DEVELOPER ones. Every other role counts as the same, lowest level.
+const ROLE_RANK: Record<string, number> = { DEVELOPER: 3, 'SUPER ADMIN': 2 };
+const normRole = (role?: string | null) => String(role || '').toUpperCase().replace(/_/g, ' ').trim();
+const roleRank = (role?: string | null) => ROLE_RANK[normRole(role)] || 1;
+
+// A staff row as sent back to the apps: never with its stored password
+export function withoutPassword<T>(row: T): T {
+  if (!row || typeof row !== 'object') return row;
+  const { password: _password, ...rest } = row as any;
+  return rest as T;
+}
+
 export class StaffService {
+  // Refuses when `actor` may not manage the staff member `staffId` (its staff role, or its
+  // login's role), the existing login `username`, or may not give the role `newRole`.
+  static async assertCanManage(actor: UserSession | undefined, opts: { staffId?: number; newRole?: string; username?: string }) {
+    const actorRank = roleRank(actor?.roleName);
+    if (opts.newRole && roleRank(opts.newRole) > actorRank) {
+      throw new ForbiddenError(`You are not allowed to give the ${normRole(opts.newRole)} role`);
+    }
+    const targetRoles: string[] = [];
+    if (opts.staffId) {
+      const rows = await pgSql<Array<{ role: string | null; designation: string | null; user_role: string | null }>>`
+        SELECT s.role, s.designation, r.name AS user_role
+        FROM staff s
+        LEFT JOIN users u ON u.id = s.user_id
+        LEFT JOIN roles r ON r.id = u.role_id
+        WHERE s.id = ${opts.staffId}`;
+      for (const r of rows) targetRoles.push(r.role || '', r.designation || '', r.user_role || '');
+    }
+    if (opts.username) {
+      const rows = await pgSql<Array<{ user_role: string | null }>>`
+        SELECT r.name AS user_role FROM users u LEFT JOIN roles r ON r.id = u.role_id
+        WHERE LOWER(u.username) = LOWER(${opts.username})`;
+      for (const r of rows) targetRoles.push(r.user_role || '');
+    }
+    const top = targetRoles.reduce((max, role) => Math.max(max, roleRank(role)), 1);
+    if (top > actorRank) {
+      throw new ForbiddenError('You are not allowed to change this account');
+    }
+  }
+
   private static async getOrCreateRoleId(roleName: string): Promise<number> {
     const cleanRole = (roleName || 'ADMIN').trim().toUpperCase();
     const [role] = await db.select().from(roles).where(
@@ -132,8 +177,11 @@ export class StaffService {
       ? data.username.replace(/\s+/g, '')
       : data.fullName.trim();
 
-    const plainPassword = data.password && data.password.trim() ? data.password.trim() : '123456';
-    const pHash = hashPassword(plainPassword);
+    // A new staff member needs its own strong password (both apps already ask for one)
+    const plainPassword = data.password ? data.password.trim() : '';
+    if (!plainPassword) throw new AppError('Please enter a password', 400);
+    if (!isStrongPassword(plainPassword)) throw new AppError(WEAK_PASSWORD_MESSAGE, 400);
+    const pHash = await hashPassword(plainPassword);
     const active = data.isActive !== undefined ? data.isActive : true;
 
     // Check if user already exists in `users` table
@@ -141,6 +189,14 @@ export class StaffService {
     const [existingUser] = await db.select().from(users).where(
       sql`LOWER(${users.username}) = LOWER(${targetUsername})`
     );
+    // A login that already belongs to a staff member is not taken over by a new one (that used
+    // to reset its password and role). A login with no staff row left is re-used as before.
+    if (existingUser) {
+      const [linked] = await db.select({ id: staff.id }).from(staff).where(
+        sql`${staff.userId} = ${existingUser.id} OR LOWER(${staff.username}) = LOWER(${targetUsername})`
+      );
+      if (linked) throw new AppError(`Username "${targetUsername}" already exists`, 400);
+    }
 
     if (existingUser) {
       await db.update(users).set({
@@ -158,6 +214,7 @@ export class StaffService {
       }).returning();
       userId = newUser.id;
     }
+    forgetAccountStatus(userId);
 
     const [created] = await db.insert(staff).values({
       userId,
@@ -165,7 +222,8 @@ export class StaffService {
       role: roleStr.trim().toUpperCase(),
       designation: roleStr.trim().toUpperCase(),
       username: targetUsername,
-      password: plainPassword,
+      // the readable password is not kept — only its hash in users
+      password: null,
       wMode: data.wMode ? data.wMode.trim().toUpperCase() : 'NONE',
       mobile: data.mobile ? data.mobile.trim() : '',
       address: data.address ? data.address.trim() : '',
@@ -209,8 +267,10 @@ export class StaffService {
           // a stored "NONE" is the no-username placeholder, never a real login name
           : ((existingStaff.username && existingStaff.username.toUpperCase() !== 'NONE' ? existingStaff.username : existingStaff.fullName) || 'STAFF_USER'));
 
-    const plainPassword = data.password && data.password.trim() ? data.password.trim() : (existingStaff.password || '123456');
-    const pHash = hashPassword(plainPassword);
+    // A new password must be strong. No password sent = the login keeps the one it has.
+    const newPassword = data.password && data.password.trim() ? data.password.trim() : '';
+    if (newPassword && !isStrongPassword(newPassword)) throw new AppError(WEAK_PASSWORD_MESSAGE, 400);
+    const pHash = newPassword ? await hashPassword(newPassword) : undefined;
     const active = data.isActive !== undefined ? data.isActive : existingStaff.isActive;
 
     // Sync or create user in `users` table.
@@ -235,27 +295,33 @@ export class StaffService {
     if (userRecord) {
       await db.update(users).set({
         username: targetUsername,
-        passwordHash: pHash,
+        ...(pHash ? { passwordHash: pHash } : {}),
         roleId,
         isActive: active,
       }).where(eq(users.id, userRecord.id));
       userId = userRecord.id;
     } else {
+      // No login row yet: it needs a password — the one sent, else the one this staff row
+      // still holds from older data, as before
+      const fallback = existingStaff.password ? existingStaff.password.trim() : '';
+      if (!pHash && !fallback) throw new AppError('Please enter a password', 400);
       const [newUser] = await db.insert(users).values({
         username: targetUsername,
-        passwordHash: pHash,
+        passwordHash: pHash || (await hashPassword(fallback)),
         roleId,
         isActive: active,
       }).returning();
       userId = newUser.id;
     }
+    forgetAccountStatus(userId);
 
     const toUpdate: Record<string, any> = {
       userId,
       role: roleStr.trim().toUpperCase(),
       designation: roleStr.trim().toUpperCase(),
       username: targetUsername,
-      password: plainPassword,
+      // the readable password is not kept — only its hash in users
+      password: null,
       updatedAt: new Date(),
     };
     if (data.fullName !== undefined) {
@@ -316,6 +382,9 @@ export class StaffService {
         .where(sql`LOWER(${users.username}) = LOWER(${existing.username})`)
         .catch(() => {});
     }
+
+    // Made inactive: its open logins stop working on their next request
+    forgetAccountStatus();
 
     // Made Active again: the IPs it was redirected on can open the site again
     if (newActive) {

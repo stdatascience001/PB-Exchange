@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { LedgerDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, X } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { PartyPicker } from '../components/PartyPicker.js';
 import { DateDMYInput } from '../components/DateDMYInput.js';
+import { PartyJantriModal } from '../components/PartyJantriModal.js';
 
 interface SettlingReportPageProps {
   onNavigate?: (page: string) => void;
@@ -26,6 +27,24 @@ interface SettlingRow {
   pnl: number;
   payment: number;
   balance: number;
+}
+
+// Date popup: the day split by shift (GET /transactions/settling-report/day)
+interface SettlingDayShift {
+  shiftId: number;
+  shiftName: string;
+  rate: string;
+  sHissa: number;
+  totalSale: number;
+  dSale: number;
+  aSale: number;
+  comm: number;
+  oDara: number;
+  oAkhar: number;
+  tpc: number;
+  hissa: number;
+  debit: number;
+  credit: number;
 }
 
 interface SettlingData {
@@ -78,6 +97,14 @@ export const SettlingReportPage: React.FC<SettlingReportPageProps> = ({ onNaviga
   const payFormRef = useRef<HTMLFormElement>(null);
   const reportPartyRef = useRef<HTMLInputElement>(null);
   const payPartyRef = useRef<HTMLInputElement>(null);
+
+  // Date popup ("ABDUL | 25-10-2026") and, from its Party column, that shift's jantri
+  const [dayDate, setDayDate] = useState<string | null>(null);
+  const [dayRows, setDayRows] = useState<SettlingDayShift[]>([]);
+  const [dayLoading, setDayLoading] = useState(false);
+  const [dayShift, setDayShift] = useState<SettlingDayShift | null>(null);
+  const dayReqRef = useRef(0);
+  const dayBackdropDownRef = useRef(false);
 
   useEffect(() => {
     (async () => {
@@ -188,6 +215,39 @@ export const SettlingReportPage: React.FC<SettlingReportPageProps> = ({ onNaviga
       setSaving(false);
     }
   };
+
+  const openDay = async (date: string) => {
+    if (!data) return;
+    const reqId = ++dayReqRef.current;
+    setDayDate(date);
+    setDayRows([]);
+    setDayShift(null);
+    setDayLoading(true);
+    try {
+      const params = new URLSearchParams({ partyId: String(data.partyId), date });
+      const res = await apiRequest<{ rows: SettlingDayShift[] }>(`/transactions/settling-report/day?${params.toString()}`);
+      if (reqId === dayReqRef.current) setDayRows(res.data?.rows || []);
+    } catch (err: any) {
+      if (reqId === dayReqRef.current) notify('error', err.message || 'Failed to load the day detail', 'settling-day');
+    } finally {
+      if (reqId === dayReqRef.current) setDayLoading(false);
+    }
+  };
+  const closeDay = () => {
+    dayReqRef.current++;
+    setDayDate(null);
+    setDayShift(null);
+    setDayLoading(false);
+  };
+
+  // Esc closes the date popup; with a shift's jantri open on top, that one closes first.
+  useEffect(() => {
+    if (!dayDate || dayShift) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeDay(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dayDate, dayShift]);
 
   // Live keyboard flow: the page opens with the cursor on From's day; Enter walks From DD ->
   // MM -> YYYY -> To DD -> MM -> YYYY -> Party, where typing lists the parties and Enter picks
@@ -307,7 +367,11 @@ export const SettlingReportPage: React.FC<SettlingReportPageProps> = ({ onNaviga
               ) : (
                 data.rows.map(r => (
                   <tr key={r.date} className="hover:bg-slate-50 transition-colors">
-                    <td className="py-2 px-3 font-semibold text-slate-700 border-r border-slate-200 bg-[#f1f1f1]">{r.date.split('-').reverse().join('-')}</td>
+                    <td className="py-2 px-3 font-semibold text-slate-700 border-r border-slate-200 bg-[#f1f1f1]">
+                      <button type="button" onClick={() => openDay(r.date)} className="font-semibold hover:text-[#1662c6] hover:underline" title="Show this day's shifts">
+                        {r.date.split('-').reverse().join('-')}
+                      </button>
+                    </td>
                     <td className={td}>{fmt(r.opBal)}</td>
                     <td className={td}>{fmt(r.totalSale)}</td>
                     <td className={td}>{fmt(r.dSale)}</td>
@@ -389,6 +453,108 @@ export const SettlingReportPage: React.FC<SettlingReportPageProps> = ({ onNaviga
           </button>
         </form>
       </div>
+
+      {/* Date popup (live "ABDUL | 25-10-2026"): one row per shift the party played that day */}
+      {dayDate && data && (() => {
+        const sum = (k: keyof SettlingDayShift) => dayRows.reduce((a, r) => a + (r[k] as number), 0);
+        const dh = 'py-2.5 px-3 border-r border-[#223b63] text-[12px] font-bold whitespace-nowrap';
+        const dd = 'py-2.5 px-3 border-r border-slate-200 text-right font-semibold text-slate-700';
+        const amt = (n: number) => (n ? fmt(n) : '');
+        return (
+          <div
+            onMouseDown={(e) => { dayBackdropDownRef.current = e.target === e.currentTarget; }}
+            onClick={(e) => {
+              if (dayBackdropDownRef.current && e.target === e.currentTarget) closeDay();
+              dayBackdropDownRef.current = false;
+            }}
+            className="fixed inset-0 bg-black/60 flex items-center justify-center p-2 sm:p-4 z-50"
+          >
+            <div className="bg-white rounded-md shadow-2xl w-full max-w-[1140px] overflow-hidden max-h-[90vh] flex flex-col">
+              <div className="bg-[#24497e] text-white px-4 py-3 flex items-center justify-between">
+                <h2 className="text-base font-bold tracking-tight uppercase">{data.partyName} | {dayDate.split('-').reverse().join('-')}</h2>
+                <button type="button" onClick={closeDay} className="text-white hover:text-slate-200 p-0.5" title="Close (Esc)">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="overflow-auto p-1">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-[#152847] text-white">
+                      <th className={`${dh} text-left w-10`}>Sr.</th>
+                      <th className={`${dh} text-left`}>Party</th>
+                      <th className={`${dh} text-center`}>Rate</th>
+                      <th className={`${dh} text-center`}>S-Hissa</th>
+                      <th className={`${dh} text-center`}>T-Sale</th>
+                      <th className={`${dh} text-center`}>D-Sale</th>
+                      <th className={`${dh} text-center`}>A-Sale</th>
+                      <th className={`${dh} text-center`}>Comm</th>
+                      <th className={`${dh} text-center`}>O-Dara</th>
+                      <th className={`${dh} text-center`}>O-Akhar</th>
+                      <th className={`${dh} text-center`}>TPC</th>
+                      <th className={`${dh} text-center`}>Hissa</th>
+                      <th className={`${dh} text-center`}>Debit</th>
+                      <th className={`${dh} text-center !border-r-0`}>Credit</th>
+                    </tr>
+                  </thead>
+                  <tbody className="whitespace-nowrap">
+                    {dayLoading ? (
+                      <tr><td colSpan={14} className="py-10 text-center text-slate-400 font-medium">Loading...</td></tr>
+                    ) : dayRows.length === 0 ? (
+                      <tr><td colSpan={14} className="py-10 text-center text-slate-400 font-medium">Record not avaliable!</td></tr>
+                    ) : dayRows.map((r, i) => (
+                      <tr key={r.shiftId} className={`border-b border-slate-200 ${i % 2 ? 'bg-[#f4f7fb]' : 'bg-white'}`}>
+                        <td className="py-2.5 px-3 border-r border-slate-200 font-semibold text-slate-700">{i + 1}</td>
+                        <td className="py-2.5 px-3 border-r border-slate-200 font-semibold text-slate-700">
+                          <button type="button" onClick={() => setDayShift(r)} className="font-semibold hover:text-[#1662c6] hover:underline uppercase" title="Show this shift's jantri">
+                            {r.shiftName}
+                          </button>
+                        </td>
+                        <td className={`${dd} !text-center`}>{r.rate}</td>
+                        <td className={`${dd} !text-center`}>{fmt(r.sHissa)}</td>
+                        <td className={dd}>{fmt(r.totalSale)}</td>
+                        <td className={dd}>{fmt(r.dSale)}</td>
+                        <td className={dd}>{fmt(r.aSale)}</td>
+                        <td className={dd}>{fmt(r.comm)}</td>
+                        <td className={dd}>{fmt(r.oDara)}</td>
+                        <td className={dd}>{fmt(r.oAkhar)}</td>
+                        <td className={dd}>{fmt(r.tpc)}</td>
+                        <td className={dd}>{fmt(r.hissa)}</td>
+                        <td className={dd}>{amt(r.debit)}</td>
+                        <td className={`${dd} !border-r-0`}>{amt(r.credit)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  {!dayLoading && dayRows.length > 0 && (
+                    <tfoot>
+                      <tr className="bg-[#152847] text-white font-bold whitespace-nowrap">
+                        <td className="py-2.5 px-3 border-r border-[#223b63]">{dayRows.length}</td>
+                        <td className="py-2.5 px-3 border-r border-[#223b63]">Master Total</td>
+                        <td className="py-2.5 px-3 border-r border-[#223b63] text-center">Rate</td>
+                        <td className="py-2.5 px-3 border-r border-[#223b63] text-center">S-Hissa</td>
+                        {(['totalSale', 'dSale', 'aSale', 'comm', 'oDara', 'oAkhar', 'tpc', 'hissa', 'debit'] as const).map(k => (
+                          <td key={k} className="py-2.5 px-3 border-r border-[#223b63] text-right">{fmt(sum(k))}</td>
+                        ))}
+                        <td className="py-2.5 px-3 text-right">{fmt(sum('credit'))}</td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Party (shift) in the date popup -> "ABDUL | DELHI BAZAAR { K-67 }": the party's jantri for that shift + day */}
+      <PartyJantriModal
+        open={!!dayShift && !!dayDate && !!data}
+        onClose={() => setDayShift(null)}
+        shiftId={dayShift ? String(dayShift.shiftId) : ''}
+        date={dayDate || ''}
+        partyId={data?.partyId || 0}
+        partyName={data?.partyName || ''}
+        title={dayShift && data ? `${data.partyName} | ${dayShift.shiftName}` : undefined}
+      />
     </div>
   );
 };

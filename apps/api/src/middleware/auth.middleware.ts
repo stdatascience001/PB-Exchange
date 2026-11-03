@@ -4,6 +4,8 @@ import { env } from '../config/env.js';
 import { UnauthorizedError, ForbiddenError, AppError } from '../common/errors.js';
 import { isSessionActive, hasNewerSessionOnIp, SESSION_REPLACED_MESSAGE } from '../modules/auth/session-store.js';
 import { extractClientIp } from './ip-block.middleware.js';
+import { assertRoleMayCall } from './role-policy.js';
+import { getAccountStatus } from '../modules/auth/account-status.js';
 import { UserSession, SystemRole } from '@pb/types';
 
 // Extend Express Request
@@ -25,6 +27,44 @@ async function sessionReplaced(req: Request, decoded: UserSession & { sid?: stri
   return hasNewerSessionOnIp(extractClientIp(req), decoded.userId);
 }
 
+// Token checks shared by authenticate() and authenticateSSE(): signature + expiry (an expired
+// login answers SESSION_EXPIRED so the apps sign out and say why), the one-session-per-IP rule,
+// the account as it is now in the database (inactive / deleted → signed out; the role in force
+// is the current one, not the one the token was issued with), then the role's API access
+// (role-policy.ts — the same pages the website shows that role).
+async function acceptToken(req: Request, token: string): Promise<AppError | null> {
+  let decoded: UserSession & { sid?: string };
+  try {
+    decoded = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as UserSession & { sid?: string };
+  } catch (err) {
+    if (err instanceof jwt.TokenExpiredError) {
+      return new AppError(SESSION_EXPIRED_MESSAGE, 401, 'SESSION_EXPIRED');
+    }
+    return new UnauthorizedError('Invalid or expired token');
+  }
+  if (await sessionReplaced(req, decoded)) {
+    return new AppError(SESSION_REPLACED_MESSAGE, 401, 'SESSION_REPLACED');
+  }
+  const account = await getAccountStatus(decoded.userId);
+  if (account && (!account.exists || !account.isActive)) {
+    return new AppError('Your account is inactive. Please contact the administrator.', 401, 'SESSION_EXPIRED');
+  }
+  req.user = {
+    userId: decoded.userId,
+    username: decoded.username,
+    roleId: account?.roleId ?? decoded.roleId,
+    roleName: account?.roleName ?? decoded.roleName,
+  };
+  try {
+    assertRoleMayCall(req);
+  } catch (err) {
+    return err as AppError;
+  }
+  return null;
+}
+
+export const SESSION_EXPIRED_MESSAGE = 'Your login session has expired. Please log in again.';
+
 export async function authenticate(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -32,16 +72,8 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
   }
 
   const token = authHeader.split(' ')[1];
-  let decoded: UserSession & { sid?: string };
-  try {
-    decoded = jwt.verify(token, env.JWT_SECRET) as UserSession & { sid?: string };
-  } catch (err) {
-    return next(new UnauthorizedError('Invalid or expired token'));
-  }
-  if (await sessionReplaced(req, decoded)) {
-    return next(new AppError(SESSION_REPLACED_MESSAGE, 401, 'SESSION_REPLACED'));
-  }
-  req.user = decoded;
+  const error = await acceptToken(req, token);
+  if (error) return next(error);
   next();
 }
 
@@ -58,16 +90,8 @@ export async function authenticateSSE(req: Request, res: Response, next: NextFun
     return next(new UnauthorizedError('Missing token'));
   }
 
-  let decoded: UserSession & { sid?: string };
-  try {
-    decoded = jwt.verify(token, env.JWT_SECRET) as UserSession & { sid?: string };
-  } catch (err) {
-    return next(new UnauthorizedError('Invalid or expired token'));
-  }
-  if (await sessionReplaced(req, decoded)) {
-    return next(new AppError(SESSION_REPLACED_MESSAGE, 401, 'SESSION_REPLACED'));
-  }
-  req.user = decoded;
+  const error = await acceptToken(req, token);
+  if (error) return next(error);
   next();
 }
 

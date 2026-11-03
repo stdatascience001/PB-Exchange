@@ -19,12 +19,27 @@ interface PartyGridData {
   haruf: { digit: string; andarAmount: number; baharAmount: number }[];
 }
 
+// Last-Win popup row: a declaration this party won, newest first (GET
+// /jantri/:shiftId/prediction/last-win/:partyId)
+interface LastWinRow {
+  date: string; // YYYY-MM-DD (the cycle the result was declared for)
+  number: string;
+  sale: number;
+  payout: number;
+  profit: number;
+}
+
 interface DeclarationHistoryItem {
   id: number;
   shiftId: number;
   winningNumber: string;
   declaredAt: string;
+  // YYYY-MM-DD: the shift day the result was declared for (declaredAt is when Declare was pressed)
+  cycleDate?: string;
 }
+
+// The shift day a declared result belongs to
+const rowCycleDate = (row: DeclarationHistoryItem) => row.cycleDate || row.declaredAt.slice(0, 10);
 
 const todayIso = () => {
   const d = new Date();
@@ -84,6 +99,10 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
   const [gridPopupTitle, setGridPopupTitle] = useState<string | null>(null);
   const [partyGrid, setPartyGrid] = useState<PartyGridData | null>(null);
   const [partyGridLoading, setPartyGridLoading] = useState(false);
+  // Last-Win popup (live): the badge's party name as the title, and its winning days
+  const [lastWinParty, setLastWinParty] = useState<string | null>(null);
+  const [lastWinRows, setLastWinRows] = useState<LastWinRow[]>([]);
+  const [lastWinLoading, setLastWinLoading] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const selectedShift = shifts.find(s => String(s.id) === shiftId);
@@ -210,6 +229,34 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
       setPartyGridLoading(false);
     }
   };
+
+  // Last-Win badge click: that party's winning days in this shift (date + P&L), as live
+  const openLastWin = async (partyId: number, partyName: string) => {
+    if (!shiftId) return;
+    setLastWinParty(partyName);
+    setLastWinRows([]);
+    setLastWinLoading(true);
+    try {
+      const res = await apiRequest<LastWinRow[]>(`/jantri/${shiftId}/prediction/last-win/${partyId}`);
+      setLastWinRows(res.data || []);
+    } catch (err: any) {
+      console.warn('Failed to load last-win days:', err);
+      toast.error(err?.message || 'Failed to load last-win details');
+    } finally {
+      setLastWinLoading(false);
+    }
+  };
+  const closeLastWin = () => {
+    setLastWinParty(null);
+    setLastWinRows([]);
+  };
+  // Esc closes the Last-Win popup, the same as its X / a click outside
+  useEffect(() => {
+    if (!lastWinParty) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeLastWin(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lastWinParty]);
 
   const closePartyGrid = () => {
     setGridPopupTitle(null);
@@ -357,7 +404,9 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
     return parseInt(padded, 10) >= 0 && parseInt(padded, 10) <= 99 ? padded : null;
   };
 
-  const declareNumber = async (raw: string) => {
+  // cycleDate: the shift day to declare — the Date on screen, so an old date's result lands on
+  // that date's cycle and not on the shift's current open day
+  const declareNumber = async (raw: string, cycleDate: string) => {
     const padded = validateNumber(raw);
     if (!padded) {
       alert('Enter a valid winning number between 00 and 99.');
@@ -365,7 +414,7 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
     }
     await apiRequest(`/declarations/${shiftId}`, {
       method: 'POST',
-      body: JSON.stringify({ winningNumber: padded }),
+      body: JSON.stringify({ winningNumber: padded, cycleDate }),
     });
     return true;
   };
@@ -376,9 +425,9 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
       return;
     }
     if (!declareInput.trim()) return;
-    if (!window.confirm(`Declare winning number "${declareInput}" for ${selectedShift?.name}?`)) return;
+    if (!window.confirm(`Declare winning number "${declareInput}" for ${selectedShift?.name} (${formatDateOnly(dateStr)})?`)) return;
     try {
-      if (!(await declareNumber(declareInput))) return;
+      if (!(await declareNumber(declareInput, dateStr))) return;
       alert('Result declared successfully.');
       setDeclareInput('');
       fetchHistory(shiftId);
@@ -405,7 +454,7 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
         method: 'POST',
         body: JSON.stringify({ declarationId: row.id }),
       });
-      await declareNumber(padded);
+      await declareNumber(padded, rowCycleDate(row));
       alert('Result re-declared successfully.');
       fetchHistory(shiftId);
       reload();
@@ -430,7 +479,7 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
 
   const isCurrentCycleRow = (row: DeclarationHistoryItem) => {
     if (!selectedShift) return false;
-    return row.declaredAt.slice(0, 10) === selectedShift.openDate;
+    return rowCycleDate(row) === selectedShift.openDate;
   };
 
   const headRow = 'bg-[#152847] text-white font-bold text-[10px]';
@@ -609,9 +658,14 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
                         </td>
                         <td className="py-2.5 px-2 text-center">
                           {p.lastWin > 0 ? (
-                            <span className={`inline-flex items-center justify-center min-w-6 px-1.5 h-5 rounded-xs text-white text-[10px] font-bold ${p.lastWin === 1 ? 'bg-[#00897b]' : 'bg-[#dc2626]'}`}>
+                            <button
+                              type="button"
+                              onClick={() => openLastWin(p.partyId, p.partyName)}
+                              title="Show this party's winning days"
+                              className={`inline-flex items-center justify-center min-w-6 px-1.5 h-5 rounded-xs text-white text-[10px] font-bold cursor-pointer hover:opacity-85 ${p.lastWin === 1 ? 'bg-[#00897b]' : 'bg-[#dc2626]'}`}
+                            >
                               {p.lastWin}
-                            </span>
+                            </button>
                           ) : (
                             <span className="text-slate-300">-</span>
                           )}
@@ -704,7 +758,7 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
                     <tr key={h.id} className="hover:bg-slate-50">
                       <td className="py-1.5 px-2 border-r border-slate-200 text-center leading-tight">
                         <div className="font-bold text-[13px] text-slate-700">{h.winningNumber}</div>
-                        <div className="text-[10px] text-slate-500">{formatDateOnly(h.declaredAt)}</div>
+                        <div className="text-[10px] text-slate-500">{formatDateOnly(rowCycleDate(h))}</div>
                       </td>
                       <td className="py-1.5 px-1 text-center border-r border-slate-200">
                         <button
@@ -735,6 +789,56 @@ export const LivePredictionPage: React.FC<LivePredictionPageProps> = ({ shifts, 
           )}
         </div>
       </div>
+
+      {/* Last-Win popup (live): "<PARTY>" — DATE | PROFIT, one row per win, newest first */}
+      {lastWinParty && (
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150"
+          onClick={closeLastWin}
+        >
+          <div
+            className="bg-white rounded-md shadow-2xl w-full max-w-[300px] border border-slate-300 max-h-[80vh] flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="bg-[#24497e] text-white px-4 py-3 flex items-center justify-between flex-shrink-0">
+              <h3 className="text-base font-bold tracking-tight uppercase">{lastWinParty}</h3>
+              <button
+                type="button"
+                onClick={closeLastWin}
+                className="text-white/80 hover:text-white p-0.5 cursor-pointer text-xl leading-none"
+              >
+                &times;
+              </button>
+            </div>
+            <div className="p-1 overflow-y-auto pbmax-table-scrollbar">
+              <table className="w-full border-collapse text-[13px]">
+                <thead className="sticky top-0">
+                  <tr className="bg-[#152847] text-white text-xs font-bold">
+                    <th className="py-3 px-3 text-center border-r border-[#2b446f] w-1/2">DATE</th>
+                    <th className="py-3 px-3 text-center w-1/2">PROFIT</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {lastWinLoading ? (
+                    <tr><td colSpan={2} className="py-6 text-center text-slate-400 text-xs">Loading...</td></tr>
+                  ) : lastWinRows.length === 0 ? (
+                    <tr><td colSpan={2} className="py-6 text-center text-slate-400 text-xs">Record not avaliable!</td></tr>
+                  ) : (
+                    lastWinRows.map((w) => (
+                      <tr key={`${w.date}-${w.number}`} className="even:bg-slate-50" title={`Result ${w.number} | Sale ${inr(w.sale)} | Win ${inr(w.payout)}`}>
+                        <td className="py-2.5 px-3 text-center font-semibold text-slate-700 border-r border-slate-200">
+                          {w.date.split('-').reverse().join('-')}
+                        </td>
+                        <td className="py-2.5 px-3 text-center font-semibold text-slate-700">{Math.round(w.profit)}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Party grid popup — that one party's numbers for this shift and date */}
       {gridPopupTitle && (

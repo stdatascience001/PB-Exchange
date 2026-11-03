@@ -1056,20 +1056,20 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
       {showAbsPartyModal && (
         <div {...backdropProps} className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50 animate-in fade-in duration-150">
           <div className="bg-white rounded-lg shadow-2xl max-w-lg w-full overflow-hidden border border-slate-300 flex flex-col max-h-[85vh]">
-            <div className="bg-[#24497e] text-white px-4 py-2.5 flex items-center justify-between">
-              <h2 className="text-sm font-bold tracking-tight">Party Not Working</h2>
+            <div className="bg-[#24497e] text-white px-4 py-3 flex items-center justify-between">
+              <h2 className="text-sm sm:text-base font-bold tracking-tight">Party Not Working</h2>
               <button type="button" onClick={() => setShowAbsPartyModal(false)} className="text-white hover:text-slate-200 p-0.5">
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="overflow-y-auto p-1 pbmax-table-scrollbar">
+            <div className="overflow-y-auto p-1 pbmax-table-scrollbar h-[555px] max-h-[75vh]">
               <table className="w-full text-left text-xs border-collapse">
                 <thead className="sticky top-0">
-                  <tr className="bg-[#152847] text-white font-bold text-[11px]">
-                    <th className="py-2 px-3 w-12 border-r border-[#223b63]">Sr</th>
-                    <th className="py-2 px-3 border-r border-[#223b63]">Party</th>
-                    <th className="py-2 px-3 w-24 text-center border-r border-[#223b63]">Mobile</th>
-                    <th className="py-2 px-3 w-20 text-center">Work</th>
+                  <tr className="bg-[#152847] text-white font-bold text-xs">
+                    <th className="py-3 px-3 w-12 border-r border-[#223b63]">Sr</th>
+                    <th className="py-3 px-3 border-r border-[#223b63]">Party</th>
+                    <th className="py-3 px-3 w-24 text-center border-r border-[#223b63]">Mobile</th>
+                    <th className="py-3 px-3 w-20 text-center">Work</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -1078,14 +1078,14 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
                   ) : !selectedShiftId ? (
                     <tr><td colSpan={4} className="py-6 text-center text-slate-400">Choose a shift first.</td></tr>
                   ) : absentParties.length === 0 ? (
-                    <tr><td colSpan={4} className="py-6 text-center text-slate-400">No regular parties are absent.</td></tr>
+                    <tr><td colSpan={4} className="py-6 text-center text-slate-400">Record not avaliable!</td></tr>
                   ) : (
                     absentParties.map((p) => (
-                      <tr key={p.id} className="hover:bg-slate-50">
-                        <td className="py-1.5 px-3 font-mono text-slate-500">{p.sr}</td>
-                        <td className="py-1.5 px-3 font-bold uppercase text-slate-800">{p.party}</td>
-                        <td className="py-1.5 px-3 text-center font-mono text-slate-700">{p.mobile}</td>
-                        <td className="py-1.5 px-3 text-center font-mono font-semibold text-slate-800">{p.work}</td>
+                      <tr key={p.id} className="hover:bg-slate-50 even:bg-slate-50/60">
+                        <td className="py-2.5 px-3 font-semibold text-slate-700 border-r border-slate-100">{p.sr}</td>
+                        <td className="py-2.5 px-3 font-bold uppercase text-slate-700 border-r border-slate-100">{p.party}</td>
+                        <td className="py-2.5 px-3 text-center font-semibold text-slate-700 border-r border-slate-100">{p.mobile}</td>
+                        <td className="py-2.5 px-3 text-center font-semibold text-slate-700">{p.work}</td>
                       </tr>
                     ))
                   )}

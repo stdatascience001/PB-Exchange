@@ -27,8 +27,9 @@ import { settingsRoutes } from './modules/settings/settings.routes.js';
 export function createApp() {
   const app = express();
 
-  // Trust proxy for real client IP extraction
-  app.set('trust proxy', true);
+  // Trust only the reverse proxy in front of the API (nginx) for the real client IP — trusting
+  // every hop let a client pick its own IP through a forged X-Forwarded-For header.
+  app.set('trust proxy', env.TRUST_PROXY_HOPS);
 
   // Security & logging middleware
   app.use(helmet());

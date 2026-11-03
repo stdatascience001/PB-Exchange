@@ -580,21 +580,11 @@ export class JantriService {
     return !!cycle && (cycle.status === 'DECLARED' || cycle.status === 'AUDITED');
   }
 
-  // "Last-Win" badge on the Prediction party list: how many of this shift's 30 most recent
-  // (non-reversed) declarations this party actually held a winning entry on — the same
-  // 30-declaration window the "Result 30 Days" column on the left already uses. No live
-  // reference formula exists for this badge, so it is best-effort — flagged here with the
-  // same honest convention already used for TPC/HP-Amt/RBT and the Dashboard's "Last Day %".
-  // Winner matching is identical to DeclarationService.declareResult (DARA on the full
-  // number, HARUF_ANDAR on the tens digit, HARUF_BAHAR on the units digit), and each past
-  // cycle's slips are matched by that declaration's own date because shift rows are reused
-  // day-to-day — by the cycle date each declaration belongs to (see the query below).
-  private static async getLastWinCounts(shiftId: number, partyIds: number[]): Promise<Map<number, number>> {
-    const out = new Map<number, number>();
-    if (partyIds.length === 0) return out;
-
-    try {
-      const rows = await pgSql<Array<{ party_id: number; wins: number }>>`
+  // The last 30 (non-reversed) declarations of a shift, each with the number it declared and
+  // the cycle date it belongs to — shared by the Last-Win badge and its popup so both count
+  // exactly the same wins.
+  private static recentDeclarationsCte(shiftId: number) {
+    return pgSql`
         -- Each declaration is matched to the CYCLE it declared, not the day it was declared
         -- on: a result declared after midnight (HYDRABAD NIGHT 23-09 declared 02 on 24-09)
         -- used to be compared with the next day's slips, so its winners never counted. The
@@ -615,6 +605,25 @@ export class JantriService {
           ORDER BY d.declared_at DESC
           LIMIT 30
         )
+    `;
+  }
+
+  // "Last-Win" badge on the Prediction party list: how many of this shift's 30 most recent
+  // (non-reversed) declarations this party actually held a winning entry on — the same
+  // 30-declaration window the "Result 30 Days" column on the left already uses. No live
+  // reference formula exists for this badge, so it is best-effort — flagged here with the
+  // same honest convention already used for TPC/HP-Amt/RBT and the Dashboard's "Last Day %".
+  // Winner matching is identical to DeclarationService.declareResult (DARA on the full
+  // number, HARUF_ANDAR on the tens digit, HARUF_BAHAR on the units digit), and each past
+  // cycle's slips are matched by that declaration's own date because shift rows are reused
+  // day-to-day — by the cycle date each declaration belongs to (see the query below).
+  private static async getLastWinCounts(shiftId: number, partyIds: number[]): Promise<Map<number, number>> {
+    const out = new Map<number, number>();
+    if (partyIds.length === 0) return out;
+
+    try {
+      const rows = await pgSql<Array<{ party_id: number; wins: number }>>`
+        ${this.recentDeclarationsCte(shiftId)}
         SELECT t.party_id AS party_id, COUNT(DISTINCT r.id)::int AS wins
         FROM recent r
         JOIN transactions t
@@ -642,5 +651,69 @@ export class JantriService {
     }
 
     return out;
+  }
+
+  // Last-Win popup (live: click the badge -> "<PARTY>" with DATE | PROFIT, one row per win,
+  // newest first; JEETU PANDIT's badge 2 -> 24-10-2026 -8071, 23-10-2026 -12955). One row for
+  // each declaration the badge counted for this party — same 30-declaration window and the
+  // same winner matching — with that cycle's date and the party's P&L for the cycle, worked
+  // out the way the P&L column does it: (sale less commission - winning payout) x share
+  // factor, from the house's side, so a win reads as a loss (minus).
+  static async getLastWinDetails(shiftId: number, partyId: number) {
+    const [party] = await db.select({
+      id: ledgers.id,
+      partyName: ledgers.partyName,
+      commissionRate: ledgers.commissionRate,
+      hissaPercentage: ledgers.hissaPercentage,
+    }).from(ledgers).where(eq(ledgers.id, partyId));
+    if (!party) throw new NotFoundError('Party not found');
+
+    const hissaLinks = await db.select({ percent: ledgerThirdPartyLinks.percent })
+      .from(ledgerThirdPartyLinks)
+      .where(and(eq(ledgerThirdPartyLinks.linkType, 'HISSA'), eq(ledgerThirdPartyLinks.ledgerId, partyId)));
+    const commFactor = 1 - (parseFloat(party.commissionRate) || 0) / 100;
+    const shareFactor = hissaLinks.reduce(
+      (f, link) => f * (1 - (parseFloat(link.percent) || 0) / 100),
+      1 - (parseFloat(party.hissaPercentage) || 0) / 100
+    );
+
+    const rows = await pgSql<Array<{ cycle_date: string; num: string; sale: string; payout: string }>>`
+      ${this.recentDeclarationsCte(shiftId)},
+      party_slips AS (
+        SELECT t.id, t.total_amount,
+          (CASE WHEN t.slip_number ~ '^SLIP-[0-9]{8}-'
+                THEN to_char(to_date(substr(t.slip_number, 6, 8), 'YYYYMMDD'), 'YYYY-MM-DD')
+                ELSE to_char(t.created_at, 'YYYY-MM-DD') END) AS cycle_date
+        FROM transactions t
+        WHERE t.shift_id = ${shiftId} AND t.party_id = ${partyId} AND t.status <> 'VOIDED'
+      ),
+      winning AS (
+        SELECT r.id, SUM(te.amount * te.rate) AS payout
+        FROM recent r
+        JOIN party_slips ps ON ps.cycle_date = r.cycle_date
+        JOIN transaction_entries te ON te.transaction_id = ps.id
+        WHERE (te.entry_type = 'DARA' AND te.number_value = r.num)
+           OR (te.entry_type = 'HARUF_ANDAR' AND te.number_value = substr(r.num, 1, 1))
+           OR (te.entry_type = 'HARUF_BAHAR' AND te.number_value = substr(r.num, 2, 1))
+        GROUP BY r.id
+      )
+      SELECT r.cycle_date, r.num, w.payout::text AS payout,
+        (SELECT COALESCE(SUM(ps.total_amount), 0) FROM party_slips ps WHERE ps.cycle_date = r.cycle_date)::text AS sale
+      FROM recent r
+      JOIN winning w ON w.id = r.id
+      ORDER BY r.cycle_date DESC
+    `;
+
+    return rows.map(r => {
+      const sale = parseFloat(r.sale) || 0;
+      const payout = parseFloat(r.payout) || 0;
+      return {
+        date: r.cycle_date,
+        number: r.num,
+        sale,
+        payout,
+        profit: Math.round((sale * commFactor - payout) * shareFactor),
+      };
+    });
   }
 }

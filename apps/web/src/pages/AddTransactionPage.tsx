@@ -4,7 +4,7 @@ import { ShiftDto, LedgerDto, UserSession } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { displayNumber, harufOf } from '../utils/entryDisplay.js';
 import { toast } from 'react-toastify';
-import { ArrowLeft, X, Check, Search, Plus, Shuffle, Calendar, Clock } from 'lucide-react';
+import { ArrowLeft, X, Check, Search, Plus, Shuffle, Calendar, Clock, Loader2 } from 'lucide-react';
 
 interface EntryRow {
   numberValue: string;
@@ -173,7 +173,16 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
   // Active shift resolution based on transactionId or props
   // Edit mode (/transaction_edit/:shiftId/:txId) never starts on the app's active shift — the
   // slip's own shift is resolved from the URL instead (see the sync effect below)
-  const [resolvedShift, setResolvedShift] = useState<ShiftDto | null>(editShiftId ? null : (activeShift || null));
+  // Same for /transaction_add/:id (a dashboard card opens it in a new tab): the app's active
+  // shift is only borrowed when it IS that shift. In a new tab the active shift is just the
+  // shifts list's first one (e.g. a declared HYDRABAD); starting on it tripped the entry-closed
+  // redirect below, so the tab landed on Dashboard whenever /shifts answered before the
+  // start-up access check — the card then "opened only on the 2nd/3rd click".
+  const [resolvedShift, setResolvedShift] = useState<ShiftDto | null>(() => {
+    if (editShiftId) return null;
+    if (transactionId) return activeShift && String(activeShift.id) === transactionId ? activeShift : null;
+    return activeShift || null;
+  });
   const [allShifts, setAllShifts] = useState<ShiftDto[]>(shifts);
 
   // Slips / Entries
@@ -204,6 +213,12 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
   // Feedback states
   const [submitting, setSubmitting] = useState(false);
+  // One save at a time: set the moment Save Now / F2 starts a save (before React re-renders the
+  // button as disabled, so quick repeat clicks / F2 presses can't send the slip again), and —
+  // after a new slip is saved — held until the grid has been cleared, so the same entries
+  // still showing for that moment can't be saved a second time. `justSaved` shows that moment.
+  const saveLockRef = useRef(false);
+  const [justSaved, setJustSaved] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -707,6 +722,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
 
   // Save Now (F2)
   const handleSaveNow = async () => {
+    // a save is already running (or a saved slip is still on screen): this press does nothing
+    if (saveLockRef.current) return;
     // Pressed from the Enter flow (Save focused): hand focus back to NUMBER so the button's
     // highlight doesn't linger after the save or its error. Checks below that focus a
     // specific field (party, number) still do so afterwards.
@@ -752,6 +769,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
       return;
     }
 
+    saveLockRef.current = true;
+    let keepLocked = false;
     setSubmitting(true);
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -785,6 +804,25 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
             { toastId: `tx-updated-${editingTxNumericId}` }
           );
           onNavigate('transaction-list', backShiftId);
+        }
+        // Declare edit: once saved, back to Declare Transactions — the list tab that opened
+        // this one (already reloading with the edited slip, as the notify above tells it) when
+        // there is one, the same as the Back arrow; otherwise the list opens here on this shift.
+        if (declareEdit) {
+          if (window.opener && !openedFromDashboard()) {
+            window.close();
+            return;
+          }
+          if (onNavigate) {
+            toast.success(
+              <div>
+                <div className="font-bold text-base">Success</div>
+                <div className="text-sm mt-0.5">Transaction updated successfully!</div>
+              </div>,
+              { toastId: `tx-updated-${editingTxNumericId}` }
+            );
+            onNavigate('declare-transactions', editShiftId || (resolvedShift ? String(resolvedShift.id) : undefined));
+          }
         }
         return;
       }
@@ -825,8 +863,13 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
       setSuccessMsg('Transaction slip saved successfully!');
       // the Live Transactions list open in the first tab reloads with the new slip
       notifyTransactionsChanged([shiftIdToUse, ...selectedCopyShiftIds]);
+      keepLocked = true;
+      setJustSaved(true);
       setTimeout(() => {
         handleClear();
+        // grid is empty now: Save is free for the next slip
+        saveLockRef.current = false;
+        setJustSaved(false);
         // A new slip is saved: the Party box empties too and takes the cursor, ready for the
         // next party (the Clear button alone still keeps the party)
         setSelectedParty(null);
@@ -839,6 +882,8 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
       setErrorMsg(err?.message || 'Failed to save transaction slip');
     } finally {
       setSubmitting(false);
+      // error / edit saved: Save works again at once (a new slip waits for the grid to clear)
+      if (!keepLocked) saveLockRef.current = false;
     }
   };
 
@@ -2009,15 +2054,28 @@ export const AddTransactionPage: React.FC<AddTransactionPageProps> = ({
           <button
             type="button"
             ref={saveNowBtnRef}
-            disabled={submitting || isDeclaredBlocked || isCutoffBlocked}
+            disabled={submitting || justSaved || isDeclaredBlocked || isCutoffBlocked}
+            aria-busy={submitting}
             onClick={handleSaveNow}
-            className={`text-white text-xs font-bold px-4 py-1.5 rounded transition-colors shadow-xs outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-[#1b3258] focus:ring-[#dc2626] ${
+            className={`text-white text-xs font-bold px-4 py-1.5 rounded transition-colors shadow-xs outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-[#1b3258] focus:ring-[#dc2626] inline-flex items-center justify-center gap-1.5 min-w-[118px] ${
               isDeclaredBlocked || isCutoffBlocked
                 ? 'bg-slate-500 cursor-not-allowed opacity-75'
+                : submitting || justSaved
+                ? 'bg-[#00897b] cursor-wait opacity-80'
                 : 'bg-[#00897b] hover:bg-[#00796b] cursor-pointer'
-            } disabled:opacity-50`}
+            } ${submitting || justSaved ? '' : 'disabled:opacity-50'}`}
           >
-            {submitting ? 'Saving...' : isDeclaredBlocked ? 'Result Declared' : isCutoffBlocked ? 'Entry Closed' : 'Save Now (F2)'}
+            {submitting ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Saving...
+              </>
+            ) : justSaved ? (
+              <>
+                <Check className="h-3.5 w-3.5" />
+                Saved
+              </>
+            ) : isDeclaredBlocked ? 'Result Declared' : isCutoffBlocked ? 'Entry Closed' : 'Save Now (F2)'}
           </button>
           <button
             type="button"

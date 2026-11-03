@@ -85,7 +85,10 @@ function ChangePasswordModal({ visible, onClose }: { visible: boolean; onClose: 
   const save = async () => {
     setError(null);
     if (!current || !next) { setError('Please enter all valid fields!'); failure(); return; }
-    if (next.length < 6) { setError('New password must be at least 6 characters'); failure(); return; }
+    // Same strong-password rule as the API: 8+ characters, at least 1 number and 1 letter
+    if (next.trim().length < 8 || !/\d/.test(next) || !/[A-Za-z]/.test(next)) {
+      setError('New password must be at least 8 characters, with at least 1 number and at least 1 letter'); failure(); return;
+    }
     if (next !== confirm) { setError('New password and confirm password do not match'); failure(); return; }
     setSaving(true);
     try {

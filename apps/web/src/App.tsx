@@ -448,6 +448,8 @@ export const App: React.FC = () => {
     const onReplaced = (e: Event) => {
       if (!sessionStorage.getItem('pb_token')) return;
       logoutRef.current();
+      // An ended session lands on the Login page (signing in again then opens the Dashboard)
+      window.history.replaceState({}, '', '/login');
       toast.error(
         <div>
           <div className="font-bold text-base">Logged out</div>
@@ -459,6 +461,45 @@ export const App: React.FC = () => {
     window.addEventListener('pb-session-replaced', onReplaced);
     return () => window.removeEventListener('pb-session-replaced', onReplaced);
   }, []);
+
+  // Token expiry is also watched here, not only when a request comes back SESSION_EXPIRED: a
+  // page left open (no request going out) is signed out the moment its login's `exp` passes,
+  // and a tab reopened with an already-expired token never shows the app. Checked on start,
+  // every 10s and whenever the tab gets focus again (background timers are throttled).
+  useEffect(() => {
+    if (!user) return;
+    const tokenExpiresAt = (): number | null => {
+      const token = sessionStorage.getItem('pb_token');
+      if (!token) return null;
+      try {
+        const b64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+        const exp = JSON.parse(atob(b64)).exp;
+        return typeof exp === 'number' ? exp * 1000 : null;
+      } catch {
+        return null;
+      }
+    };
+    const check = () => {
+      const expiresAt = tokenExpiresAt();
+      if (expiresAt !== null && Date.now() >= expiresAt) {
+        window.dispatchEvent(new CustomEvent('pb-session-replaced', {
+          detail: 'Your login session has expired. Please log in again.',
+        }));
+      }
+    };
+    // first check on the next tick, once the ToastContainer (mounted after <App/>) can show why
+    const first = window.setTimeout(check, 0);
+    const timer = window.setInterval(check, 10000);
+    const onVisible = () => { if (document.visibilityState === 'visible') check(); };
+    window.addEventListener('focus', check);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+      window.removeEventListener('focus', check);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [user]);
 
   // Login security: a blocked IP (3 wrong logins in a row, or an Access Block entry) sees only
   // the blocked screen — checked on start-up and whenever any request comes back IP_BLOCKED.

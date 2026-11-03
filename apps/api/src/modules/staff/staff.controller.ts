@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { StaffService } from './staff.service.js';
+import { StaffService, withoutPassword } from './staff.service.js';
 import { sendSuccess } from '../../common/response.js';
 import { AppError } from '../../common/errors.js';
 
@@ -17,11 +17,15 @@ export class StaffController {
   static async create(req: Request, res: Response, next: NextFunction) {
     try {
       const updatedBy = (req as any).user?.username || 'A100';
+      await StaffService.assertCanManage(req.user, {
+        newRole: req.body?.role || req.body?.designation || 'ADMIN',
+        username: typeof req.body?.username === 'string' ? req.body.username.replace(/\s+/g, '') : undefined,
+      });
       const created = await StaffService.createStaff({
         ...req.body,
         updatedBy,
       });
-      return sendSuccess(res, created, 'Staff member created successfully', 201);
+      return sendSuccess(res, withoutPassword(created), 'Staff member created successfully', 201);
     } catch (err) {
       next(err);
     }
@@ -31,11 +35,12 @@ export class StaffController {
     try {
       const id = parseInt(req.params.id as string, 10);
       const updatedBy = (req as any).user?.username || 'A100';
+      await StaffService.assertCanManage(req.user, { staffId: id, newRole: req.body?.role || req.body?.designation });
       const updated = await StaffService.updateStaff(id, {
         ...req.body,
         updatedBy,
       });
-      return sendSuccess(res, updated, 'Staff member updated successfully');
+      return sendSuccess(res, withoutPassword(updated), 'Staff member updated successfully');
     } catch (err) {
       next(err);
     }
@@ -45,8 +50,9 @@ export class StaffController {
     try {
       const id = parseInt(req.params.id as string, 10);
       const updatedBy = (req as any).user?.username || 'A100';
+      await StaffService.assertCanManage(req.user, { staffId: id });
       const updated = await StaffService.toggleActive(id, updatedBy);
-      return sendSuccess(res, updated, 'Staff active status updated');
+      return sendSuccess(res, withoutPassword(updated), 'Staff active status updated');
     } catch (err) {
       next(err);
     }
@@ -66,8 +72,9 @@ export class StaffController {
     try {
       const id = parseInt(req.params.id as string, 10);
       const { isWorkingLive } = req.body;
+      await StaffService.assertCanManage(req.user, { staffId: id });
       const updated = await StaffService.updateWorkingStatus(id, Boolean(isWorkingLive));
-      return sendSuccess(res, updated, 'Staff live status updated');
+      return sendSuccess(res, withoutPassword(updated), 'Staff live status updated');
     } catch (err) {
       next(err);
     }
@@ -121,13 +128,14 @@ export class StaffController {
     try {
       const id = parseInt(req.params.id as string, 10);
       const updatedBy = (req as any).user?.username || 'A100';
+      await StaffService.assertCanManage(req.user, { staffId: id });
       if (req.body.earnings !== undefined || req.body.deductions !== undefined) {
         const updated = await StaffService.updateSalaryStructure(id, req.body, updatedBy);
-        return sendSuccess(res, updated, 'Staff salary structure updated successfully');
+        return sendSuccess(res, withoutPassword(updated), 'Staff salary structure updated successfully');
       }
       const { monthlySalary } = req.body;
       const updated = await StaffService.updateSalary(id, parseFloat(monthlySalary || '0'), updatedBy);
-      return sendSuccess(res, updated, 'Staff salary updated successfully');
+      return sendSuccess(res, withoutPassword(updated), 'Staff salary updated successfully');
     } catch (err) {
       next(err);
     }
@@ -140,6 +148,7 @@ export class StaffController {
       if (field !== 'salary' && field !== 'assets') throw new AppError('Invalid status field', 400);
       if (typeof value !== 'boolean') throw new AppError('Invalid status value', 400);
       const updatedBy = (req as any).user?.username || 'A100';
+      await StaffService.assertCanManage(req.user, { staffId: id });
       const updated = await StaffService.setStatusFlag(id, field, value, updatedBy);
       return sendSuccess(res, updated, 'Staff status updated successfully');
     } catch (err) {

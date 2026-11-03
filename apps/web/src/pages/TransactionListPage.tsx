@@ -62,10 +62,8 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
     return `${year}-${month}-${day}`;
   });
 
-  // Date box shown as DD / MM / YYYY (three parts, as live) instead of the browser's own
-  // MM/DD/YYYY picker. Enter steps day -> month -> year -> Search Party; Up/Down steps the
-  // focused part. dateStr (YYYY-MM-DD, what the API gets) only changes once the parts make a
-  // real date; the parts follow dateStr when it's set elsewhere (e.g. to the chosen shift's date).
+  // Date box shown as DD / MM / YYYY (three read-only parts, as live). dateStr (YYYY-MM-DD,
+  // what the API gets) is set from the chosen shift's date and the parts follow it.
   const [dd, setDd] = useState(() => dateStr.slice(8, 10));
   const [mm, setMm] = useState(() => dateStr.slice(5, 7));
   const [yyyy, setYyyy] = useState(() => dateStr.slice(0, 4));
@@ -78,67 +76,29 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
     setMm(prev => keepTyped(prev, dateStr.slice(5, 7)));
     setYyyy(prev => keepTyped(prev, dateStr.slice(0, 4)));
   }, [dateStr]);
-  const commitDate = (d: string, m: string, y: string) => {
-    const di = parseInt(d, 10), mi = parseInt(m, 10), yi = parseInt(y, 10);
-    if (!/^\d{4}$/.test(y) || !(mi >= 1 && mi <= 12) || !(di >= 1)) return;
-    if (di > new Date(yi, mi, 0).getDate()) return;
-    setDateStr(`${y}-${String(mi).padStart(2, '0')}-${String(di).padStart(2, '0')}`);
-  };
   const focusTxField = (id: string) => {
     const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
     el?.focus();
     if (el instanceof HTMLInputElement) el.select();
   };
-  const onDatePartKeyDown = (part: 'dd' | 'mm' | 'yyyy', e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      focusTxField(part === 'dd' ? 'txlist-date-mm' : part === 'mm' ? 'txlist-date-yyyy' : 'txlist-search-party');
-      return;
-    }
-    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
-    e.preventDefault();
-    const step = e.key === 'ArrowUp' ? 1 : -1;
-    if (part === 'dd') {
-      const max = new Date(parseInt(yyyy, 10) || 2000, parseInt(mm, 10) || 1, 0).getDate();
-      let v = (parseInt(dd, 10) || 1) + step;
-      if (v > max) v = 1;
-      if (v < 1) v = max;
-      const next = String(v).padStart(2, '0');
-      setDd(next);
-      commitDate(next, mm, yyyy);
-    } else if (part === 'mm') {
-      let v = (parseInt(mm, 10) || 1) + step;
-      if (v > 12) v = 1;
-      if (v < 1) v = 12;
-      const next = String(v).padStart(2, '0');
-      setMm(next);
-      commitDate(dd, next, yyyy);
-    } else {
-      const next = String((parseInt(yyyy, 10) || new Date().getFullYear()) + step);
-      setYyyy(next);
-      commitDate(dd, mm, next);
-    }
-  };
-  // Picking a shift sets the date filter to that shift's own open_date from the API (its live
-  // cycle — e.g. an undeclared HYDRABAD NIGHT still on 23-09 while the calendar says 24-09),
-  // same as the live panel. Runs once per selected shift (including the initial default once
-  // the shift list has loaded), so a date typed in by hand afterwards is left alone and the
-  // periodic shift refreshes don't overwrite it.
-  const dateSyncedForShiftRef = useRef<string | null>(null);
+  // The date filter is read-only: it always shows the selected shift's own open_date from the
+  // Shift API (its live cycle — e.g. an undeclared HYDRABAD NIGHT still on 23-09 while the
+  // calendar says 24-09), and follows it when a shift refresh moves that date (rollover).
+  // With no shift chosen it stays on today.
+  const selectedShiftOpenDate = shifts.find(s => String(s.id) === selectedShiftId)?.openDate;
   useEffect(() => {
-    if (!selectedShiftId || dateSyncedForShiftRef.current === selectedShiftId) return;
-    const shift = shifts.find(s => String(s.id) === selectedShiftId);
-    if (!shift?.openDate) return;
-    dateSyncedForShiftRef.current = selectedShiftId;
-    if (/^\d{4}-\d{2}-\d{2}$/.test(shift.openDate)) {
-      setDateStr(shift.openDate);
+    if (selectedShiftOpenDate && /^\d{4}-\d{2}-\d{2}$/.test(selectedShiftOpenDate)) {
+      setDateStr(selectedShiftOpenDate);
     }
-  }, [selectedShiftId, shifts]);
+  }, [selectedShiftId, selectedShiftOpenDate]);
   const [searchParty, setSearchParty] = useState('');
   // A DATA ENTRY OPERATOR's Live Transactions bar on the live reference has neither the
   // "-- ALL STAFF --" nor the status dropdown — the list is already narrowed to their own
   // active slips by the API, so both filters would be no-ops. SUPER ADMIN's bar keeps both.
   const ownDataOnly = isOwnDataOnlyRole(user?.roleName);
+  // "-- ALL STAFF --" shows only for DEVELOPER / SUPER ADMIN / ADMIN; every other role has it
+  // hidden (left on all staff, so their list is unchanged)
+  const showStaffFilter = !ownDataOnly && ['DEVELOPER', 'SUPER ADMIN', 'ADMIN'].includes(user?.roleName || '');
   const [selectedStaff, setSelectedStaff] = useState('');
   // Staff filter as of the last Search (F5) / reload — rows are narrowed to slips that staff
   // member added. The dropdown alone doesn't filter until Search is pressed.
@@ -822,7 +782,8 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault();
-                  focusTxField('txlist-date-dd');
+                  // the date is read-only, so Enter goes straight on to Search Party
+                  focusTxField('txlist-search-party');
                 }
               }}
               className="px-2.5 py-1 bg-[#fef08a] border border-amber-300 rounded text-xs font-bold text-slate-900 uppercase focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer min-w-36 shadow-xs"
@@ -837,39 +798,39 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
             </select>
           </div>
 
-          {/* Date */}
-          <div className="flex items-center gap-1 px-2 py-1 bg-white border border-slate-300 rounded text-xs tracking-wider">
+          {/* Date — read-only, always the selected shift's open_date from the Shift API */}
+          <div
+            title="Shift date (read-only)"
+            className="flex items-center gap-1 px-2 py-1 bg-slate-100 border border-slate-300 rounded text-xs tracking-wider cursor-not-allowed"
+          >
             <input
               id="txlist-date-dd"
               type="text"
-              inputMode="numeric"
+              readOnly
+              tabIndex={-1}
               maxLength={2}
               value={dd}
-              onChange={(e) => { const v = e.target.value.replace(/\D/g, ''); setDd(v); commitDate(v, mm, yyyy); }}
-              onKeyDown={(e) => onDatePartKeyDown('dd', e)}
-              className="w-7 text-center bg-transparent outline-none font-semibold text-slate-700 focus:bg-[#fde68a] rounded-xs"
+              className="w-7 text-center bg-transparent outline-none font-semibold text-slate-700 rounded-xs cursor-not-allowed"
             />
             <span className="text-slate-500">/</span>
             <input
               id="txlist-date-mm"
               type="text"
-              inputMode="numeric"
+              readOnly
+              tabIndex={-1}
               maxLength={2}
               value={mm}
-              onChange={(e) => { const v = e.target.value.replace(/\D/g, ''); setMm(v); commitDate(dd, v, yyyy); }}
-              onKeyDown={(e) => onDatePartKeyDown('mm', e)}
-              className="w-7 text-center bg-transparent outline-none font-semibold text-slate-700 focus:bg-[#fde68a] rounded-xs"
+              className="w-7 text-center bg-transparent outline-none font-semibold text-slate-700 rounded-xs cursor-not-allowed"
             />
             <span className="text-slate-500">/</span>
             <input
               id="txlist-date-yyyy"
               type="text"
-              inputMode="numeric"
+              readOnly
+              tabIndex={-1}
               maxLength={4}
               value={yyyy}
-              onChange={(e) => { const v = e.target.value.replace(/\D/g, ''); setYyyy(v); commitDate(dd, mm, v); }}
-              onKeyDown={(e) => onDatePartKeyDown('yyyy', e)}
-              className="w-10 text-center bg-transparent outline-none font-semibold text-slate-700 focus:bg-[#fde68a] rounded-xs"
+              className="w-10 text-center bg-transparent outline-none font-semibold text-slate-700 rounded-xs cursor-not-allowed"
             />
           </div>
 
@@ -883,7 +844,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
               // Enter still runs the Search (form submit), then the cursor moves to the staff filter
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
-                  requestAnimationFrame(() => document.getElementById('txlist-staff')?.focus());
+                  requestAnimationFrame(() => (document.getElementById('txlist-staff') || document.getElementById('txlist-status'))?.focus());
                 }
               }}
               placeholder="SEARCH PARTY..."
@@ -899,8 +860,8 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
             Search (F5)
           </button>
 
-          {/* All Staff dropdown — hidden for own-data roles */}
-          {!ownDataOnly && (
+          {/* All Staff dropdown — DEVELOPER / SUPER ADMIN / ADMIN only */}
+          {showStaffFilter && (
           <select
             id="txlist-staff"
             value={selectedStaff}
@@ -1697,7 +1658,7 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
               </button>
             </div>
             <div className="p-1 text-xs">
-              <div className="overflow-y-auto max-h-[70vh] pbmax-table-scrollbar">
+              <div className="overflow-y-auto h-[555px] max-h-[75vh] pbmax-table-scrollbar">
                 <table className="w-full text-left text-xs border-collapse">
                   <thead className="sticky top-0">
                     <tr className="bg-[#152847] text-white font-bold text-xs">

@@ -2,7 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { ShiftDto, UserSession } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { ChevronUp, ChevronDown } from 'lucide-react';
-import { showsReducedDashboard } from '../config/roleAccess.js';
+import {
+  showsReducedDashboard,
+  isAdminRole, isPageRestrictedForAdmin, isManagerRole, isPageAllowedForManager,
+  isDataEntryOperatorRole, isPageAllowedForDataEntryOperator, isTallyOperatorRole, isPageAllowedForTallyOperator,
+} from '../config/roleAccess.js';
 import { RedeclareModal } from '../components/RedeclareModal.js';
 
 interface DashboardMetricsResponse {
@@ -76,7 +80,7 @@ const roundHalfUp = (n: number): number => {
 interface DashboardPageProps {
   shifts: ShiftDto[];
   user: UserSession | null;
-  onNavigate: (page: string) => void;
+  onNavigate: (page: string, param?: string) => void;
   onSelectShift: (shift: ShiftDto) => void;
 }
 
@@ -93,6 +97,15 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   const hideDeclarePanels = showsReducedDashboard(user?.roleName);
   // ReDeclare popup (DECLARE INFO) for the Declare Needed row that was clicked
   const [redeclareTarget, setRedeclareTarget] = useState<{ declarationId: number; changeCount?: number } | null>(null);
+  // Same page checks App.tsx guards routes with (a role sent there without access is bounced
+  // back to the dashboard)
+  const role = user?.roleName;
+  const canOpenDeclareTransactions = !(
+    (isAdminRole(role) && isPageRestrictedForAdmin('declare-transactions')) ||
+    (isManagerRole(role) && !isPageAllowedForManager('declare-transactions')) ||
+    (isDataEntryOperatorRole(role) && !isPageAllowedForDataEntryOperator('declare-transactions')) ||
+    (isTallyOperatorRole(role) && !isPageAllowedForTallyOperator('declare-transactions'))
+  );
   // Declare Needed lists only the ReDeclare rows (declared cycles changed after the declare),
   // as on the live panel. The API still returns the not-yet-declared shifts too — they are
   // just not rendered here; declaring them stays on Result → Declare.
@@ -112,10 +125,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     }
   };
 
+  // Metrics load once when the Dashboard opens (and on a page refresh). The automatic 10s poll
+  // is switched off — kept below, commented out, in case it is wanted back.
   useEffect(() => {
     fetchMetrics();
-    const interval = setInterval(fetchMetrics, 10000); // Poll live database every 10s
-    return () => clearInterval(interval);
+    // const interval = setInterval(fetchMetrics, 10000); // Poll live database every 10s
+    // return () => clearInterval(interval);
   }, []);
 
   // An SSE-based real-time channel was tried here (Redis Pub/Sub -> EventSource), but was
@@ -151,6 +166,13 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 key={s.id}
                 onClick={() => {
                   onSelectShift(s as any);
+                  // A declared shift opens Declare Transactions on that shift — for a role that
+                  // may open that page; otherwise (and for an open shift) the slip entry page
+                  // opens in a new tab as before.
+                  if (isDeclared && canOpenDeclareTransactions) {
+                    onNavigate('declare-transactions', String(s.id));
+                    return;
+                  }
                   window.open(`/transaction_add/${s.id}`, '_blank');
                 }}
                 className="bg-white rounded-md shadow-[0_1px_4px_rgba(0,0,0,0.06)] hover:shadow-md transition-shadow px-4 py-3 min-h-[80px] flex items-center justify-between cursor-pointer group"
@@ -187,7 +209,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                       </span>
                       {/* Total Amount after each party's own Commission/Hissa/Kat (Rebate) is
                           deducted — same per-party ledger-config approach as the Collection report. */}
-                      {money(s.totalAmount) > 0 && (
+                      {/* TALLY OPERATOR (live): the Net shows on every open card, 0 included */}
+                      {(money(s.totalAmount) > 0 || isTallyOperatorRole(role)) && (
                         <span className="text-[11px] font-bold text-[#7ac143] font-sans tracking-tight">
                           {roundHalfUp(money(s.netAmount)).toLocaleString('en-IN')}
                         </span>

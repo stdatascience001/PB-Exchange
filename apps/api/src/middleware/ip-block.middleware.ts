@@ -44,11 +44,10 @@ async function refreshBlockedCache() {
   }
 }
 
+// req.ip honours app.set('trust proxy', TRUST_PROXY_HOPS): the address the nearest trusted
+// proxy (nginx) saw, so a forged X-Forwarded-For can't change it.
 export function extractClientIp(req: Request): string {
-  const forwarded = req.headers['x-forwarded-for'];
-  const raw = typeof forwarded === 'string'
-    ? forwarded.split(',')[0].trim()
-    : (req.socket.remoteAddress || '127.0.0.1');
+  const raw = req.ip || req.socket.remoteAddress || '127.0.0.1';
   // "::ffff:1.2.3.4" (IPv4 seen through an IPv6 socket) is the same client as "1.2.3.4".
   return raw.startsWith('::ffff:') ? raw.slice(7) : raw;
 }

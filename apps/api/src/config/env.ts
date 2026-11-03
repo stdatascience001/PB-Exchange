@@ -23,7 +23,10 @@ export const env = {
   CORS_ORIGIN: process.env.CORS_ORIGIN || 'http://localhost:3000',
   CORS_ORIGINS: [...new Set([...configuredOrigins, ...EXPO_WEB_DEV_ORIGINS])],
   JWT_SECRET: process.env.JWT_SECRET || 'pb_exchange_jwt_secret_key_2026',
-  JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '1d',
+  // How many reverse proxies sit in front of the API (live: nginx = 1). The client IP used for
+  // login blocking / Access Block / sessions is the address the nearest trusted proxy saw — not
+  // the first X-Forwarded-For entry, which any client can write itself.
+  TRUST_PROXY_HOPS: Math.max(0, parseInt(process.env.TRUST_PROXY_HOPS || '1', 10) || 0),
   REDIS_HOST: process.env.REDIS_HOST || '127.0.0.1',
   REDIS_PORT: parseInt(process.env.REDIS_PORT || '6379', 10),
   REDIS_PASSWORD: process.env.REDIS_PASSWORD || undefined,

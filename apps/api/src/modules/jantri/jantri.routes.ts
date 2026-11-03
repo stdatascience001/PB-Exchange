@@ -7,6 +7,7 @@ const router = Router();
 router.use(authenticate);
 
 router.get('/:shiftId/prediction', JantriController.getPrediction);
+router.get('/:shiftId/prediction/last-win/:partyId', JantriController.getLastWinDetails);
 router.get('/:shiftId/distributor/:distributorId', JantriController.getDistributorJantri);
 router.get('/:shiftId/net', JantriController.getNetJantri);
 router.get('/:shiftId', JantriController.getShiftJantri);

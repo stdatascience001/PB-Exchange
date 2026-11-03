@@ -59,6 +59,9 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
   // Delete is offered to SUPER ADMIN only (the API enforces the same). The shift picked for
   // deletion waits in `deleteTarget` until the "Are you sure delete this shift?" popup's Yes.
   const canDeleteShift = user?.roleName === 'SUPER ADMIN';
+  // The row's Delete (bin) button is hidden for now, for every role. The delete popup, its
+  // handler and the API stay as they are; set this to true to show the button again.
+  const SHOW_SHIFT_DELETE_BUTTON = false;
   const [deleteTarget, setDeleteTarget] = useState<ShiftDto | null>(null);
   const [deletingShift, setDeletingShift] = useState(false);
 
@@ -664,8 +667,8 @@ export const ShiftManagePage: React.FC<ShiftManagePageProps> = ({ shifts, onRefr
                           >
                             <span>Action</span>
                           </button>
-                          {/* Delete stays for the roles allowed to delete a shift */}
-                          {canDeleteShift && (
+                          {/* Delete stays for the roles allowed to delete a shift (hidden for now) */}
+                          {SHOW_SHIFT_DELETE_BUTTON && canDeleteShift && (
                             <button
                               type="button"
                               onClick={() => {

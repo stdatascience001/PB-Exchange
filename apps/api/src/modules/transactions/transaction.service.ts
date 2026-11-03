@@ -637,6 +637,14 @@ export class TransactionService {
     }));
   }
 
+  // DATA ENTRY OPERATOR (ownerUserId set): a slip someone else entered is answered as not
+  // found, the same as their Live Transactions list, which only ever holds their own slips.
+  static async assertOwnTransaction(id: number, ownerUserId?: number) {
+    if (ownerUserId === undefined || isNaN(id)) return;
+    const [t] = await db.select({ createdBy: transactions.createdBy }).from(transactions).where(eq(transactions.id, id));
+    if (t && t.createdBy !== ownerUserId) throw new NotFoundError('Transaction not found');
+  }
+
   static async getTransactionById(id: number) {
     const [t] = await db.select({
       id: transactions.id,
@@ -1253,9 +1261,10 @@ export class TransactionService {
   // activity in the last 30 days) but have none today. "Work" is a best-effort proxy: their
   // slip count in that same 30-day lookback window (no other source for this metric exists
   // anywhere in the schema), flagged the same honest way TPC/HP-Amt/RBT are flagged elsewhere.
-  // Live (Party Not Working, GHAZIABAD 08-10): A-Z list, every row Work = 3 — the regular
-  // parties of the shift: they played it on each of the last 3 days (Work = those days) but
-  // have no live slip in it today. AGARTALA EXPRESS, in today's book, isn't listed.
+  // Live (Party Not Working): the parties that played this shift on any of the last 3 days
+  // (Work = how many of those days) but have no live slip in it today, Work 3 first, then 2,
+  // then 1, A-Z within each. A party in today's book isn't listed (NEW FARIDABAD 27-10:
+  // VANYA 49 drops off the list once it has a slip).
   static async getAbsentParties(filters: { shiftId: number; date: string }) {
     const WORK_DAYS = 3;
     const lookbackFrom = new Date(`${filters.date}T00:00:00Z`);
@@ -1271,7 +1280,9 @@ export class TransactionService {
         sql`${transactions.createdAt}::date < ${filters.date}::date`,
       ));
 
-    // Work = the number of different days (of the last 3) the party played this shift
+    // Work = the number of different days (of the last 3) the party played this shift. Live
+    // (DELHI BAZAAR 27-10) lists every such party — Work 3, then 2, then 1 — not only the
+    // ones that played all 3 days.
     const daysByParty = new Map<number, Set<string>>();
     for (const r of historyRows) {
       const set = daysByParty.get(r.partyId) || new Set<string>();
@@ -1280,7 +1291,7 @@ export class TransactionService {
     }
     const workCount = new Map<number, number>();
     for (const [id, days] of daysByParty) {
-      if (days.size >= WORK_DAYS) workCount.set(id, days.size);
+      if (days.size >= 1) workCount.set(id, Math.min(days.size, WORK_DAYS));
     }
     if (workCount.size === 0) return [];
 
@@ -1302,9 +1313,13 @@ export class TransactionService {
       mobile: ledgers.mobile,
     }).from(ledgers).where(inArray(ledgers.id, absentPartyIds));
 
+    // Most-worked first (3, 2, 1), A-Z within the same Work; a party with no mobile shows
+    // "null", as on the live popup (X RK KHANNA)
     return partyRows
-      .sort((a, b) => (a.partyName || '').toUpperCase().localeCompare((b.partyName || '').toUpperCase()))
-      .map((p, i) => ({ sr: i + 1, id: p.id, party: p.partyName, mobile: p.mobile || '-', work: workCount.get(p.id) || 0 }));
+      .sort((a, b) =>
+        (workCount.get(b.id) || 0) - (workCount.get(a.id) || 0)
+        || (a.partyName || '').toUpperCase().localeCompare((b.partyName || '').toUpperCase()))
+      .map((p, i) => ({ sr: i + 1, id: p.id, party: p.partyName, mobile: p.mobile || 'null', work: workCount.get(p.id) || 0 }));
   }
 
   // Duplicate Trans report: one row per GROUP of slips that share the same party, shift, day
@@ -1997,6 +2012,8 @@ export class TransactionService {
       shiftName: shift.name,
       date: dateFilter,
       isDeclared: true,
+      // the result declared for the picked shift and day — the page's [K = ..] badge
+      declaredNumber,
       partyCount: rows.length,
       // Live: Profit = Debit − Credit of the rows (Sale + Comm − Payout + Hissa), e.g. JAI
       // LUXMI 13-09 14095 − 5245 = 8850
@@ -4112,6 +4129,82 @@ export class TransactionService {
     });
   }
 
+  // HVS Process → click a Party Name (live popup "ZZ YUVRAJJ NEW HPT A/C"): every party whose
+  // HP Party (Ledger → HP Party) is the clicked ledger — itself too when it names itself (AJNALA
+  // JLD + RANI K BAGH), not when its own HP Party is blank (ZZ YUVRAJJ NEW HPT A/C: its 8
+  // parties only) — A-Z, each worked the same way as its main row, with HP-% and Vapsi-% beside
+  // the amounts. A ledger nobody names lists itself alone (live AARAV JLD HBD: 1 row, HP-% 20,
+  // Closing 8397). Members that didn't play the month still show, at 0 (live KETAN SIRSA).
+  static async getHvsPartyDetail(filters: { fromDate: string; toDate: string; partyId: number }) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(filters.fromDate || '') || !/^\d{4}-\d{2}-\d{2}$/.test(filters.toDate || '')) {
+      throw new AppError('Please select a valid Month and Year!');
+    }
+    const [party] = await db.select({ id: ledgers.id, partyName: ledgers.partyName }).from(ledgers).where(eq(ledgers.id, filters.partyId));
+    if (!party) throw new NotFoundError('Party not found');
+
+    let members = await db.select({ id: ledgers.id, partyName: ledgers.partyName, vapsiTpr: ledgers.vapsiTpr })
+      .from(ledgers)
+      .where(and(eq(ledgers.hpLedgerId, party.id), isNull(ledgers.deletedAt)));
+    if (members.length === 0) {
+      members = await db.select({ id: ledgers.id, partyName: ledgers.partyName, vapsiTpr: ledgers.vapsiTpr })
+        .from(ledgers).where(eq(ledgers.id, party.id));
+    }
+    const ids = members.map(m => m.id);
+
+    const month = parseInt(filters.fromDate.slice(5, 7), 10);
+    const year = parseInt(filters.fromDate.slice(0, 4), 10);
+    const range = { from: filters.fromDate, to: filters.toDate };
+    const [vapsi, hp, balances, hpLinks] = await Promise.all([
+      this.getVapsiSummary({ month, year, withHp: true, range }),
+      this.getHawaPattiSummary({ month, year, range }),
+      this.getLedgerBalancesAsOf(filters.toDate),
+      db.select({ ledgerId: ledgerThirdPartyLinks.ledgerId, percent: ledgerThirdPartyLinks.percent })
+        .from(ledgerThirdPartyLinks)
+        .where(and(
+          eq(ledgerThirdPartyLinks.linkType, 'HISSA'),
+          inArray(ledgerThirdPartyLinks.ledgerId, ids),
+          sql`UPPER(TRIM(${ledgerThirdPartyLinks.partyName})) = ${this.HP_ACCOUNT}`
+        )),
+    ]);
+    const vapsiById = new Map(vapsi.rows.map(r => [r.partyId, r]));
+    const hpById = new Map(hp.rows.map(r => [r.partyId, r]));
+    const closingById = new Map(balances.map(b => [b.ledgerId, b.balance]));
+    const hpPctById = new Map<number, number>();
+    for (const l of hpLinks) hpPctById.set(l.ledgerId, (hpPctById.get(l.ledgerId) || 0) + (parseFloat(l.percent || '0') || 0));
+
+    return {
+      partyId: party.id,
+      partyName: party.partyName,
+      rows: members
+        .map(m => {
+          const v = vapsiById.get(m.id);
+          const h = hpById.get(m.id);
+          // the main row's figures (getHvsProcessData)
+          const hpAmt = h && h.isHp && !h.done ? Math.round(h.hpAmt) : 0;
+          const vapsiAmt = v && !v.done && v.vapsiAmt > 0 ? Math.round(v.vapsiAmt) : 0;
+          const total = hpAmt + vapsiAmt;
+          const closing = closingById.get(m.id) || 0;
+          const ledgerVapsiPct = v ? v.vapsiPct : (parseFloat(String(m.vapsiTpr || '0').split('|')[0]) || 0);
+          return {
+            partyId: m.id,
+            partyName: m.partyName,
+            pnl: v ? v.pnl : 0,
+            // Live HP-%: the HP A/C Hissa row's % (AARAV JLD HBD 20), else the ledger's Vapsi %
+            // (ZZ YUVRAJJ NEW HPT A/C's parties: Vapsi 10 -> HP-% 10)
+            hpPct: hpPctById.get(m.id) || ledgerVapsiPct,
+            hpAmt,
+            // Live Vapsi-% reads 0 on every row with nothing to post; shown only while a Vapsi-Amt is due
+            vapsiPct: vapsiAmt > 0 ? ledgerVapsiPct : 0,
+            vapsiAmt,
+            total,
+            closing,
+            tSettleAmt: closing - total,
+          };
+        })
+        .sort((a, b) => a.partyName.localeCompare(b.partyName)),
+    };
+  }
+
   // HVS Go-Process: each ticked party's T-Settle-Amt posted as a cash settlement entry (the party
   // owes, > 0 → received from it, Cr; < 0 → paid to it, Dr), narrated "HVS Process <Month> <Year>",
   // all in one database transaction — every entry is posted or none is.
@@ -4662,6 +4755,18 @@ export class TransactionService {
     return results.sort((a, b) => a.date.localeCompare(b.date));
   }
 
+  // Settling S-Hissa: the larger of Re-Config's Self Hissa and the Hissa Party rows naming the
+  // party itself (live DK ROHIT 20%: "DK ROHIT 20% 20" -> 105900 − 10590 − 300×90 = 68310, Hissa −13662)
+  private static async settlingHissaPct(party: { id: number; partyName: string | null; hissaPercentage: string }) {
+    const selfLinks = await db.select({ partyName: ledgerThirdPartyLinks.partyName, percent: ledgerThirdPartyLinks.percent })
+      .from(ledgerThirdPartyLinks)
+      .where(and(eq(ledgerThirdPartyLinks.linkType, 'HISSA'), eq(ledgerThirdPartyLinks.ledgerId, party.id)));
+    const ownName = (party.partyName || '').trim().toUpperCase();
+    const selfLinkPct = selfLinks.filter(l => (l.partyName || '').trim().toUpperCase() === ownName)
+      .reduce((a, l) => a + (parseFloat(l.percent) || 0), 0);
+    return Math.max(parseFloat(party.hissaPercentage) || 0, selfLinkPct);
+  }
+
   // Day-by-day running ledger statement for ONE party. Balance = OP-Bal + P&L - Payment
   // (validated against a live reference row: 42129 + 45 - 0 = 42174). P&L = TotalSale +
   // Comm + Hissa - D-Open - A-Open (Comm/Hissa already negative). TPC/HP-Amt/RBT have no
@@ -4764,15 +4869,7 @@ export class TransactionService {
 
     const commissionRate = parseFloat(party.commissionRate);
     const settlingTpc = await TransactionService.tpcPctByLedger([party.id]);
-    // S-Hissa: the larger of Re-Config's Self Hissa and the Hissa Party rows naming the party
-    // itself (live DK ROHIT 20%: "DK ROHIT 20% 20" -> 105900 − 10590 − 300×90 = 68310, Hissa −13662)
-    const selfLinks = await db.select({ partyName: ledgerThirdPartyLinks.partyName, percent: ledgerThirdPartyLinks.percent })
-      .from(ledgerThirdPartyLinks)
-      .where(and(eq(ledgerThirdPartyLinks.linkType, 'HISSA'), eq(ledgerThirdPartyLinks.ledgerId, party.id)));
-    const ownName = (party.partyName || '').trim().toUpperCase();
-    const selfLinkPct = selfLinks.filter(l => (l.partyName || '').trim().toUpperCase() === ownName)
-      .reduce((a, l) => a + (parseFloat(l.percent) || 0), 0);
-    const hissaPct = Math.max(parseFloat(party.hissaPercentage) || 0, selfLinkPct);
+    const hissaPct = await this.settlingHissaPct(party);
 
     const days: string[] = [];
     const cursor = new Date(`${filters.fromDate}T00:00:00Z`);
@@ -4859,5 +4956,102 @@ export class TransactionService {
       balance: runningBalance,
       rows: shownRows,
     };
+  }
+
+  // Settling Report → click a Date (live "ABDUL | 25-10-2026"): that day's row split by shift,
+  // one line per shift the party played, worked the same way as the day row — Comm, O-Dara /
+  // O-Akhar (winning stake on the shift's own result for that day), Hissa at S-Hissa, and the
+  // net (Sale + Comm − payout + Hissa) under Debit when the party owes, Credit when it won.
+  // Live ABDUL 25-10: DELHI BAZAAR { K-67 } 3450 −345 −621 = 2484 Debit; FARIDABAD { K-52 }
+  // 8670 −867 −130×90 +779 = −3118 -> Credit 3118.
+  static async getSettlingDayDetail(filters: { partyId: number; date: string }) {
+    const [party] = await db.select().from(ledgers).where(eq(ledgers.id, filters.partyId));
+    if (!party) throw new NotFoundError('Party not found');
+
+    const commPct = Math.round(parseFloat(party.commissionRate || '0'));
+    const rate = `${Math.round(parseFloat(party.daraRate))}/${commPct}-${Math.round(parseFloat(party.akharRate))}/${commPct}`;
+    const commissionRate = parseFloat(party.commissionRate);
+    const tpcPct = (await TransactionService.tpcPctByLedger([party.id])).get(party.id);
+    const hissaPct = await this.settlingHissaPct(party);
+
+    const txRows = await db.select({ id: transactions.id, shiftId: transactions.shiftId, totalAmount: transactions.totalAmount })
+      .from(transactions)
+      .where(and(
+        eq(transactions.partyId, filters.partyId),
+        ne(transactions.status, 'VOIDED'),
+        sql`${transactions.createdAt}::date = ${filters.date}::date`
+      ));
+    const txIds = txRows.map(t => t.id);
+    const entryRows = txIds.length > 0
+      ? await db.select().from(transactionEntries).where(inArray(transactionEntries.transactionId, txIds))
+      : [];
+    const entriesByTx = new Map<number, typeof entryRows>();
+    for (const e of entryRows) {
+      if (!entriesByTx.has(e.transactionId)) entriesByTx.set(e.transactionId, []);
+      entriesByTx.get(e.transactionId)!.push(e);
+    }
+
+    const shiftIds = Array.from(new Set(txRows.map(t => t.shiftId)));
+    const shiftRows = shiftIds.length > 0
+      ? await db.select({ id: shifts.id, name: shifts.name, resultWebShiftId: shifts.resultWebShiftId, sortOrder: shifts.sortOrder, declaredNumber: shifts.declaredNumber, openDate: shifts.openDate })
+          .from(shifts).where(inArray(shifts.id, shiftIds))
+      : [];
+    const cycleRows = shiftIds.length > 0
+      ? await db.select({ shiftId: shiftCycles.shiftId, status: shiftCycles.status, declaredNumber: shiftCycles.declaredNumber })
+          .from(shiftCycles).where(and(inArray(shiftCycles.shiftId, shiftIds), eq(shiftCycles.cycleDate, filters.date)))
+      : [];
+    // the day's own result, as getSettlingReport judges it
+    const declaredFor = (shiftId: number): string | null => {
+      const c = cycleRows.find(r => r.shiftId === shiftId);
+      const n = c && (c.status === 'DECLARED' || c.status === 'AUDITED' || c.declaredNumber) ? c.declaredNumber : null;
+      if (n) return n.padStart(2, '0');
+      const sh = shiftRows.find(x => x.id === shiftId);
+      return sh && sh.openDate === filters.date && sh.declaredNumber ? sh.declaredNumber.padStart(2, '0') : null;
+    };
+
+    const rows = shiftRows
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id)
+      .map(sh => {
+        const declaredNumber = declaredFor(sh.id);
+        let totalSale = 0, dSale = 0, aSale = 0, oDara = 0, oAkhar = 0, payout = 0;
+        for (const tx of txRows.filter(t => t.shiftId === sh.id)) {
+          totalSale += parseFloat(tx.totalAmount);
+          for (const e of entriesByTx.get(tx.id) || []) {
+            const amt = parseFloat(e.amount);
+            const r = parseFloat(e.rate);
+            if (e.entryType === 'DARA') {
+              dSale += amt;
+              if (declaredNumber && e.numberValue === declaredNumber) { oDara += amt; payout += amt * r; }
+            } else {
+              aSale += amt;
+              if (declaredNumber
+                && ((e.entryType === 'HARUF_ANDAR' && e.numberValue === declaredNumber[0])
+                  || (e.entryType === 'HARUF_BAHAR' && e.numberValue === declaredNumber[1]))) {
+                oAkhar += amt; payout += amt * r;
+              }
+            }
+          }
+        }
+        const comm = TransactionService.partyComm(totalSale, dSale, aSale, commissionRate, tpcPct);
+        const book = totalSale + comm - payout;
+        const hissa = -(book * hissaPct / 100) + 0;
+        const net = book + hissa;
+        return {
+          shiftId: sh.id,
+          // "DELHI BAZAAR { K-67 }": K = the shift's result that day, unpadded as live prints it
+          // (DESHAWER 28-10 "K-1"; "00" is the grid's 100); left off while undeclared
+          shiftName: declaredNumber ? `${sh.name} { K-${declaredNumber === '00' ? 100 : parseInt(declaredNumber, 10)} }` : sh.name,
+          declaredNumber,
+          rate,
+          sHissa: hissaPct,
+          totalSale, dSale, aSale, comm, oDara, oAkhar,
+          tpc: 0,
+          hissa,
+          debit: net > 0 ? net : 0,
+          credit: net < 0 ? -net : 0,
+        };
+      });
+
+    return { partyId: party.id, partyName: party.partyName, date: filters.date, rows };
   }
 }

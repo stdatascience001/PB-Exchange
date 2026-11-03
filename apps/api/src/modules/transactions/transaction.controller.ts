@@ -96,6 +96,17 @@ export class TransactionController {
     }
   }
 
+  static async settlingDayDetail(req: Request, res: Response, next: NextFunction) {
+    try {
+      const partyId = parseInt(req.query.partyId as string, 10);
+      const date = req.query.date as string;
+      const result = await TransactionService.getSettlingDayDetail({ partyId, date });
+      return sendSuccess(res, result, 'Settling day detail retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
   static async hvsProcess(req: Request, res: Response, next: NextFunction) {
     try {
       const fromDate = req.query.fromDate as string;
@@ -103,6 +114,18 @@ export class TransactionController {
       const agentId = req.query.agentId ? parseInt(req.query.agentId as string, 10) : undefined;
       const result = await TransactionService.getHvsProcessData({ fromDate, toDate, agentId });
       return sendSuccess(res, result, 'HVS process data retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async hvsPartyDetail(req: Request, res: Response, next: NextFunction) {
+    try {
+      const fromDate = req.query.fromDate as string;
+      const toDate = req.query.toDate as string;
+      const partyId = parseInt(req.query.partyId as string, 10);
+      const result = await TransactionService.getHvsPartyDetail({ fromDate, toDate, partyId });
+      return sendSuccess(res, result, 'HVS party detail retrieved');
     } catch (err) {
       next(err);
     }
@@ -305,6 +328,7 @@ export class TransactionController {
       if (isNaN(id)) {
         return sendSuccess(res, null, 'Invalid transaction ID');
       }
+      await TransactionService.assertOwnTransaction(id, ownDataUserId(req.user));
       const tx = await TransactionService.getTransactionById(id);
       return sendSuccess(res, tx, 'Transaction details retrieved');
     } catch (err) {
@@ -315,6 +339,7 @@ export class TransactionController {
   static async getEntries(req: Request, res: Response, next: NextFunction) {
     try {
       const id = parseInt(req.params.id as string, 10);
+      await TransactionService.assertOwnTransaction(id, ownDataUserId(req.user));
       const entries = await TransactionService.getTransactionEntries(id);
       return sendSuccess(res, entries, 'Transaction entries retrieved');
     } catch (err) {
@@ -581,6 +606,7 @@ export class TransactionController {
     try {
       const transactionId = parseInt(req.params.id as string, 10);
       const { targetShiftId } = req.body;
+      await TransactionService.assertOwnTransaction(transactionId, ownDataUserId(req.user));
       const copied = await TransactionService.copyToNextShift(transactionId, targetShiftId, req.user);
       return sendSuccess(res, copied, 'Transaction copied to next shift', 201);
     } catch (err) {

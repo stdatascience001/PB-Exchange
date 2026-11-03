@@ -16,6 +16,8 @@ export const createShiftSchema = z.object({
 
 export const declareShiftSchema = z.object({
   winningNumber: z.string().regex(/^\d{1,2}$/, 'Winning number must be 1 or 2 digits (0-99)'),
+  // the shift day being declared (Live Prediction's Date); left out = the shift's open cycle
+  cycleDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Invalid date').optional(),
 });
 
 export const updateShiftSchema = z.object({

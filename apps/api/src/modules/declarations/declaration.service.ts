@@ -9,7 +9,12 @@ import { UserSession } from '@pb/types';
 import crypto from 'crypto';
 
 export class DeclarationService {
-  static async declareResult(shiftId: number, winningNumber: string, user: UserSession) {
+  // cycleDate (optional, YYYY-MM-DD): the shift day being declared — Live Prediction sends its
+  // Date filter. Left out, or equal to the shift's open_date, it is the live cycle exactly as
+  // before. An earlier date declares that past cycle only: its own slips, its shift_cycles
+  // row, and the live shift row is left alone (MOHALI BAZAAR 27-10 declared on 29-10 used to
+  // land on the open cycle instead).
+  static async declareResult(shiftId: number, winningNumber: string, user: UserSession, cycleDate?: string) {
     if (user.roleName !== 'DEVELOPER' && user.roleName !== 'SUPER ADMIN' && user.roleName !== 'ADMIN') {
       throw new ForbiddenError('Only Super Admin or Admin can declare results');
     }
@@ -17,16 +22,32 @@ export class DeclarationService {
     const [shift] = await db.select().from(shifts).where(eq(shifts.id, shiftId));
     if (!shift) throw new NotFoundError('Shift not found');
 
-    if (shift.status === 'DECLARED') {
+    const targetDate = cycleDate || shift.openDate;
+    const isLiveCycle = targetDate === shift.openDate;
+    const dmy = (d: string) => d.split('-').reverse().join('-');
+    if (targetDate > shift.openDate) {
+      throw new AppError(`Shift ${shift.name} is open for ${dmy(shift.openDate)}; a later date can't be declared yet`, 400);
+    }
+
+    if (isLiveCycle && shift.status === 'DECLARED') {
       throw new AppError(`Shift ${shift.name} has already been declared`, 400);
+    }
+    if (!isLiveCycle) {
+      const [pastCycle] = await db.select().from(shiftCycles).where(
+        and(eq(shiftCycles.shiftId, shift.id), eq(shiftCycles.cycleDate, targetDate))
+      );
+      if (pastCycle && (pastCycle.status === 'DECLARED' || pastCycle.status === 'AUDITED')) {
+        throw new AppError(`Shift ${shift.name} has already been declared for ${dmy(targetDate)}`, 400);
+      }
     }
 
     const paddedWinning = winningNumber.padStart(2, '0');
 
     const result = await db.transaction(async (tx) => {
-      const activeSlips = await tx.select().from(transactions).where(
-        and(eq(transactions.shiftId, shift.id), ne(transactions.status, 'VOIDED'))
-      );
+      const slipConds = [eq(transactions.shiftId, shift.id), ne(transactions.status, 'VOIDED')];
+      // a past cycle counts only its own day's slips
+      if (!isLiveCycle) slipConds.push(sql`${transactions.createdAt}::date = ${targetDate}::date`);
+      const activeSlips = await tx.select().from(transactions).where(and(...slipConds));
 
       let totalCollected = 0;
       for (const slip of activeSlips) {
@@ -115,14 +136,16 @@ export class DeclarationService {
         declaredBy: user.userId,
       }).returning();
 
-      await tx.update(shifts)
-        .set({ status: 'DECLARED', declaredNumber: paddedWinning })
-        .where(eq(shifts.id, shift.id));
+      if (isLiveCycle) {
+        await tx.update(shifts)
+          .set({ status: 'DECLARED', declaredNumber: paddedWinning })
+          .where(eq(shifts.id, shift.id));
+      }
 
       // Keep the per-day history in sync so this cycle stops showing as "Declare Needed"
       // even after the daily rollover worker later moves the live shift row to a new date.
       const [existingCycle] = await tx.select().from(shiftCycles).where(
-        and(eq(shiftCycles.shiftId, shift.id), eq(shiftCycles.cycleDate, shift.openDate))
+        and(eq(shiftCycles.shiftId, shift.id), eq(shiftCycles.cycleDate, targetDate))
       );
       if (existingCycle) {
         await tx.update(shiftCycles).set({
@@ -135,7 +158,7 @@ export class DeclarationService {
       } else {
         await tx.insert(shiftCycles).values({
           shiftId: shift.id,
-          cycleDate: shift.openDate,
+          cycleDate: targetDate,
           status: 'DECLARED',
           declaredNumber: paddedWinning,
           totalCollected: totalCollected.toFixed(2),
@@ -160,6 +183,7 @@ export class DeclarationService {
         entityId: shift.id.toString(),
         afterData: {
           winningNumber: paddedWinning,
+          cycleDate: targetDate,
           totalCollected,
           totalPayout,
           netProfitLoss,
@@ -172,6 +196,7 @@ export class DeclarationService {
         shiftId: shift.id,
         shiftName: shift.name,
         winningNumber: paddedWinning,
+        cycleDate: targetDate,
         totalCollected,
         totalPayout,
         netProfitLoss,
@@ -183,7 +208,7 @@ export class DeclarationService {
 
     // Per-party Sale / P&L this declare was made on — the Dashboard's ReDeclare popup compares
     // against it. Never throws (see captureOnDeclare).
-    await DeclarationSnapshotService.captureOnDeclare(result.declarationId, shift.id, shift.openDate, paddedWinning);
+    await DeclarationSnapshotService.captureOnDeclare(result.declarationId, shift.id, targetDate, paddedWinning);
 
     publishDashboardUpdate(shift.id);
     publishShiftsUpdate();
@@ -213,7 +238,10 @@ export class DeclarationService {
     const [shift] = await db.select().from(shifts).where(eq(shifts.id, shiftId));
     if (!shift) throw new NotFoundError('Shift not found');
 
-    const declDateStr = decl.declaredAt.toISOString().slice(0, 10);
+    // The cycle this declaration was made for, not the day Declare was pressed (a 27-10 result
+    // declared on 29-10 reopens 27-10)
+    const declDateStr = (await DeclarationSnapshotService.cycleDatesFor([decl.id])).get(decl.id)
+      || decl.declaredAt.toISOString().slice(0, 10);
     // Only reset the LIVE shift row when reversing the declaration for its CURRENT cycle —
     // reversing an older, already-rolled-over cycle must not disturb today's live state.
     const isLiveCycle = declDateStr === shift.openDate;
@@ -273,12 +301,15 @@ export class DeclarationService {
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(desc(declarations.declaredAt));
 
+    // cycleDate: the shift day each result belongs to (Live Prediction's result list)
+    const cycleById = await DeclarationSnapshotService.cycleDatesFor(rows.map(r => r.id));
     return rows.map(r => ({
       ...r,
       totalCollected: parseFloat(r.totalCollected),
       totalPayout: parseFloat(r.totalPayout),
       netProfitLoss: parseFloat(r.netProfitLoss),
       declaredAt: r.declaredAt.toISOString(),
+      cycleDate: cycleById.get(r.id) || r.declaredAt.toISOString().slice(0, 10),
     }));
   }
 
