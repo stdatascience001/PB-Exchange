@@ -537,17 +537,11 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
               }}
               className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 cursor-pointer"
             >
-              {/* Live Trans-Audit offers exactly NOT-AUDIT / AUDITED / ALL (AUDITED = marked
-                  Valid or Mistake); Declare Trans-Audit keeps its existing options. */}
+              {/* Live Trans-Audit and Declare Trans-Audit both offer exactly NOT-AUDIT / AUDITED /
+                  ALL (AUDITED = marked Valid or Mistake). A Re-Audit slip shows under NOT-AUDIT and
+                  AUDITED both. */}
               <option value="NOT-AUDIT">NOT-AUDIT</option>
-              {isDeclareMode ? (
-                <>
-                  <option value="VALID">VALID</option>
-                  <option value="MISTAKE">MISTAKE</option>
-                </>
-              ) : (
-                <option value="AUDITED">AUDITED</option>
-              )}
+              <option value="AUDITED">AUDITED</option>
               <option value="ALL">ALL</option>
             </select>
           </div>
@@ -631,6 +625,11 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
                         {/* 4. Party */}
                         <td className="py-1.5 px-3 font-bold text-slate-900 uppercase tracking-tight border-r border-b border-slate-200">
                           {tx.partyName}
+                          {/* Live: an audited slip edited by another user — shown on every Status
+                              filter; also listed under NOT-AUDIT until it is audited again */}
+                          {tx.reAudit && (
+                            <span className="ml-1.5 inline-block align-middle px-2 py-0.5 bg-[#c9a227] text-white text-[9px] font-semibold normal-case tracking-normal rounded-sm">Re-Audit</span>
+                          )}
                         </td>
 
                         {/* 5. Rate */}

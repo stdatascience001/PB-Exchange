@@ -75,3 +75,32 @@ td.hl-declared { background-color: #16a34a !important; }
 td.hl-declared > span:not(:first-child),
 td.hl-declared > span:not(:first-child) *,
 td.hl-declared input { color: #fff !important; }
+
+/* Dashboard → Staff Working list: a slim light scrollbar on the white panel (the dark
+   custom-scrollbar track showed as a heavy navy bar there) */
+.staff-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+.staff-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.staff-scrollbar::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 3px;
+}
+
+.staff-scrollbar::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+.staff-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.staff-scrollbar::-webkit-scrollbar-button {
+  display: none;
+}

@@ -3,6 +3,7 @@ import { apiRequest } from '../api/client.js';
 import { Send, X } from 'lucide-react';
 import { PartyNameInput } from '../components/PartyNameInput.js';
 import { toast } from 'react-toastify';
+import { useFitToViewport } from '../utils/useFitToViewport.js';
 
 interface LedgerItem {
   id: number;
@@ -310,6 +311,9 @@ const ROW_BATCH = 300;
 const partyNameCollator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
 
 export const LedgersPage: React.FC = () => {
+  // The page is as tall as the window leaves under the header, so the table scrolls inside its
+  // own box and the filters, footer row and bottom bar always stay on screen
+  const { ref: fitRef, height: fitHeight } = useFitToViewport<HTMLDivElement>(520);
   const [ledgers, setLedgers] = useState<LedgerItem[]>([]);
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1423,11 +1427,14 @@ export const LedgersPage: React.FC = () => {
   );
 
   return (
-    <div className="min-h-full bg-[#eaedf2] p-3 sm:p-4 flex flex-col justify-between text-slate-800 select-none">
+    // Fills the window's height: the card stretches to it and the table box takes whatever the
+    // filters and the bottom bar leave, scrolling inside itself (both ways). On a very short
+    // window the page keeps a minimum height (520) and the page scrolls instead.
+    <div ref={fitRef} style={fitHeight ? { height: fitHeight } : undefined} className="min-h-[520px] bg-[#eaedf2] p-3 sm:p-4 flex flex-col justify-between text-slate-800 select-none">
       {/* Outer Card */}
-      <div className="bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col bg-white rounded-md shadow-sm border border-slate-300 overflow-hidden">
         {/* Subheader Controls & Filters matching pbmax1.com */}
-        <div className="p-2.5 sm:p-3 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200">
+        <div className="shrink-0 p-2.5 sm:p-3 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200">
           <div className="flex flex-wrap items-center gap-3 text-xs">
             <span className="font-bold text-sm text-slate-900 tracking-tight mr-1">Ledger</span>
 
@@ -1501,8 +1508,9 @@ export const LedgersPage: React.FC = () => {
         </div>
 
         {/* Main Ledgers Table matching pbmax1.com — scrolls inside its own box (both ways), with
-            the header row pinned at the top and the footer row at the bottom, as on live */}
-        <div className="overflow-auto max-h-[calc(100vh-230px)] min-h-[240px]">
+            the header row pinned at the top and the footer row at the bottom, as on live. Its
+            height follows the window (flex-1), and both scrollbars are always drawn visibly. */}
+        <div className="flex-1 min-h-[240px] overflow-auto pbmax-table-scrollbar">
           <table className="w-full text-left text-xs border-collapse">
             <thead className="sticky top-0 z-10">
               <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
@@ -1573,7 +1581,7 @@ export const LedgersPage: React.FC = () => {
         </div>
 
         {/* Bottom Help & Status Bar matching pbmax1.com */}
-        <div className="p-2.5 bg-[#f8fafc] border-t border-slate-200 flex items-center justify-between text-xs font-semibold text-slate-600">
+        <div className="shrink-0 p-2.5 bg-[#f8fafc] border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs font-semibold text-slate-600">
           <div className="text-slate-500 hover:text-slate-700 cursor-pointer">Need Help?</div>
           {/* Also clickable; shows the reload while it runs */}
           <button

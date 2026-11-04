@@ -478,10 +478,18 @@ export class LedgerService {
       ...thirdPartyNames.map(p => p.partyName),
     ]));
 
+    // Live counts every declared shift-day's game result as one of the ledger's vouchers: its
+    // P&L (the Daily Report Debit / Credit) joins TotalDr / TotalCr. A day that nets to 0 posts
+    // nothing. (dynamic import: TransactionService imports this module)
+    const { TransactionService } = await import('../transactions/transaction.service.js');
+    const games = (await TransactionService.ledgerGameResults(ledgerId)).filter(g => g.pnl !== 0);
+    const gameDr = games.reduce((s, g) => s + (g.pnl > 0 ? g.pnl : 0), 0);
+    const gameCr = games.reduce((s, g) => s + (g.pnl < 0 ? -g.pnl : 0), 0);
+
     return {
-      inVoucher: voucherRow?.count || 0,
-      totalDr: parseFloat(voucherRow?.totalDr || '0'),
-      totalCr: parseFloat(voucherRow?.totalCr || '0'),
+      inVoucher: (voucherRow?.count || 0) + games.length,
+      totalDr: parseFloat(voucherRow?.totalDr || '0') + gameDr,
+      totalCr: parseFloat(voucherRow?.totalCr || '0') + gameCr,
       inHissa: linkCounts.HISSA,
       inTpc: linkCounts.TPC,
       inTpv: linkCounts.TPV,

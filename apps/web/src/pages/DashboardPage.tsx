@@ -345,7 +345,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               </h2>
             </div>
 
-            <div className="flex-1 overflow-y-auto custom-scrollbar divide-y divide-slate-200 pr-4">
+            <div className="flex-1 overflow-y-auto staff-scrollbar divide-y divide-slate-200 pr-4">
               {!metrics || metrics.staffWorking.length === 0 ? (
                 <div className="h-full flex items-center justify-center text-xs text-slate-400">
                   No staff currently working

@@ -510,6 +510,26 @@ export class TransactionService {
     } else {
       conditions.push(ne(transactions.status, 'VOIDED'));
     }
+    // Re-Audit (live Declare Trans-Audit), read from the UPDATE / AUDIT rows audit_logs already
+    // holds. "Edited by another user" = an UPDATE by someone other than the one who entered it.
+    //   reAuditBadgeSql — an audited (Valid / Mistake) slip edited by another user, at any time:
+    //     the "Re-Audit" message beside the party on every Status filter (ALL included).
+    //   reAuditSql — such an edit made after its last audit verdict: the slip waits for audit
+    //     again, so NOT-AUDIT lists it too; a new Valid / Mistake (a fresh AUDIT row) ends that.
+    const reAuditBadgeSql = sql<boolean>`(COALESCE(${transactions.auditStatus}, 'NOT-AUDIT') <> 'NOT-AUDIT' AND EXISTS (
+      SELECT 1 FROM audit_logs u
+      WHERE u.entity_type = 'TRANSACTION' AND u.entity_id = ${transactions.id}::text AND u.action = 'UPDATE'
+        AND u.actor_id <> ${transactions.createdBy}
+    ))`;
+    const reAuditSql = sql<boolean>`(COALESCE(${transactions.auditStatus}, 'NOT-AUDIT') <> 'NOT-AUDIT' AND EXISTS (
+      SELECT 1 FROM audit_logs u
+      WHERE u.entity_type = 'TRANSACTION' AND u.entity_id = ${transactions.id}::text AND u.action = 'UPDATE'
+        AND u.actor_id <> ${transactions.createdBy}
+        AND u.created_at > (
+          SELECT MAX(a.created_at) FROM audit_logs a
+          WHERE a.entity_type = 'TRANSACTION' AND a.entity_id = ${transactions.id}::text AND a.action = 'AUDIT'
+        )
+    ))`;
     if (filters.auditStatus && filters.auditStatus !== 'ALL') {
       // Live Trans-Audit's Status filter offers NOT-AUDIT / AUDITED / ALL. AUDITED is not a
       // stored value — a slip is audited once it's marked VALID or MISTAKE — so it matches
@@ -518,7 +538,8 @@ export class TransactionService {
       if (filters.auditStatus === 'AUDITED') {
         conditions.push(sql`COALESCE(${transactions.auditStatus}, 'NOT-AUDIT') <> 'NOT-AUDIT'`);
       } else if (filters.auditStatus === 'NOT-AUDIT') {
-        conditions.push(sql`COALESCE(${transactions.auditStatus}, 'NOT-AUDIT') = 'NOT-AUDIT'`);
+        // a Re-Audit slip waits for audit again, so it is listed here too (and still under AUDITED)
+        conditions.push(sql`(COALESCE(${transactions.auditStatus}, 'NOT-AUDIT') = 'NOT-AUDIT' OR ${reAuditSql})`);
       } else {
         conditions.push(eq(transactions.auditStatus, filters.auditStatus));
       }
@@ -557,6 +578,7 @@ export class TransactionService {
       mistakeRemark: transactions.mistakeRemark,
       mistakeEdited: transactions.mistakeEdited,
       isAudited: transactions.isAudited,
+      reAudit: reAuditBadgeSql,
       createdAt: transactions.createdAt,
       updatedAt: transactions.updatedAt,
     })
@@ -3267,6 +3289,33 @@ export class TransactionService {
       GROUP BY e.ledger_id, (v.voucher_type = 'LIMIT')
     `;
 
+    const balance = new Map<number, number>();
+    const limit = new Map<number, number>();
+    for (const v of voucherRows) {
+      const target = v.is_limit ? limit : balance;
+      target.set(v.ledger_id, (target.get(v.ledger_id) || 0) + parseFloat(v.net));
+    }
+
+    for (const g of await this.gameResultRows(asOf, ledgerRows)) {
+      balance.set(g.partyId, (balance.get(g.partyId) || 0) + g.pnl);
+    }
+
+    return ledgerRows.map(l => ({
+      ledgerId: l.id,
+      partyName: l.partyName,
+      agentId: l.agentId,
+      balance: balance.get(l.id) || 0,
+      limit: limit.get(l.id) || 0,
+    }));
+  }
+
+  // Every declared day's game result per party, shift and day (the rule above getLedgerBalancesAsOf):
+  // P&L > 0 = the party's Daily Report Debit (Dr), < 0 = its Credit (Cr). partyId: one party only.
+  private static async gameResultRows(
+    asOf: string,
+    ledgerRows: Array<{ id: number; partyName: string; commissionRate: string | null; hissaPercentage: string | null }>,
+    partyId?: number,
+  ) {
     // Sale per party, shift and declared day; then Dara / Akhar sale and winning payout
     const saleRows = await pgSql<Array<{ party_id: number; shift_id: number; day: string; sale: string }>>`
       SELECT t.party_id, t.shift_id, t.created_at::date::text AS day, SUM(t.total_amount) AS sale
@@ -3274,6 +3323,7 @@ export class TransactionService {
       JOIN shifts s ON s.id = t.shift_id
       LEFT JOIN shift_cycles c ON c.shift_id = t.shift_id AND c.cycle_date = t.created_at::date::text
       WHERE t.status <> 'VOIDED' AND t.created_at::date <= ${asOf}::date
+        AND (${partyId ?? null}::int IS NULL OR t.party_id = ${partyId ?? null}::int)
         AND COALESCE(
           CASE WHEN c.status IN ('DECLARED', 'AUDITED') OR c.declared_number IS NOT NULL THEN c.declared_number END,
           CASE WHEN s.open_date = t.created_at::date::text THEN s.declared_number END
@@ -3298,23 +3348,18 @@ export class TransactionService {
         JOIN shifts s ON s.id = t.shift_id
         LEFT JOIN shift_cycles c ON c.shift_id = t.shift_id AND c.cycle_date = t.created_at::date::text
         WHERE t.status <> 'VOIDED' AND t.created_at::date <= ${asOf}::date
+          AND (${partyId ?? null}::int IS NULL OR t.party_id = ${partyId ?? null}::int)
       ) x
       WHERE x.dn IS NOT NULL
       GROUP BY x.party_id, x.shift_id, x.day
     `;
-
-    const balance = new Map<number, number>();
-    const limit = new Map<number, number>();
-    for (const v of voucherRows) {
-      const target = v.is_limit ? limit : balance;
-      target.set(v.ledger_id, (target.get(v.ledger_id) || 0) + parseFloat(v.net));
-    }
 
     // S-Hissa per party: the larger of the Self Hissa box and its Hissa rows naming itself
     const hissaLinks = await db.select({ ledgerId: ledgerThirdPartyLinks.ledgerId, partyName: ledgerThirdPartyLinks.partyName, percent: ledgerThirdPartyLinks.percent })
       .from(ledgerThirdPartyLinks)
       .where(eq(ledgerThirdPartyLinks.linkType, 'HISSA'));
     const ledgerById = new Map(ledgerRows.map(l => [l.id, l]));
+    const out: Array<{ partyId: number; shiftId: number; day: string; pnl: number }> = [];
     const selfLinks = new Map<number, number>();
     for (const h of hissaLinks) {
       const l = ledgerById.get(h.ledgerId);
@@ -3338,16 +3383,23 @@ export class TransactionService {
       const comm = TransactionService.partyComm(sale, dSale, aSale, parseFloat(l.commissionRate || '0') || 0, tpcByLedger.get(l.id));
       const book = sale + comm - payout;
       const pnl = roundAway(book * (100 - sHissaOf(l)) / 100);
-      balance.set(l.id, (balance.get(l.id) || 0) + pnl);
+      out.push({ partyId: l.id, shiftId: srow.shift_id, day: srow.day, pnl });
     }
 
-    return ledgerRows.map(l => ({
-      ledgerId: l.id,
-      partyName: l.partyName,
-      agentId: l.agentId,
-      balance: balance.get(l.id) || 0,
-      limit: limit.get(l.id) || 0,
-    }));
+    return out;
+  }
+
+  // Ledger Update → Linked (live InVoucher / TotalDr / TotalCr): one ledger's declared game
+  // results, each shift-day a posting — live books them as vouchers. Up to today.
+  static async ledgerGameResults(ledgerId: number) {
+    const ledgerRows = await db.select({
+      id: ledgers.id,
+      partyName: ledgers.partyName,
+      commissionRate: ledgers.commissionRate,
+      hissaPercentage: ledgers.hissaPercentage,
+    }).from(ledgers).where(eq(ledgers.id, ledgerId));
+    const [todayRow] = await pgSql<Array<{ today: string }>>`SELECT CURRENT_DATE::text AS today`;
+    return this.gameResultRows(todayRow.today, ledgerRows, ledgerId);
   }
 
   // Cash Report (rpt_cash / rpt_cash_agent): every Cash Agent ledger (Ledger Group "Cash Agent"),

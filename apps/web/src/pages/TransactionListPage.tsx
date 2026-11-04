@@ -27,6 +27,8 @@ export interface TransactionItem {
   mistakeRemark?: string | null;
   // Slip was edited after the auditor marked it MISTAKE — Updated column shows in red
   mistakeEdited?: boolean;
+  // Trans-Audit: an audited slip edited by another user — the "Re-Audit" message
+  reAudit?: boolean;
   // Slip was edited after it was entered — Updated column shows in red (live list)
   isEdited?: boolean;
   // Added / updated by a DEVELOPER / SUPER ADMIN / ADMIN user — a DATA ENTRY OPERATOR gets no
