@@ -14,6 +14,18 @@ export class PayrollController {
     }
   }
 
+  static async staffAttendanceDays(req: Request, res: Response, next: NextFunction) {
+    try {
+      const staffId = parseInt(req.params.staffId as string, 10);
+      const fromDate = req.query.fromDate as string;
+      const toDate = req.query.toDate as string;
+      const result = await PayrollService.getStaffAttendanceDays(staffId, { fromDate, toDate });
+      return sendSuccess(res, result, 'Staff attendance days retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
   static async getAttendance(req: Request, res: Response, next: NextFunction) {
     try {
       const month = req.query.month as string;

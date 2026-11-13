@@ -780,7 +780,8 @@ export const LedgersPage: React.FC = () => {
         setRcAkharRate(String(d.akharRate ?? 0));
         setRcAkharComm(rcCommFromAkhar(String(d.akharRate ?? 0)));
         rcLoadedRef.current = { daraRate: String(d.daraRate ?? 0), commissionRate: Number(d.commissionRate ?? 0) };
-        setRcSelfHissa(String(d.hissaPercentage ?? 0));
+        // Self Hissa 0 = an empty box (live), the same as after its row's x
+        setRcSelfHissa(Number(d.hissaPercentage) > 0 ? numOnly(d.hissaPercentage) : '');
         setRcCappingAmt(String(d.capping ?? 0));
         setRcMasterLedgerConfig(!!d.masterLedgerConfig);
         setRcIsTransactionAllow(d.isTransactionAllow !== false);
@@ -800,9 +801,17 @@ export const LedgersPage: React.FC = () => {
         // '-' and never reflected any real saved data at all.
         apiRequest<ThirdPartyLink[]>(`/ledgers/${d.id}/links`).then(linkRes => {
           const all = linkRes.data || [];
-          setHissaLinks(all.filter(l => l.linkType === 'HISSA'));
+          const hissa = all.filter(l => l.linkType === 'HISSA');
+          setHissaLinks(hissa);
           setTpcLinks(all.filter(l => l.linkType === 'TPC'));
           setTpvLinks(all.filter(l => l.linkType === 'TPV'));
+          // A Hissa Party row naming the party itself IS its Self Hissa (reports take the larger
+          // of the two): with the box empty, it shows that row's percent, so both match
+          const own = (d.partyName || '').trim().toUpperCase();
+          const selfLinkPct = hissa
+            .filter(l => (l.partyName || '').trim().toUpperCase() === own)
+            .reduce((sum, l) => sum + (parseFloat(String(l.percent)) || 0), 0);
+          if (!(Number(d.hissaPercentage) > 0) && selfLinkPct > 0) setRcSelfHissa(numOnly(selfLinkPct));
         }).catch(() => {});
       }
     } catch (err: any) {
@@ -978,7 +987,27 @@ export const LedgersPage: React.FC = () => {
     focusRc('rc-self-hissa');
     return true;
   };
-  const addHissaLink = () => handleAddLink('HISSA', { partyName: newHissaParty, percent: parseFloat(newHissaPercent) || 0 });
+  // The party's own name typed as a Hissa Party is its Self Hissa (live: the row under its own
+  // name and the Self Hissa box are one figure): it is saved as Self Hissa, not as a second row
+  const isOwnParty = (name: string) =>
+    !!updateLedgerDetail && name.trim().toUpperCase() === (updateLedgerDetail.partyName || '').trim().toUpperCase();
+  const addHissaLink = async (): Promise<boolean> => {
+    const pct = parseFloat(newHissaPercent) || 0;
+    if (updateLedgerDetail && isOwnParty(newHissaParty) && pct > 0) {
+      if (pct > HISSA_MAX) return false;
+      try {
+        await apiRequest(`/ledgers/${updateLedgerDetail.id}`, { method: 'PUT', body: JSON.stringify({ hissaPercentage: pct }) });
+        setRcSelfHissa(numOnly(pct));
+        setNewHissaParty(''); setNewHissaPercent('');
+        fetchLedgers();
+        return true;
+      } catch (err: any) {
+        alert(err.message || 'Failed to add');
+        return false;
+      }
+    }
+    return handleAddLink('HISSA', { partyName: newHissaParty, percent: pct });
+  };
   // 3rd Party Comm's D-Comm can't pass this ledger's own Dara Commission (100 - Dara Rate,
   // e.g. Dara 90 -> max 10, Dara 80 -> max 20). Live: "Transfer Dara Percent has been
   // exceeded. Max Allow: 10" with the cursor back on D-Comm, the typed value selected.
@@ -1096,11 +1125,12 @@ export const LedgersPage: React.FC = () => {
     }
   };
 
-  // Self Hissa row's x: Self Hissa -> 0, saved on its own (rates / capping untouched)
+  // Self Hissa row's x: Self Hissa -> 0, saved on its own (rates / capping untouched); the
+  // Self Hissa box is left empty, as live
   const handleDeleteSelfHissa = async () => {
     if (!updateLedgerDetail) return;
     const before = rcSelfHissa;
-    setRcSelfHissa('0');
+    setRcSelfHissa('');
     try {
       await apiRequest(`/ledgers/${updateLedgerDetail.id}`, {
         method: 'PUT',
@@ -1116,6 +1146,13 @@ export const LedgersPage: React.FC = () => {
   const handleDeleteLink = async (linkType: 'HISSA' | 'TPC' | 'TPV', linkId: number) => {
     try {
       await apiRequest(`/ledgers/links/${linkId}`, { method: 'DELETE' });
+      // A row under the party's own name is its Self Hissa: removing it clears Self Hissa too
+      const selfRow = linkType === 'HISSA' && hissaLinks.some(l => l.id === linkId && isOwnParty(l.partyName || ''));
+      if (selfRow && updateLedgerDetail) {
+        await apiRequest(`/ledgers/${updateLedgerDetail.id}`, { method: 'PUT', body: JSON.stringify({ hissaPercentage: 0 }) });
+        setRcSelfHissa('');
+        fetchLedgers();
+      }
       if (linkType === 'HISSA') setHissaLinks(prev => prev.filter(l => l.id !== linkId));
       else if (linkType === 'TPC') setTpcLinks(prev => prev.filter(l => l.id !== linkId));
       else setTpvLinks(prev => prev.filter(l => l.id !== linkId));
@@ -2138,7 +2175,7 @@ export const LedgersPage: React.FC = () => {
                       {/* Self Hissa shows as a baseline row under the party's own name. It is the
                           ledger's own Self Hissa setting, not a link row — its x sets Self Hissa to 0
                           and saves just that (the Self Hissa box above still edits it too). */}
-                      {parseFloat(rcSelfHissa) > 0 && (
+                      {parseFloat(rcSelfHissa) > 0 && !hissaLinks.some(l => isOwnParty(l.partyName || '')) && (
                         <div className="grid grid-cols-[1fr_70px_36px] border-t border-slate-100 items-center px-1.5 py-1 text-xs bg-slate-50">
                           <div className="font-semibold text-slate-800">{updateLedgerDetail?.partyName}</div>
                           <div className="text-center font-mono">{numOnly(rcSelfHissa)}</div>

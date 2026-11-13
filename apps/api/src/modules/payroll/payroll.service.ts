@@ -81,6 +81,37 @@ export class PayrollService {
     }).sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  // Staff Attendance popup (click a Staff name): one row per day in the range the staff
+  // entered at least one slip — live B20 01-11..12-11 lists 2026-11-02 187, 11-03 240 …
+  // (a day with no slips, e.g. 11-07, is left out). Same slip count as the report's Count.
+  static async getStaffAttendanceDays(staffId: number, filters: { fromDate: string; toDate: string }) {
+    const [s] = await db.select().from(staff).where(eq(staff.id, staffId));
+    if (!s) throw new NotFoundError('Staff not found');
+
+    const dayRows = s.userId == null ? [] : await db.select({
+      date: sql<string>`to_char(${transactions.createdAt}::date, 'YYYY-MM-DD')`,
+      count: sql<number>`COUNT(*)::int`,
+    })
+      .from(transactions)
+      .where(and(
+        eq(transactions.createdBy, s.userId),
+        ne(transactions.status, 'VOIDED'),
+        sql`${transactions.createdAt}::date >= ${filters.fromDate}::date`,
+        sql`${transactions.createdAt}::date <= ${filters.toDate}::date`,
+      ))
+      .groupBy(sql`${transactions.createdAt}::date`)
+      .orderBy(sql`${transactions.createdAt}::date`);
+
+    const username = (s.username && s.username !== 'NONE') ? s.username : s.fullName;
+    return {
+      staffId: s.id,
+      name: `${s.fullName} | ${username}`,
+      mobile: s.mobile || '-',
+      address: s.address || '-',
+      days: dayRows.map(d => ({ date: d.date, count: d.count })),
+    };
+  }
+
   static async getPayrollAttendance(filters: { month: string }) {
     const rows = await db.select({
       id: staffAttendance.id,

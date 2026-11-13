@@ -208,6 +208,12 @@ export class TransactionController {
     try {
       const shiftId = parseInt(req.query.shiftId as string, 10);
       const date = req.query.date as string;
+      // ?lastDeclared=true: the cycle date of the shift's latest declared result (Declare
+      // Jantri opens a picked shift on it)
+      if (req.query.lastDeclared === 'true') {
+        const lastDeclaredDate = await TransactionService.lastDeclaredDateFor(shiftId);
+        return sendSuccess(res, { lastDeclaredDate }, 'Last declared date retrieved');
+      }
       // ?declaredOnly=true: just the day's declared number (Jantri View popup highlight)
       if (req.query.declaredOnly === 'true') {
         const declaredNumber = await TransactionService.declaredNumberFor(shiftId, date);

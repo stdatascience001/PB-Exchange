@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ShiftDto, JantriViewDto } from '@pb/types';
 import { apiRequest } from '../api/client.js';
 import { toast } from 'react-toastify';
@@ -44,10 +44,26 @@ export const JantriPage: React.FC<JantriPageProps> = ({
   }, [shifts, declareModeOnly]);
   const isShiftDeclared = (s?: ShiftDto) => !!s && (!!s.declaredNumber || s.status === 'DECLARED' || s.status === 'AUDITED');
 
+  // Declared state of the picked shift ON the picked date — the shift row only knows its
+  // current cycle (the rollover worker moves a declared shift to a new, open day overnight),
+  // so an earlier date asks that day's cycle history (DELHI BAZAAR 10-11, declared 07, viewed
+  // on 12-11 once the row reads OPEN).
+  const isDeclaredOn = async (shiftId: number, date: string): Promise<boolean> => {
+    const shift = shifts.find(s => s.id === shiftId);
+    if (shift && date === shift.openDate) return isShiftDeclared(shift);
+    try {
+      const params = new URLSearchParams({ shiftId: String(shiftId), date, declaredOnly: 'true' });
+      const res = await apiRequest<{ declaredNumber: string | null }>(`/transactions/collection?${params.toString()}`);
+      return !!res.data?.declaredNumber;
+    } catch {
+      return isShiftDeclared(shift);
+    }
+  };
+
   const fetchJantri = async (shiftId: number) => {
-    // Declare Jantri: only a declared result has a declare jantri — an undeclared shift gets
-    // the zero grid and the live "Error / Record not avaliable!" toast, without its live figures
-    if (declareModeOnly && !isShiftDeclared(shifts.find(s => s.id === shiftId))) {
+    // Declare Jantri: only a declared result has a declare jantri — an undeclared shift / day
+    // gets the zero grid and the live "Error / Record not avaliable!" toast, without its live figures
+    if (declareModeOnly && !(await isDeclaredOn(shiftId, dateStr))) {
       const shift = shifts.find(s => s.id === shiftId);
       setData({
         shiftId,
@@ -122,8 +138,33 @@ export const JantriPage: React.FC<JantriPageProps> = ({
     }
   };
 
+  // Declare Jantri: a picked shift opens on the date of its latest declared result — the
+  // cycle it was declared for, not today (a late shift declared after midnight still shows
+  // yesterday; a shift the rollover worker has moved on to a new, open day shows its last
+  // declared day). Once each time a shift is picked — a date typed afterwards stays as typed;
+  // a never-declared shift keeps the date shown. (Jantri keeps its own date handling.)
+  const datedShiftRef = useRef<number | null>(null);
+
   useEffect(() => {
     const target = activeShift && availableShifts.some(s => s.id === activeShift.id) ? activeShift : availableShifts[0];
+    if (target && declareModeOnly && datedShiftRef.current !== target.id) {
+      datedShiftRef.current = target.id;
+      const pickedId = target.id;
+      const params = new URLSearchParams({ shiftId: String(pickedId), lastDeclared: 'true' });
+      apiRequest<{ lastDeclaredDate: string | null }>(`/transactions/collection?${params.toString()}`)
+        .then(res => res.data?.lastDeclaredDate || null)
+        .catch(() => null)
+        .then(lastDate => {
+          if (datedShiftRef.current !== pickedId) return; // another shift was picked meanwhile
+          if (lastDate && /^\d{4}-\d{2}-\d{2}$/.test(lastDate) && lastDate !== dateStr) {
+            // the date change re-runs this effect, which then loads that day
+            setDateStr(lastDate);
+          } else {
+            fetchJantri(pickedId);
+          }
+        });
+      return;
+    }
     if (target) fetchJantri(target.id);
     else if (declareModeOnly && shifts.length > 0) {
       // No declared shift at all: empty grid and the same "Record not avaliable!" toast

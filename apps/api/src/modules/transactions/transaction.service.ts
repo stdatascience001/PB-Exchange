@@ -1030,6 +1030,21 @@ export class TransactionService {
     return n ? String(n).trim().padStart(2, '0') : null;
   }
 
+  // The cycle date of a shift's latest declared result: its own open_date while that cycle is
+  // declared, else (the rollover worker has since moved the row to a new, open day) the latest
+  // DECLARED / AUDITED cycle in its history. Null when the shift was never declared.
+  static async lastDeclaredDateFor(shiftId: number): Promise<string | null> {
+    if (!shiftId) return null;
+    const [shift] = await db.select().from(shifts).where(eq(shifts.id, shiftId));
+    if (!shift) return null;
+    if (shift.declaredNumber || shift.status === 'DECLARED' || shift.status === 'AUDITED') return shift.openDate;
+    const [cycle] = await db.select({ cycleDate: shiftCycles.cycleDate }).from(shiftCycles).where(and(
+      eq(shiftCycles.shiftId, shiftId),
+      inArray(shiftCycles.status, ['DECLARED', 'AUDITED']),
+    )).orderBy(desc(shiftCycles.cycleDate)).limit(1);
+    return cycle?.cycleDate || null;
+  }
+
   static async getCollectionView(filters: {
     shiftId: number;
     date: string;
@@ -1137,6 +1152,11 @@ export class TransactionService {
         void filters.dibba;
 
         let amt = parseFloat(e.amount);
+        // Main Jantri (live) books every slip as entered — a Company ledger's slip (X DB …),
+        // stored negative here (signedAmount), counts at its plain amount, the same as it shows
+        // in the Declare / Live Transactions list and its Total Amount. Without this its numbers
+        // were taken OFF the cells (live DELHI BAZAAR 09-11 Main Jantri 529,150; ours read lower).
+        if (filters.mainJantri) amt = Math.abs(amt);
         const isHaruf = e.entryType === 'HARUF_ANDAR' || e.entryType === 'HARUF_BAHAR';
 
         // Commission takes the party's own commission % off its amounts. Live HYDRABAD NIGHT

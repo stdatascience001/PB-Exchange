@@ -409,6 +409,7 @@ export class JantriService {
           agentId: ledgers.agentId,
           commissionRate: ledgers.commissionRate,
           hissaPercentage: ledgers.hissaPercentage,
+          groupName: ledgers.groupName,
         }).from(ledgers).where(inArray(ledgers.id, partyIds))
       : [];
     const partyById = new Map(partyRows.map(p => [p.id, p]));
@@ -506,7 +507,13 @@ export class JantriService {
 
     const lastWinByParty = await this.getLastWinCounts(shiftId, partyIds);
 
-    const partyRowsOut = Array.from(grossSaleByParty.entries()).map(([partyId, sale]) => {
+    // Company ledgers (group COMPANY, e.g. X DB) are not listed in the party list / Agent
+    // Groups (live Declare Prediction DELHI BAZAAR 09-11 lists 116 parties, no X DB row). The
+    // number-wise Sale / Amt above are left exactly as they were.
+    const isCompanyParty = (partyId: number) =>
+      ((partyById.get(partyId)?.groupName || '').trim().toUpperCase() === 'COMPANY');
+
+    const partyRowsOut = Array.from(grossSaleByParty.entries()).filter(([partyId]) => !isCompanyParty(partyId)).map(([partyId, sale]) => {
       const party = partyById.get(partyId);
 
       let payout = 0;

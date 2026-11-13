@@ -372,12 +372,11 @@ export const App: React.FC = () => {
     try {
       const res = await apiRequest<ShiftDto[]>('/shifts');
       setShifts(res.data);
-      // Read the CURRENT selection via the updater. The 30s poll below runs the fetchShifts
-      // captured on the first render, where activeShift was still null — so every tick took
-      // the `!activeShift` branch and snapped the selection back to the first shift (a page
-      // like Company Calculation then reloaded onto it and lost its edits). Same rules as
-      // before: pick the first shift only when nothing is selected, otherwise refresh the
-      // selected one's data and keep it.
+      // Read the CURRENT selection via the updater, not the activeShift captured when this
+      // fetchShifts was created (a stale null snapped the selection back to the first shift,
+      // and a page like Company Calculation then reloaded onto it and lost its edits). Pick the
+      // first shift only when nothing is selected, otherwise refresh the selected one's data
+      // and keep it.
       setActiveShift(prev => {
         if (!prev) return res.data.length > 0 ? res.data[0] : prev;
         return res.data.find(s => s.id === prev.id) || prev;
@@ -387,22 +386,14 @@ export const App: React.FC = () => {
     }
   };
 
+  // Shifts and the staff heartbeat load once — when the app opens / is refreshed (F5) or on
+  // login — with no background polling (the 30s shifts poll and 60s heartbeat were removed).
+  // Pages that change a shift (Declare, Shift Manage) still reload the list via onRefreshShifts.
   useEffect(() => {
     if (user) {
       fetchShifts();
-      const interval = setInterval(fetchShifts, 30000); // 30s poll
-
-      // Send live staff heartbeat to maintain working status
-      const sendHeartbeat = () => {
-        apiRequest('/staff/heartbeat', { method: 'POST' }).catch(() => {});
-      };
-      sendHeartbeat();
-      const heartbeatInterval = setInterval(sendHeartbeat, 60000); // 60s heartbeat
-
-      return () => {
-        clearInterval(interval);
-        clearInterval(heartbeatInterval);
-      };
+      // live staff heartbeat — marks this staff as working
+      apiRequest('/staff/heartbeat', { method: 'POST' }).catch(() => {});
     }
   }, [user]);
 
@@ -411,7 +402,7 @@ export const App: React.FC = () => {
   // connection, and Chrome caps concurrent connections per origin at 6 — shared across every
   // open tab, not per tab. With several "PB Exchange" tabs open at once (common in this app's
   // own multi-window workflows), the extra persistent connections exhausted that shared
-  // budget and started silently queueing regular fetch() calls (including the polls above),
+  // budget and started silently queueing regular fetch() calls (including the shift polls of the time),
   // breaking data on refresh. The backend Pub/Sub + /shifts/stream endpoint are left in
   // place, unused, for a future retry behind a single shared connection instead of
   // one-per-page.

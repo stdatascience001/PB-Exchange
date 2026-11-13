@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { X } from 'lucide-react';
 import { apiRequest } from '../api/client.js';
 import { DateDMYInput } from '../components/DateDMYInput.js';
 
@@ -15,6 +16,14 @@ interface StaffAttendanceRow {
   count: number;
 }
 
+interface StaffAttendanceDays {
+  staffId: number;
+  name: string;
+  mobile: string;
+  address: string;
+  days: Array<{ date: string; count: number }>;
+}
+
 const todayInputDate = () => new Date().toISOString().slice(0, 10);
 const fmt = (n: number) => Math.round(n || 0).toLocaleString('en-IN');
 
@@ -23,6 +32,15 @@ export const StaffAttendancePage: React.FC = () => {
   const [toDate, setToDate] = useState(todayInputDate());
   const [rows, setRows] = useState<StaffAttendanceRow[]>([]);
   const [loading, setLoading] = useState(false);
+  // The From / To the rows on screen were searched with — the popup uses these, not dates
+  // edited since without pressing Search
+  const [searchedRange, setSearchedRange] = useState({ fromDate, toDate });
+
+  // Staff name click (live): popup "B20 | B20" with one row per day the staff entered slips —
+  // Sr. / Date / Mobile / Address / Count
+  const [detail, setDetail] = useState<StaffAttendanceDays | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const detailDownRef = useRef(false);
 
   const fetchList = async () => {
     setLoading(true);
@@ -30,6 +48,7 @@ export const StaffAttendancePage: React.FC = () => {
       const params = new URLSearchParams({ fromDate, toDate });
       const res = await apiRequest<StaffAttendanceRow[]>(`/payroll/staff-attendance?${params.toString()}`);
       if (res.data) setRows(res.data);
+      setSearchedRange({ fromDate, toDate });
     } catch (err) {
       console.warn('Failed to load staff attendance:', err);
     } finally {
@@ -53,6 +72,27 @@ export const StaffAttendancePage: React.FC = () => {
     setHasSearched(true);
     fetchList();
   };
+
+  const openDetail = async (r: StaffAttendanceRow) => {
+    setDetail({ staffId: r.staffId, name: r.name, mobile: r.mobile, address: r.address, days: [] });
+    setDetailLoading(true);
+    try {
+      const params = new URLSearchParams(searchedRange);
+      const res = await apiRequest<StaffAttendanceDays>(`/payroll/staff-attendance/${r.staffId}/days?${params.toString()}`);
+      if (res.data) setDetail(res.data);
+    } catch (err) {
+      console.warn('Failed to load staff attendance days:', err);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!detail) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDetail(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [detail]);
 
   // Excel (CSV) of the rows on screen, columns as the live report
   const handleExportExcel = () => {
@@ -121,7 +161,11 @@ export const StaffAttendancePage: React.FC = () => {
                 rows.map((r, idx) => (
                   <tr key={r.staffId} className="hover:bg-slate-50 transition-colors">
                     <td className="py-2 px-3 text-center font-mono text-slate-600 border-r border-slate-200">{idx + 1}</td>
-                    <td className="py-2 px-4 font-bold text-slate-900 uppercase border-r border-slate-200">{r.name}</td>
+                    <td className="py-2 px-4 font-bold text-slate-900 uppercase border-r border-slate-200">
+                      <button type="button" onClick={() => openDetail(r)} className="font-bold uppercase text-slate-900 hover:text-[#24497e] hover:underline focus:outline-none focus:underline" title="Date-wise attendance">
+                        {r.name}
+                      </button>
+                    </td>
                     <td className="py-2 px-4 text-center font-mono text-slate-700 border-r border-slate-200">{r.mobile}</td>
                     <td className="py-2 px-4 text-center text-slate-700 uppercase border-r border-slate-200">{r.address}</td>
                     <td className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200">{r.days}</td>
@@ -137,6 +181,55 @@ export const StaffAttendancePage: React.FC = () => {
           </table>
         </div>
       </div>
+
+      {detail && (
+        <div
+          onMouseDown={(e) => { detailDownRef.current = e.target === e.currentTarget; }}
+          onClick={(e) => { if (detailDownRef.current && e.target === e.currentTarget) setDetail(null); detailDownRef.current = false; }}
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-start justify-center p-2 sm:p-4 pt-16 z-50 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-6xl overflow-hidden border border-slate-300 max-h-[85vh] flex flex-col">
+            <div className="bg-[#24497e] text-white px-4 py-3 flex items-center justify-between">
+              <h2 className="text-sm sm:text-base font-bold tracking-tight uppercase">{detail.name}</h2>
+              <button type="button" onClick={() => setDetail(null)} className="text-white hover:text-slate-200 p-0.5" title="Close (Esc)">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="overflow-auto p-1 pbmax-table-scrollbar">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="sticky top-0">
+                  <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
+                    <th className="py-2.5 px-3 border-r border-[#223b63] w-12">Sr.</th>
+                    <th className="py-2.5 px-3 border-r border-[#223b63] w-60">Date</th>
+                    <th className="py-2.5 px-3 border-r border-[#223b63] w-28 text-center">Mobile</th>
+                    <th className="py-2.5 px-3 border-r border-[#223b63] w-28 text-center">Address</th>
+                    <th className="py-2.5 px-3 border-r border-[#223b63] w-28 text-right">Count</th>
+                    <th className="py-2.5 px-3" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 whitespace-nowrap">
+                  {detailLoading ? (
+                    <tr><td colSpan={6} className="py-6 text-center text-slate-400">Loading...</td></tr>
+                  ) : detail.days.length === 0 ? (
+                    <tr><td colSpan={6} className="py-6 text-center text-slate-400">Record not avaliable!</td></tr>
+                  ) : (
+                    detail.days.map((d, i) => (
+                      <tr key={d.date} className="even:bg-slate-50/60">
+                        <td className="py-2 px-3 text-slate-600 border-r border-slate-200">{i + 1}</td>
+                        <td className="py-2 px-3 font-semibold text-slate-700 border-r border-slate-200">{d.date}</td>
+                        <td className="py-2 px-3 text-center font-semibold text-slate-700 border-r border-slate-200">{detail.mobile}</td>
+                        <td className="py-2 px-3 text-center font-semibold text-slate-700 uppercase border-r border-slate-200">{detail.address}</td>
+                        <td className="py-2 px-3 text-right font-semibold text-slate-700 border-r border-slate-200">{d.count}</td>
+                        <td className="py-2 px-3" />
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

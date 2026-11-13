@@ -7,6 +7,7 @@ const router = Router();
 router.use(authenticate);
 
 router.get('/staff-attendance', PayrollController.staffAttendance);
+router.get('/staff-attendance/:staffId/days', PayrollController.staffAttendanceDays);
 router.get('/attendance', PayrollController.getAttendance);
 router.post('/attendance', PayrollController.createAttendance);
 router.patch('/attendance/:id', PayrollController.updateAttendanceRow);
