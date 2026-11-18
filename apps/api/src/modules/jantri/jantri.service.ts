@@ -213,6 +213,10 @@ export class JantriService {
     );
 
     const hash: Record<string, number> = {};
+    // Live rounds each party's net amount on a cell first and then adds the parties up
+    // (HYDRABAD NIGHT 18-11, cell 1: CAMPA AGENCY 50.4 -> 50 + HASSAN 25.2 -> 25 = 75, where
+    // rounding the 75.6 total gave 76) — so collect per party, round, then sum into hash.
+    const partyHash = new Map<number, Record<string, number>>();
     let totalCollected = 0;
     // Company Calculation's SALE ASC list (live): per Dara number, the raw sale booked on it
     // and the payout if it wins after each party's Hissa (commission is not taken off a
@@ -262,7 +266,9 @@ export class JantriService {
           : e.entryType === 'HARUF_BAHAR'
           ? `B_${e.numberValue}`
           : e.numberValue;
-        hash[key] = (hash[key] || 0) + amt;
+        const ph = partyHash.get(partyId ?? 0) ?? {};
+        ph[key] = (ph[key] || 0) + amt;
+        partyHash.set(partyId ?? 0, ph);
         if (e.entryType === 'DARA') {
           const raw = parseFloat(e.amount) || 0;
           rawSale[key] = (rawSale[key] || 0) + raw;
@@ -272,6 +278,13 @@ export class JantriService {
           // Andar / Bahar raw sale under "A_d" / "B_d" (live lists them as 9999 / 888)
           rawSale[key] = (rawSale[key] || 0) + (parseFloat(e.amount) || 0);
         }
+      }
+    }
+
+    for (const ph of partyHash.values()) {
+      for (const [key, amt] of Object.entries(ph)) {
+        // 2-decimal pre-round so a float like 31.4999… still rounds half up (31.5 -> 32)
+        hash[key] = (hash[key] || 0) + Math.round(Math.round(amt * 100) / 100);
       }
     }
 

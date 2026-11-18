@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { apiRequest } from '../api/client.js';
+import { PartyJantriModal } from './PartyJantriModal.js';
 
 interface ShiftLine {
   shiftId: number;
@@ -64,9 +65,13 @@ export const AllShiftPartyModal: React.FC<AllShiftPartyModalProps> = ({ open, on
   const [loading, setLoading] = useState(false);
   const [stamp, setStamp] = useState('');
   const backdropDownRef = useRef(false);
+  // Shift click (live): the party's own jantri for that shift over the report's range — titled
+  // with the party name (AGARTALA EXPRESS 16-09 DELHI BAZAAR -> Grand Total 15,950)
+  const [jantriShiftId, setJantriShiftId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!open || !partyId) return;
+    setJantriShiftId(null);
     let cancelled = false;
     setDetail(null);
     setStamp(reportingTime());
@@ -80,11 +85,12 @@ export const AllShiftPartyModal: React.FC<AllShiftPartyModalProps> = ({ open, on
   }, [open, partyId, fromDate, toDate]);
 
   useEffect(() => {
-    if (!open) return;
+    // while the shift jantri is open on top, Esc closes only that (it has its own Esc handler)
+    if (!open || jantriShiftId !== null) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [open, onClose, jantriShiftId]);
 
   if (!open) return null;
 
@@ -154,7 +160,16 @@ export const AllShiftPartyModal: React.FC<AllShiftPartyModalProps> = ({ open, on
                 rows.map((r, i) => (
                   <tr key={r.shiftId} className="even:bg-slate-50/70 font-semibold text-slate-700">
                     <td className={td}>{i + 1}</td>
-                    <td className={`${td} font-bold uppercase bg-[#f1f1f1]`}>{r.shiftName}</td>
+                    <td className={`${td} font-bold uppercase bg-[#f1f1f1]`}>
+                      <button
+                        type="button"
+                        onClick={() => setJantriShiftId(r.shiftId)}
+                        title="View the party's jantri for this shift"
+                        className="font-bold uppercase text-slate-700 hover:text-[#1662c6] hover:underline cursor-pointer text-left"
+                      >
+                        {r.shiftName}
+                      </button>
+                    </td>
                     <td className={`${td} text-center`}>{r.rate}</td>
                     <td className={`${td} text-center`}>{r.sHissa}</td>
                     <td className={`${td} text-right`}>{n(r.totalSale)}</td>
@@ -208,6 +223,15 @@ export const AllShiftPartyModal: React.FC<AllShiftPartyModalProps> = ({ open, on
           )}
         </div>
       </div>
+      <PartyJantriModal
+        open={jantriShiftId !== null}
+        onClose={() => setJantriShiftId(null)}
+        shiftId={jantriShiftId !== null ? String(jantriShiftId) : ''}
+        date={fromDate}
+        toDate={toDate}
+        partyId={partyId}
+        partyName={detail?.partyName || partyName}
+      />
     </div>
   );
 };

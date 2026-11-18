@@ -36,7 +36,7 @@ const TRANSACTION_PAGES: Rule[] = [
   get(/^\/ledgers(\/search)?$/),
   get(/^\/jantri\/\d+(\/net|\/distributor\/\d+)?$/),
   get(/^\/transactions$/),
-  get(/^\/transactions\/(absent-parties|collection|kwada)$/),
+  get(/^\/transactions\/(absent-parties|collection|kwada|cut-factors)$/),
   get(/^\/transactions\/\d+(\/entries)?$/),
   on(['POST'], /^\/transactions(\/declare)?$/),
   on(['POST'], /^\/transactions\/generate\/(cross|from-to|random)$/),

@@ -23,6 +23,7 @@ router.get('/', TransactionController.list);
 router.get('/duplicates', TransactionController.listDuplicates);
 router.get('/kwada', TransactionController.findKwada);
 router.get('/collection', TransactionController.collectionView);
+router.get('/cut-factors', TransactionController.cutFactors);
 router.get('/absent-parties', TransactionController.absentParties);
 router.get('/entries/asc', TransactionController.listEntriesAsc);
 router.get('/party-collection-totals', TransactionController.partyCollectionTotals);

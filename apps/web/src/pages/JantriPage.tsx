@@ -202,33 +202,36 @@ export const JantriPage: React.FC<JantriPageProps> = ({
     return gridByNumber.get(padded)?.totalAmount || 0;
   };
 
+  // Totals add up the rounded cell figures shown on screen, as live does (HYDRABAD NIGHT,
+  // HASSAN 1,430 at 30% HP: live Grand Total 895 = sum of the rounded cells, while summing the
+  // unrounded net amounts gave 901).
   const getRowTotal = (r: number) => {
     let sum = 0;
-    for (let c = 1; c <= 10; c++) sum += getAmountForNum(r * 10 + c);
+    for (let c = 1; c <= 10; c++) sum += Math.round(getAmountForNum(r * 10 + c));
     return sum;
   };
 
   const getColTotal = (col: number) => {
     let sum = 0;
-    for (let r = 0; r < 10; r++) sum += getAmountForNum(r * 10 + col);
+    for (let r = 0; r < 10; r++) sum += Math.round(getAmountForNum(r * 10 + col));
     return sum;
   };
 
   const numbersTotal = useMemo(() => {
     let sum = 0;
-    for (let i = 1; i <= 100; i++) sum += getAmountForNum(i);
+    for (let i = 1; i <= 100; i++) sum += Math.round(getAmountForNum(i));
     return sum;
   }, [data]);
 
   const baharTotal = useMemo(() => {
     let sum = 0;
-    for (let i = 0; i <= 9; i++) sum += harufByDigit.get(String(i))?.baharAmount || 0;
+    for (let i = 0; i <= 9; i++) sum += Math.round(harufByDigit.get(String(i))?.baharAmount || 0);
     return sum;
   }, [data]);
 
   const andarTotal = useMemo(() => {
     let sum = 0;
-    for (let i = 0; i <= 9; i++) sum += harufByDigit.get(String(i))?.andarAmount || 0;
+    for (let i = 0; i <= 9; i++) sum += Math.round(harufByDigit.get(String(i))?.andarAmount || 0);
     return sum;
   }, [data]);
 

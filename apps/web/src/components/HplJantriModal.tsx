@@ -149,8 +149,10 @@ export const HplJantriModal: React.FC<HplJantriModalProps> = ({ open, onClose, s
   // Whole rupees with an exact .5 going to the even rupee, as live does: PUNJAB DAY 15-10
   // 13.5 -> 14, 33.5 -> 34 but 210.5 -> 210, 238.5 -> 238, 22.5 -> 22 (grand total 3,755).
   // Main Jantri cells are already whole 50s, so they are unchanged by this.
-  const roundHalfEven = (v: number) => {
-    const x = Math.round(v * 1e6) / 1e6; // drop float noise (15 x 0.9 = 13.500000000000002)
+  // The amount is taken as computed, float noise included (as live's float maths): an amount a
+  // hair over .5 goes up — live HYDRABAD NIGHT 18-11 cells 20 / 52 / 83 at 40.50000000000002
+  // read 41 (grand total 4,783); stripping the noise first rounded them to 40 (4,780).
+  const roundHalfEven = (x: number) => {
     const f = Math.floor(x);
     const diff = x - f;
     if (diff > 0.5) return f + 1;

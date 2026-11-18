@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { X } from 'lucide-react';
 import type { TransactionItem } from '../pages/TransactionListPage.js';
 import { harufOf } from '../utils/entryDisplay.js';
+import { useCutFactors, cutFactorOf, roundHalfEven } from '../utils/cutConsolidate.js';
 import { apiRequest } from '../api/client.js';
 import { declaredCellKeys, useDeclareHighlightEnabled, DeclareHighlightPage } from '../utils/declaredHighlight.js';
 
@@ -27,7 +28,7 @@ export { declaredCellKeys } from '../utils/declaredHighlight.js';
 // (A1-A0) haruf rows, and a Grand Total.
 //   - default:                the selected slip's entries only
 //   - Consolidate Jantri:     every loaded slip of the selected party (all slips if none)
-//   - Cut Consolidate Jantri: each cell shown at 90% (rounded)
+//   - Cut Consolidate Jantri: each amount at its party's Commission + Hissa net (rounded)
 export const JantriViewModal: React.FC<JantriViewModalProps> = ({ open, onClose, selectedTx, list, shiftId, date, highlightPage }) => {
   const highlightOn = useDeclareHighlightEnabled(highlightPage);
   const [isConsolidated, setIsConsolidated] = useState(false);
@@ -56,34 +57,51 @@ export const JantriViewModal: React.FC<JantriViewModalProps> = ({ open, onClose,
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [open, onClose]);
 
+  // each entry carries its slip's party, so Cut Consolidate can take that party's own cut
   const jantriEntries = useMemo(() => {
+    const withParty = (t: TransactionItem) => (t.entries || []).map(e => ({ ...e, partyId: t.partyId }));
     if (isConsolidated) {
       if (selectedTx?.partyName) {
         return list
           .filter(t => t.partyName.toLowerCase() === selectedTx.partyName.toLowerCase())
-          .flatMap(t => t.entries || []);
+          .flatMap(withParty);
       }
-      return list.flatMap(t => t.entries || []);
+      return list.flatMap(withParty);
     }
-    return selectedTx?.entries || [];
+    return selectedTx ? withParty(selectedTx) : [];
   }, [isConsolidated, selectedTx, list]);
 
-  const cut = (raw: number) => (isCutConsolidated ? Math.round(raw * 0.9) : raw);
+  // Cut Consolidate Jantri (live): the popup party's book CONSOLIDATED — every loaded slip of
+  // that party, whichever slip was opened and with Consolidate off too — each amount at the
+  // party's Commission + Hissa net, the cell then rounded. Live AGARTALA EXPRESS (one slip)
+  // 200 -> 90, 210 -> 94; CHHABRA APH 50/50 DELHI BAZAAR 09-11 (several slips, 0.25): its
+  // other slips show up — cell 85 20 -> 30, the slip's empty cell 28 -> 5.
+  const cellEntries = useMemo(() => {
+    if (!isCutConsolidated || !selectedTx?.partyName) return jantriEntries;
+    return list
+      .filter(t => t.partyName.toLowerCase() === selectedTx.partyName.toLowerCase())
+      .flatMap(t => (t.entries || []).map(e => ({ ...e, partyId: t.partyId })));
+  }, [isCutConsolidated, selectedTx, list, jantriEntries]);
+  const cutFactors = useCutFactors(open && isCutConsolidated, cellEntries.map(e => e.partyId));
+  const sumCell = (matches: typeof cellEntries) => {
+    if (!isCutConsolidated) return matches.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+    return roundHalfEven(matches.reduce((sum, e) => sum + (Number(e.amount) || 0) * cutFactorOf(cutFactors, e.partyId), 0));
+  };
 
   const getAmountForNum = (n: number) => {
     const numStr = String(n);
     const numPadded = n < 100 ? String(n).padStart(2, '0') : '00';
-    const matches = jantriEntries.filter(e => {
+    const matches = cellEntries.filter(e => {
       if (harufOf(e)) return false;
       const val = (e.numberValue || '').trim();
       return val === numStr || val === numPadded || (n === 100 && (val === '100' || val === '00'));
     });
-    return cut(matches.reduce((sum, e) => sum + (Number(e.amount) || 0), 0));
+    return sumCell(matches);
   };
 
   const getAmountForHaruf = (prefix: 'A' | 'B', digit: number) => {
     const dStr = String(digit % 10);
-    const matches = jantriEntries.filter(e => {
+    const matches = cellEntries.filter(e => {
       const h = harufOf(e);
       if (h) return h.side === prefix && h.digit === dStr;
       const val = (e.numberValue || '').trim().toUpperCase();
@@ -95,7 +113,7 @@ export const JantriViewModal: React.FC<JantriViewModalProps> = ({ open, onClose,
         (val.startsWith(prefix) && val.endsWith(dStr))
       );
     });
-    return cut(matches.reduce((sum, e) => sum + (Number(e.amount) || 0), 0));
+    return sumCell(matches);
   };
 
   const getRowTotal = (r: number) => {
@@ -114,19 +132,19 @@ export const JantriViewModal: React.FC<JantriViewModalProps> = ({ open, onClose,
     let sum = 0;
     for (let i = 1; i <= 100; i++) sum += getAmountForNum(i);
     return sum;
-  }, [jantriEntries, isCutConsolidated]);
+  }, [cellEntries, isCutConsolidated, cutFactors]);
 
   const baharTotal = useMemo(() => {
     let sum = 0;
     for (let i = 0; i <= 9; i++) sum += getAmountForHaruf('B', i);
     return sum;
-  }, [jantriEntries, isCutConsolidated]);
+  }, [cellEntries, isCutConsolidated, cutFactors]);
 
   const andarTotal = useMemo(() => {
     let sum = 0;
     for (let i = 0; i <= 9; i++) sum += getAmountForHaruf('A', i);
     return sum;
-  }, [jantriEntries, isCutConsolidated]);
+  }, [cellEntries, isCutConsolidated, cutFactors]);
 
   const grandTotal = numbersTotal + baharTotal + andarTotal;
   const fmt = (v: number) => (v > 0 ? v.toLocaleString('en-IN') : 0);

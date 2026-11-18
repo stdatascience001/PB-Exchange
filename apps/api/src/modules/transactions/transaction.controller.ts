@@ -238,8 +238,26 @@ export class TransactionController {
         .flatMap(v => String(v).split(','))
         .map(v => parseInt(v.trim(), 10))
         .filter(n => Number.isInteger(n) && n > 0);
-      const result = await TransactionService.getCollectionView({ shiftId, date, commission, hissa, dibba, akhMix, amtLess, lessPercent, partyIds, hpl, mainJantri, round50 });
+      // optional range end (All Shift Report party → shift jantri); absent = the single day
+      const toDate = typeof req.query.toDate === 'string' && req.query.toDate ? req.query.toDate : undefined;
+      const result = await TransactionService.getCollectionView({ shiftId, date, commission, hissa, dibba, akhMix, amtLess, lessPercent, partyIds, hpl, mainJantri, round50, toDate });
       return sendSuccess(res, result, 'Collection view retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  // GET /transactions/cut-factors?partyIds=1,2 — Jantri View's "Cut Consolidate Jantri": each
+  // party's Commission + Hissa factor ({ "1": 0.45 })
+  static async cutFactors(req: Request, res: Response, next: NextFunction) {
+    try {
+      const raw = req.query.partyIds;
+      const partyIds = (Array.isArray(raw) ? raw : raw ? [raw] : [])
+        .flatMap(v => String(v).split(','))
+        .map(v => parseInt(v.trim(), 10))
+        .filter(n => Number.isInteger(n) && n > 0);
+      const factors = await TransactionService.getCutFactors(partyIds);
+      return sendSuccess(res, factors, 'Cut factors retrieved');
     } catch (err) {
       next(err);
     }

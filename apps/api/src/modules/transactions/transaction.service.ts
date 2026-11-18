@@ -1045,6 +1045,46 @@ export class TransactionService {
     return cycle?.cycleDate || null;
   }
 
+  // Live / Declare Transactions → Jantri View → "Cut Consolidate Jantri" (live): each party's
+  // amounts net of its Commission and Hissa. Live AGARTALA EXPRESS (90/10-9/10, Hissa "50 |
+  // AGARTALA EXPRESS"): 200 -> 90, 210 -> 94, 10 -> 4 (Grand Total 4,190 -> 1,876).
+  //   factor = (1 − Comm%) × (1 − S-Hissa%) × Π(1 − other Hissa Party row %)
+  // S-Hissa = the larger of Self Hissa and the Hissa Party rows naming the party itself (the
+  // Daily Report rule — the two are the same share, not added).
+  static async getCutFactors(partyIds: number[]): Promise<Record<number, number>> {
+    const ids = Array.from(new Set(partyIds.filter(n => Number.isInteger(n) && n > 0)));
+    if (ids.length === 0) return {};
+    const partyRows = await db.select({
+      id: ledgers.id,
+      partyName: ledgers.partyName,
+      commissionRate: ledgers.commissionRate,
+      hissaPercentage: ledgers.hissaPercentage,
+    }).from(ledgers).where(inArray(ledgers.id, ids));
+    const links = await db.select({
+      ledgerId: ledgerThirdPartyLinks.ledgerId,
+      partyName: ledgerThirdPartyLinks.partyName,
+      percent: ledgerThirdPartyLinks.percent,
+    }).from(ledgerThirdPartyLinks)
+      .where(and(eq(ledgerThirdPartyLinks.linkType, 'HISSA'), inArray(ledgerThirdPartyLinks.ledgerId, ids)));
+
+    const out: Record<number, number> = {};
+    for (const p of partyRows) {
+      const ownName = (p.partyName || '').trim().toUpperCase();
+      let selfLinks = 0;
+      let otherFactor = 1;
+      for (const l of links) {
+        if (l.ledgerId !== p.id) continue;
+        const pct = parseFloat(l.percent) || 0;
+        if ((l.partyName || '').trim().toUpperCase() === ownName) selfLinks += pct;
+        else otherFactor *= Math.max(0, 1 - pct / 100);
+      }
+      const sHissa = Math.max(parseFloat(p.hissaPercentage || '0') || 0, selfLinks);
+      const comm = parseFloat(p.commissionRate || '0') || 0;
+      out[p.id] = Math.max(0, 1 - comm / 100) * Math.max(0, 1 - sHissa / 100) * otherFactor;
+    }
+    return out;
+  }
+
   static async getCollectionView(filters: {
     shiftId: number;
     date: string;
@@ -1076,12 +1116,18 @@ export class TransactionService {
     // 5..35 a number -> 50 each (book 4,700); GANGA NAGAR 20,400 -> 20,400; HANUMANGARH B9
     // 117 -> 150.
     round50?: boolean;
+    // Optional end of a date range (YYYY-MM-DD): All Shift Report → party → shift jantri over
+    // the report's From..To. Absent (or the same day) keeps the single-day book, as before.
+    toDate?: string;
   }) {
+    const isRange = !!filters.toDate && filters.toDate !== filters.date;
     const conditions = [
       eq(transactions.shiftId, filters.shiftId),
       // every slip that isn't deleted — a duplicate-flagged slip still counts (as on live)
       ne(transactions.status, 'VOIDED'),
-      sql`${transactions.createdAt}::date = ${filters.date}::date`,
+      isRange
+        ? sql`${transactions.createdAt}::date >= ${filters.date}::date AND ${transactions.createdAt}::date <= ${filters.toDate}::date`
+        : sql`${transactions.createdAt}::date = ${filters.date}::date`,
     ];
     if (filters.partyIds && filters.partyIds.length > 0) {
       conditions.push(inArray(transactions.partyId, filters.partyIds));
@@ -1239,7 +1285,8 @@ export class TransactionService {
       });
     }
 
-    const declaredNumber = await TransactionService.declaredNumberFor(filters.shiftId, filters.date);
+    // over a range there is no single result to highlight
+    const declaredNumber = isRange ? null : await TransactionService.declaredNumberFor(filters.shiftId, filters.date);
     return { grid, haruf, declaredNumber };
   }
 
@@ -2885,6 +2932,16 @@ export class TransactionService {
         credit: closing < 0 ? -closing : 0,
       };
     }).sort((a, b) => a.shiftId - b.shiftId);
+
+    // One-day range (live AGARTALA EXPRESS 16-09): each shift reads "DELHI BAZAAR { K-68 }",
+    // K = that day's declared result, unpadded ("00" is the grid's 100) — the same label as the
+    // Settling Report's date popup. Left as the plain name while undeclared, or over a range.
+    if (filters.fromDate === filters.toDate) {
+      for (const r of rows) {
+        const dn = await TransactionService.declaredNumberFor(r.shiftId, filters.fromDate);
+        if (dn) r.shiftName = `${r.shiftName} { K-${dn === '00' ? 100 : parseInt(dn, 10)} }`;
+      }
+    }
 
     const sum = (k: 'totalSale' | 'dSale' | 'aSale' | 'comm' | 'oDara' | 'oAkhar' | 'tpc' | 'hissa' | 'debit' | 'credit') =>
       rows.reduce((s, r) => s + r[k], 0);

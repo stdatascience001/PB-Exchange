@@ -57,8 +57,8 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
   // A shift whose result isn't declared yet opens on its own date (its open cycle, e.g. a
   // shift still on yesterday's book shows yesterday), once each time a shift is picked — a
   // date typed afterwards stays as typed. A declared shift shows no date at all (live: SHRI
-  // GANESH, declared, leaves the date box without a date and Submit says "Record not
-  // avaliable!"); a date typed in for it still loads that day as before.
+  // GANESH, declared, leaves the date box empty and Submit says "Record not avaliable!"); an
+  // old date gives the same toast (see handleLoadCollectionView).
   // (Collection only; Declare Collection keeps its own date handling.)
   const selectedShift = useMemo(() => shifts.find(s => s.id === shiftId) || null, [shifts, shiftId]);
   const isShiftDeclared = (s: ShiftDto | null) => !!(s && (s.declaredNumber || s.status === 'DECLARED' || s.status === 'AUDITED'));
@@ -66,15 +66,27 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
   useEffect(() => {
     if (declareModeOnly || !selectedShift || datedShiftRef.current === selectedShift.id) return;
     datedShiftRef.current = selectedShift.id;
-    if (isShiftDeclared(selectedShift)) {
-      setDateStr('');
-    } else if (/^\d{4}-\d{2}-\d{2}$/.test(selectedShift.openDate || '')) {
+    // A shift whose result is declared shows no date (HYDRABAD, DECLARED -> empty box, Submit
+    // -> "Record not avaliable!"); an undeclared one shows its openDate from the shifts API.
+    if (!isShiftDeclared(selectedShift) && /^\d{4}-\d{2}-\d{2}$/.test(selectedShift.openDate || '')) {
       setDateStr(selectedShift.openDate);
+    } else {
+      setDateStr('');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedShift, declareModeOnly]);
   // declared number + its Andar / Bahar haruf shown in green
-  const declaredKeys = declaredCellKeys(useDeclaredNumber(shiftId, dateStr, declareModeOnly ? 'declare-collection' : undefined));
+  const declaredNum = useDeclaredNumber(shiftId, dateStr, declareModeOnly ? 'declare-collection' : undefined);
+  // "Record not avaliable!" (old date / declared shift's empty date): the grid stays empty and
+  // the day's result is not shown either — no green declared cells. Cleared when the shift or
+  // date changes, or a report loads.
+  const [noRecord, setNoRecord] = useState(false);
+  useEffect(() => { setNoRecord(false); }, [shiftId, dateStr]);
+  // An old date on Collection (not the shift's own open day) never shows that day's result
+  // (nor a declared shift's result)
+  const isOldDate = !declareModeOnly && !!selectedShift && (isShiftDeclared(selectedShift)
+    || (/^\d{4}-\d{2}-\d{2}$/.test(selectedShift.openDate || '') && dateStr !== selectedShift.openDate));
+  const declaredKeys = declaredCellKeys(noRecord || isOldDate ? null : declaredNum);
   const [parties, setParties] = useState<LedgerDto[]>([]);
   const [partySearch, setPartySearch] = useState('');
   const [addedParties, setAddedParties] = useState<LedgerDto[]>([]);
@@ -216,6 +228,7 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
   // party's own ledger-configured rates — matching the live "Collection" report instead of
   // erroring for a missing party.
   const noRecordToast = () => {
+    setNoRecord(true);
     toast.error(
       <div>
         <div className="font-bold text-base">Error</div>
@@ -238,6 +251,21 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
       }
       return;
     }
+    // An old date (live DELHI BAZAAR, open on today's book, 09-11 typed in): Collection shows
+    // only the shift's current, undeclared book — any other day's book is not shown, the grid
+    // stays empty (0) and the live error toast shows. (Collection only; Declare Collection
+    // still loads any date.)
+    // A declared shift's book is not shown either, even with its date typed in (HYDRABAD,
+    // DECLARED, 16-11 typed -> "Record not avaliable!", no green result).
+    if (!declareModeOnly && selectedShift && (isShiftDeclared(selectedShift)
+      || (/^\d{4}-\d{2}-\d{2}$/.test(selectedShift.openDate || '') && dateStr !== selectedShift.openDate))) {
+      setAmounts({});
+      setHarufData([]);
+      setIsCollectionView(true);
+      noRecordToast();
+      return;
+    }
+    setNoRecord(false);
     setViewLoading(true);
     try {
       const params = new URLSearchParams();

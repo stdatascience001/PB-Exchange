@@ -25,6 +25,8 @@ interface PartyJantriModalProps {
   round50?: boolean;
   // Super Admin's Declare Highlight switch for the page this opens on (unset = always highlight)
   highlightPage?: DeclareHighlightPage;
+  // Optional range end (YYYY-MM-DD): All Shift Report's From..To. Unset = the single `date`.
+  toDate?: string;
 }
 
 // Daily Report → click a Party name (live): that party's own jantri for the shift and day —
@@ -32,7 +34,7 @@ interface PartyJantriModalProps {
 // to whole 50s. Live JAI LUXMI 12-10: ANKUSH KUMAR 15/85 every number it played shows 50, the
 // six it didn't (37, 39, 59, 73, 93, 95) stay blank, Grand Total 4,700; GANGA NAGAR 20,400;
 // HANUMANGARH B9 117 -> 150. Server: /transactions/collection?round50=true, one party.
-export const PartyJantriModal: React.FC<PartyJantriModalProps> = ({ open, onClose, shiftId, date, partyId, partyName, title, round50 = true, highlightPage }) => {
+export const PartyJantriModal: React.FC<PartyJantriModalProps> = ({ open, onClose, shiftId, date, partyId, partyName, title, round50 = true, highlightPage, toDate }) => {
   const highlightOn = useDeclareHighlightEnabled(highlightPage);
   const [result, setResult] = useState<CollectionGrid | null>(null);
   const [loading, setLoading] = useState(false);
@@ -45,6 +47,7 @@ export const PartyJantriModal: React.FC<PartyJantriModalProps> = ({ open, onClos
     setLoading(true);
     const params = new URLSearchParams({ shiftId, date, partyIds: String(partyId) });
     if (round50) params.append('round50', 'true');
+    if (toDate && toDate !== date) params.append('toDate', toDate);
     apiRequest<CollectionGrid>(`/transactions/collection?${params.toString()}`)
       .then(res => { if (!cancelled) setResult(res.data || { grid: [], haruf: [] }); })
       .catch(err => {
@@ -53,7 +56,7 @@ export const PartyJantriModal: React.FC<PartyJantriModalProps> = ({ open, onClos
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [open, shiftId, date, partyId, round50]);
+  }, [open, shiftId, date, partyId, round50, toDate]);
 
   useEffect(() => {
     if (!open) return;
