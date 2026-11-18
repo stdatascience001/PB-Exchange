@@ -317,7 +317,11 @@ export const DeclareTransactionListPage: React.FC<DeclareTransactionListPageProp
       const params = new URLSearchParams();
       params.append('shiftId', selectedShiftId);
       if (dateStr) params.append('date', dateStr);
-      if (searchParty.trim()) params.append('search', searchParty.trim());
+      if (searchParty.trim()) {
+        params.append('search', searchParty.trim());
+        // party names starting with the typed text (live: "N" -> NISHA only)
+        params.append('searchMode', 'START_WITH');
+      }
       if (selectedStatus && selectedStatus !== 'ALL') params.append('status', selectedStatus);
       params.append('listMode', listMode);
 

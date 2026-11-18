@@ -275,6 +275,10 @@ export const CollectionPage: React.FC<CollectionPageProps> = ({ shifts, activeSh
       if (hissa) params.append('hissa', 'true');
       if (dibba) params.append('dibba', 'true');
       if (akhMix) params.append('akhMix', 'true');
+      // Live shows every cell rounded up to whole 50s even with nothing ticked: HYDRABAD NIGHT
+      // 18-11 cell 1 195 -> 200, 27 3 -> 50, 10 986 -> 1,000, 52 100 -> 100 (book 9,601 ->
+      // Grand Total 12,300). Ticked filters already round this way.
+      params.append('round50', 'true');
       if (amtLess.trim() && parseFloat(amtLess) > 0) params.append('amtLess', amtLess.trim());
       if (lessPercent.trim() && parseFloat(lessPercent) > 0) params.append('lessPercent', lessPercent.trim());
       // Parties queued in the left-hand list narrow the report to just those parties; an

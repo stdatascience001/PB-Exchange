@@ -153,7 +153,11 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
       if (!isDeclareMode) params.append('date', currentDateStr());
       // Declare Trans-Audit: the day picked in its Date box
       if (isDeclareMode && declareDate) params.append('date', declareDate);
-      if (filters.search.trim()) params.append('search', filters.search.trim());
+      if (filters.search.trim()) {
+        params.append('search', filters.search.trim());
+        // party names starting with the typed text (live: "G" -> GUPTA RJ, GUDDU, GANDHI …)
+        params.append('searchMode', 'START_WITH');
+      }
       if (filters.status && filters.status !== 'ALL') params.append('auditStatus', filters.status);
 
       // Declare Trans-Audit with no declared shift at all: nothing to list
@@ -203,18 +207,18 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
     }
   };
 
-  // Party list for the live page's SEARCH PARTY suggestions — ledger names from the DB.
+  // Party list for the SEARCH PARTY suggestions (Live and Declare Trans-Audit both, as live)
+  // — ledger names from the DB.
   const [parties, setParties] = useState<LedgerDto[]>([]);
   const [showPartyList, setShowPartyList] = useState(false);
   const [partyHighlight, setPartyHighlight] = useState(0);
   const partyListRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (isDeclareMode) return;
     apiRequest<LedgerDto[]>('/ledgers')
       .then(res => { if (res.data) setParties(res.data); })
       .catch(err => console.warn('Failed to load parties:', err));
-  }, [isDeclareMode]);
+  }, []);
 
   // Live suggestions list parties whose name starts with the typed text, alphabetically.
   const partySuggestions = useMemo(() => {
@@ -483,24 +487,18 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
               value={searchParty}
               onChange={(e) => {
                 setSearchParty(e.target.value);
-                if (!isDeclareMode) setShowPartyList(true);
+                setShowPartyList(true);
               }}
-              onFocus={() => { if (!isDeclareMode) setShowPartyList(true); }}
+              onFocus={() => setShowPartyList(true)}
               onBlur={() => setShowPartyList(false)}
-              onKeyDown={isDeclareMode
-                ? (e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      focusAuditField('audit-status');
-                    }
-                  }
-                : handlePartyKeyDown}
+              // Enter picks the highlighted suggestion (or, with no list open, moves on to Status)
+              onKeyDown={handlePartyKeyDown}
               autoComplete="off"
               placeholder="SEARCH PARTY..."
               className="w-36 sm:w-44 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs text-slate-900 focus:outline-none focus:border-blue-500 uppercase placeholder:text-slate-400 font-semibold"
             />
-            {/* Live page: party names from the ledger master that start with the typed text */}
-            {!isDeclareMode && showPartyList && partySuggestions.length > 0 && (
+            {/* Party names from the ledger master that start with the typed text */}
+            {showPartyList && partySuggestions.length > 0 && (
               <div
                 ref={partyListRef}
                 className="absolute left-0 top-full mt-0.5 w-56 max-h-48 overflow-y-auto bg-white border border-slate-400 rounded-xs shadow-lg z-40"

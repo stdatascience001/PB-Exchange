@@ -474,6 +474,9 @@ export class TransactionService {
     status?: string;
     auditStatus?: string;
     search?: string;
+    // 'START_WITH': the search matches the party name's start only (default: contains, on
+    // party / slip no. / added by)
+    searchMode?: 'START_WITH';
     date?: string;
     page?: number;
     limit?: number;
@@ -544,7 +547,13 @@ export class TransactionService {
         conditions.push(eq(transactions.auditStatus, filters.auditStatus));
       }
     }
-    if (filters.search && filters.search.trim()) {
+    if (filters.search && filters.search.trim() && filters.searchMode === 'START_WITH') {
+      // Live / Declare Transactions' Search Party (live): only the parties whose name starts
+      // with the typed text — "N" lists NISHA's slips alone, not every slip added by a
+      // staff name containing N. LIKE wildcards typed in are taken literally.
+      const prefix = filters.search.trim().replace(/[\\%_]/g, m => `\\${m}`);
+      conditions.push(ilike(ledgers.partyName, `${prefix}%`));
+    } else if (filters.search && filters.search.trim()) {
       const term = `%${filters.search.trim()}%`;
       conditions.push(or(
         ilike(ledgers.partyName, term),

@@ -579,7 +579,11 @@ export const TransactionListPage: React.FC<TransactionListPageProps> = ({ shifts
     try {
       const params = new URLSearchParams();
       if (selectedShiftId) params.append('shiftId', selectedShiftId);
-      if (searchParty.trim()) params.append('search', searchParty.trim());
+      if (searchParty.trim()) {
+        params.append('search', searchParty.trim());
+        // party names starting with the typed text (live: "N" -> NISHA only)
+        params.append('searchMode', 'START_WITH');
+      }
       // MISTAKE (live filter): slips the auditor marked Mistake; ACTIVE / VOIDED as before
       if (selectedStatus === 'MISTAKE') params.append('auditStatus', 'MISTAKE');
       else if (selectedStatus && selectedStatus !== 'ALL') params.append('status', selectedStatus);

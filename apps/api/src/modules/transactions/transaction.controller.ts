@@ -339,7 +339,8 @@ export class TransactionController {
       const ownerUserId = ownDataUserId(req.user);
 
       const listMode = req.query.listMode === 'DELETED' ? 'DELETED' : req.query.listMode === 'ACTIVE' ? 'ACTIVE' : undefined;
-      const list = await TransactionService.listTransactions({ shiftId, partyId, status, auditStatus, search, date, page, limit, ownerUserId, listMode });
+      const searchMode = req.query.searchMode === 'START_WITH' ? 'START_WITH' : undefined;
+      const list = await TransactionService.listTransactions({ shiftId, partyId, status, auditStatus, search, searchMode, date, page, limit, ownerUserId, listMode });
       return sendSuccess(res, list, 'Transactions retrieved');
     } catch (err) {
       next(err);
