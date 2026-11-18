@@ -235,3 +235,4 @@ export const AllShiftPartyModal: React.FC<AllShiftPartyModalProps> = ({ open, on
     </div>
   );
 };
+
