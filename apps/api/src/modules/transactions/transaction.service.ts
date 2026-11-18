@@ -4684,11 +4684,22 @@ export class TransactionService {
     const tensDigit = declaredNumber?.[0];
     const unitsDigit = declaredNumber?.[1];
 
+    // Company ledgers' slips (X DB …, stored negative) stay out of the Sale, as in the Daily
+    // Report's Total Sale: live DELHI BAZAAR 09-11 list 974,594 incl. X DB 56,000 -> Sale-Before
+    // / Sale-After 918,594 (= Daily Report Total Sale). Subtracting it read 862,594.
+    const txPartyIds = Array.from(new Set(txRows.map(t => t.partyId)));
+    const companyPartyIds = new Set<number>();
+    if (txPartyIds.length > 0) {
+      const txParties = await db.select({ id: ledgers.id, groupName: ledgers.groupName })
+        .from(ledgers).where(inArray(ledgers.id, txPartyIds));
+      for (const p of txParties) if (TransactionService.isCompanyLedger(p)) companyPartyIds.add(p.id);
+    }
+
     let saleBefore = 0, saleAfter = 0, payoutBefore = 0, payoutAfter = 0;
 
     for (const tx of txRows) {
       const isBefore = !decl || new Date(tx.createdAt) < new Date(decl.declaredAt);
-      const amt = parseFloat(tx.totalAmount);
+      const amt = companyPartyIds.has(tx.partyId) ? 0 : parseFloat(tx.totalAmount);
       if (isBefore) saleBefore += amt; else saleAfter += amt;
 
       let payout = 0;
@@ -4719,8 +4730,13 @@ export class TransactionService {
         this.getDailyReport({ shiftId, date, beforeDeclarationId: decl.id }),
         this.getDailyReport({ shiftId, date }),
       ]);
-      plBefore = beforeRpt.profit || 0;
-      plAfter = nowRpt.profit || 0;
+      // A Company ledger's own row (X DB …) stays out of the P&L, as it does out of the Sale:
+      // live DELHI BAZAAR 09-11 Daily Report Loss −6,760 with X DB Debit 8,550 -> Trans
+      // Before-After P&L −15,316 (−6,760 − 8,550 = −15,310 here; live reads 6 lower).
+      const companyClosing = (rpt: { rows?: Array<{ partyId: number; debit: number; credit: number }> }) =>
+        (rpt.rows || []).filter(r => companyPartyIds.has(r.partyId)).reduce((t, r) => t + (r.debit || 0) - (r.credit || 0), 0);
+      plBefore = (beforeRpt.profit || 0) - companyClosing(beforeRpt as any);
+      plAfter = (nowRpt.profit || 0) - companyClosing(nowRpt as any);
     }
 
     return {
@@ -4764,7 +4780,9 @@ export class TransactionService {
         id: tx.id,
         partyName: tx.partyName,
         rate: tx.rateStr || '-',
-        amount: parseFloat(tx.totalAmount),
+        // as entered — a Company slip (stored negative) shows its plain amount, as live and the
+        // Declare Transactions list do (X DB 56000; total 974,594)
+        amount: Math.abs(parseFloat(tx.totalAmount)),
         isD: tx.isD,
         addedBy: tx.addedBy || 'SYSTEM',
         createdAt: tx.createdAt.toISOString(),
