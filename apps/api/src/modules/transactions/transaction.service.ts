@@ -1212,6 +1212,9 @@ export class TransactionService {
         // in the Declare / Live Transactions list and its Total Amount. Without this its numbers
         // were taken OFF the cells (live DELHI BAZAAR 09-11 Main Jantri 529,150; ours read lower).
         if (filters.mainJantri) amt = Math.abs(amt);
+        // Main Jantri (live) leaves a Dibba = YES party out altogether (HPL-Jantri keeps it):
+        // live PUNJAB DAY 18-11, VINEET CHUGH (Dibba YES) out -> 23,300; with it ours read 23,550.
+        if (filters.mainJantri && party?.dibba) continue;
         const isHaruf = e.entryType === 'HARUF_ANDAR' || e.entryType === 'HARUF_BAHAR';
 
         // Commission takes the party's own commission % off its amounts. Live HYDRABAD NIGHT

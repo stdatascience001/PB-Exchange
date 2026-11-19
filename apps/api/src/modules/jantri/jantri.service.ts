@@ -231,6 +231,7 @@ export class JantriService {
         id: ledgers.id,
         commissionRate: ledgers.commissionRate,
         hissaPercentage: ledgers.hissaPercentage,
+        dibba: ledgers.dibba,
       }).from(ledgers).where(inArray(ledgers.id, partyIds));
       const partyById = new Map(partyRows.map(p => [p.id, p]));
 
@@ -255,6 +256,9 @@ export class JantriService {
       for (const e of entries) {
         const partyId = partyByTx.get(e.transactionId);
         const party = partyId !== undefined ? partyById.get(partyId) : undefined;
+        // Live Declare Jantri leaves a Dibba = YES party out (as Main Jantri does): PUNJAB DAY
+        // 18-11 VINEET CHUGH (Dibba YES) out -> 20,703 (cell 2: 47, cell 17: 57, B2 blank).
+        if (party?.dibba) continue;
         const commPct = party ? parseFloat(party.commissionRate) || 0 : 0;
         const hissaPct = party ? parseFloat(party.hissaPercentage) || 0 : 0;
         const linkFactor = partyId !== undefined ? (hissaLinkFactorByParty.get(partyId) ?? 1) : 1;
@@ -281,10 +285,20 @@ export class JantriService {
       }
     }
 
+    // Whole rupees with an exact .5 going to the even rupee, on the amount as computed (float
+    // noise included) — the same rule as HPL-Jantri: live PUNJAB DAY 18-11 RINKU AMBALA 22.5 -> 22,
+    // 4.5 -> 4 (grand total 20,703, not 20,714), while HYDRABAD NIGHT 18-11 cell 20 EASTCOST MAIL
+    // 40.50000000000002 stays 41 (a 2-decimal pre-round would have made it 40.5 -> 40).
+    const roundHalfEven = (x: number) => {
+      const f = Math.floor(x);
+      const diff = x - f;
+      if (diff > 0.5) return f + 1;
+      if (diff < 0.5) return f;
+      return f % 2 === 0 ? f : f + 1;
+    };
     for (const ph of partyHash.values()) {
       for (const [key, amt] of Object.entries(ph)) {
-        // 2-decimal pre-round so a float like 31.4999… still rounds half up (31.5 -> 32)
-        hash[key] = (hash[key] || 0) + Math.round(Math.round(amt * 100) / 100);
+        hash[key] = (hash[key] || 0) + roundHalfEven(amt);
       }
     }
 

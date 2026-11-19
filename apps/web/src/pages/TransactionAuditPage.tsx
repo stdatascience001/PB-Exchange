@@ -9,6 +9,7 @@ import { JantriViewModal } from '../components/JantriViewModal.js';
 import { MistakeActionModal } from '../components/MistakeActionModal.js';
 import { DateDMYInput } from '../components/DateDMYInput.js';
 import { isTallyOperatorRole } from '../config/roleAccess.js';
+import { useDeclaredNumber } from '../utils/declaredHighlight.js';
 
 interface TransactionAuditPageProps {
   shifts?: ShiftDto[];
@@ -53,15 +54,27 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
     const activeOnly = shifts.filter(s => s.isActive !== false);
     const base = activeOnly.length > 0 ? activeOnly : shifts;
     if (isDeclareMode) {
-      // TALLY OPERATOR (live): every active shift's slips for the Date, declared or not
-      if (isTallyOperatorRole(user?.roleName)) return base;
-      // Declare Trans-Audit: declared shifts only — never falls back to undeclared ones
-      return base.filter(s => !!s.declaredNumber || s.status === 'DECLARED' || s.status === 'AUDITED');
+      // Declare Trans-Audit lists every active shift, so an old Date can be checked for any
+      // shift — once a new day opens the shifts read undeclared again, and a declared-only
+      // list left the dropdown empty (live 19-11: "-- ALL SHIFT --" alone). Which slips show
+      // is still limited to declared cycles (declaredShiftIds / fetchTransactions below).
+      return base;
     } else {
       const live = base.filter(s => !s.declaredNumber && s.status !== 'DECLARED' && s.status !== 'AUDITED');
       return live.length > 0 ? live : base;
     }
   }, [shifts, isDeclareMode, user?.roleName]);
+
+  // Shifts whose current cycle is declared (the old dropdown rule). TALLY OPERATOR (live) sees
+  // every active shift's slips for the Date, declared or not.
+  const declaredShiftIds = useMemo(() => {
+    const activeOnly = shifts.filter(s => s.isActive !== false);
+    const base = activeOnly.length > 0 ? activeOnly : shifts;
+    const list = isTallyOperatorRole(user?.roleName)
+      ? base
+      : base.filter(s => !!s.declaredNumber || s.status === 'DECLARED' || s.status === 'AUDITED');
+    return new Set(list.map(s => s.id));
+  }, [shifts, user?.roleName]);
 
   // Both pages open on "-- ALL SHIFT --" (live). Declare Trans-Audit then lists every
   // declared shift's slips for its Date; a chosen shift narrows it to that one.
@@ -169,10 +182,13 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
 
       const res = await apiRequest<TransactionItem[]>(`/transactions?${params.toString()}`);
       if (res.data) {
-        // Declare Trans-Audit shows declared shifts' slips only (on "-- ALL SHIFT --" the
-        // request covers every shift, so the undeclared ones are left out here)
-        const declaredIds = new Set(availableShifts.map(s => s.id));
-        const rows = isDeclareMode ? res.data.filter(t => declaredIds.has(t.shiftId)) : res.data;
+        // Declare Trans-Audit shows declared cycles' slips only: a past Date's cycles are
+        // closed, so every shift's slips show; on today only the shifts already declared
+        // (an undeclared shift's live slips are left out, as before).
+        const isPastDate = !!declareDate && declareDate < currentDateStr();
+        const rows = isDeclareMode && !isPastDate
+          ? res.data.filter(t => declaredShiftIds.has(t.shiftId))
+          : res.data;
         setList(rows);
         if (rows.length > 0) {
           // Keep current selection or default to first
@@ -195,7 +211,7 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
   useEffect(() => {
     if (isDeclareMode) fetchTransactions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedShiftId, selectedStatus, isDeclareMode, declareDate, availableShifts.length]);
+  }, [selectedShiftId, selectedStatus, isDeclareMode, declareDate, availableShifts.length, declaredShiftIds.size]);
 
   // Refresh after an audit action with the filters of the last search (live), or the
   // current filters (declare, which always reflects its dropdowns).
@@ -323,6 +339,27 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
   };
 
   const totalSum = list.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0);
+
+  // Declare Trans-Audit: each slip's O-Dara / O-Akhar — the amount it played on the shift's
+  // declared result for the picked day, by the Daily Report's rule (Dara on the number, Andar
+  // on its tens digit, Bahar on its units digit), so a party's slips add up to its O-Dara /
+  // O-Akhar on the Daily Report for that shift and date. Blank while the day is undeclared.
+  const declaredNum = useDeclaredNumber(isDeclareMode ? selectedShiftId : null, isDeclareMode ? declareDate : null);
+  const openOf = (tx: TransactionItem) => {
+    let oDara = 0, oAkhar = 0;
+    if (!declaredNum) return { oDara, oAkhar };
+    for (const e of tx.entries || []) {
+      const amt = Number(e.amount) || 0;
+      if (e.entryType === 'DARA') { if (e.numberValue === declaredNum) oDara += amt; }
+      else if (e.entryType === 'HARUF_ANDAR') { if (e.numberValue === declaredNum[0]) oAkhar += amt; }
+      else if (e.entryType === 'HARUF_BAHAR') { if (e.numberValue === declaredNum[1]) oAkhar += amt; }
+    }
+    return { oDara, oAkhar };
+  };
+  const openTotals = isDeclareMode
+    ? list.reduce((t, tx) => { const o = openOf(tx); return { oDara: t.oDara + o.oDara, oAkhar: t.oAkhar + o.oAkhar }; }, { oDara: 0, oAkhar: 0 })
+    : { oDara: 0, oAkhar: 0 };
+  const tableCols = isDeclareMode ? 11 : 9;
 
   // Party Wise -> "Party Trans Count" popup (live): opens empty; its own Search loads every
   // slip of the chosen shift (all shifts on "-- ALL SHIFT --") for the day — whatever the
@@ -571,6 +608,12 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
                   <th className="py-2 px-3 border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Shift</th>
                   <th className="py-2 px-3 border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Party</th>
                   <th className="py-2 px-3 border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Rate</th>
+                  {isDeclareMode && (
+                    <>
+                      <th className="py-2 px-3 border-r border-b border-[#223b63] text-right sticky top-0 bg-[#152847] z-20">O-Dara</th>
+                      <th className="py-2 px-3 border-r border-b border-[#223b63] text-right sticky top-0 bg-[#152847] z-20">O-Akhar</th>
+                    </>
+                  )}
                   <th className="py-2 px-3 border-r border-b border-[#223b63] text-right sticky top-0 bg-[#152847] z-20">Amount</th>
                   <th className="py-2 px-3 border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Added</th>
                   <th className="py-2 px-3 border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Updated</th>
@@ -580,19 +623,20 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
               <tbody className="divide-y divide-slate-200 font-sans text-xs whitespace-nowrap bg-white">
                 {loading ? (
                   <tr>
-                    <td colSpan={9} className="py-12 text-center text-slate-400 font-medium">
+                    <td colSpan={tableCols} className="py-12 text-center text-slate-400 font-medium">
                       Loading audit transactions...
                     </td>
                   </tr>
                 ) : list.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="py-12 text-center text-slate-400 font-medium">
+                    <td colSpan={tableCols} className="py-12 text-center text-slate-400 font-medium">
                       No transactions pending audit for this filter.
                     </td>
                   </tr>
                 ) : (
                   list.map((tx, idx) => {
                     const isSelected = selectedTx?.id === tx.id;
+                    const open = isDeclareMode ? openOf(tx) : null;
                     return (
                       <tr
                         key={tx.id}
@@ -634,6 +678,18 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
                         <td className="py-1.5 px-3 font-mono font-medium text-slate-700 border-r border-b border-slate-200">
                           {tx.rateStr || '90/10-9/10'}
                         </td>
+
+                        {/* Declare Trans-Audit: O-Dara / O-Akhar (played on the declared result) */}
+                        {open && (
+                          <>
+                            <td className="py-1.5 px-3 text-right font-mono font-medium text-slate-700 border-r border-b border-slate-200">
+                              {open.oDara.toLocaleString('en-IN')}
+                            </td>
+                            <td className="py-1.5 px-3 text-right font-mono font-medium text-slate-700 border-r border-b border-slate-200">
+                              {open.oAkhar.toLocaleString('en-IN')}
+                            </td>
+                          </>
+                        )}
 
                         {/* 6. Amount */}
                         <td className="py-1.5 px-3 text-right font-mono font-bold text-slate-900 border-r border-b border-slate-200">
@@ -709,6 +765,16 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
                   <td className="py-2 px-3 border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Shift</td>
                   <td className="py-2 px-3 border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Party</td>
                   <td className="py-2 px-3 border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Rate</td>
+                  {isDeclareMode && (
+                    <>
+                      <td className="py-2 px-3 text-right font-mono border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">
+                        {openTotals.oDara.toLocaleString('en-IN')}
+                      </td>
+                      <td className="py-2 px-3 text-right font-mono border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">
+                        {openTotals.oAkhar.toLocaleString('en-IN')}
+                      </td>
+                    </>
+                  )}
                   <td className="py-2 px-3 text-right font-mono border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">
                     {totalSum.toLocaleString('en-IN')}
                   </td>
