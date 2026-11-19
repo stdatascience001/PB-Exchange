@@ -28,6 +28,7 @@ const SHELL: Rule[] = [
   on(['POST'], /^\/staff\/heartbeat$/),
   // Dashboard → ReDeclare popup (each route still requires an admin role itself)
   any(/^\/declarations\/redeclare\/\d+$/),
+  get(/^\/declarations\/declared-by-date$/),
   on(['POST'], /^\/declarations\/\d+\/verify$/),
 ];
 

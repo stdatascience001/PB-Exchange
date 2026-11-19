@@ -111,6 +111,49 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   // just not rendered here; declaring them stays on Result → Declare.
   const redeclareRows = (metrics?.declareNeeded || []).filter((d) => d.isDeclared && d.declarationId);
 
+  // Declare Needed → Date filter. Blank (default) keeps the panel exactly as before (the
+  // ReDeclare rows of the last 30 days). A picked day lists EVERY shift declared for that day —
+  // red "ReDeclare" when its data changed after the declare, green "Declared" otherwise — and
+  // a row opens the same DECLARE INFO popup.
+  // Opens on today's date (on every load / refresh); × or a browser-cleared box goes back to
+  // today — never blank.
+  const todayStr = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const [declareFilterDate, setDeclareFilterDateRaw] = useState(todayStr);
+  const setDeclareFilterDate = (v: string) => setDeclareFilterDateRaw(v || todayStr());
+  const [declaredForDate, setDeclaredForDate] = useState<Array<{
+    declarationId: number;
+    shiftId: number;
+    shiftName: string;
+    cycleDate: string;
+    displayDate: string;
+    winningNumber: string;
+    needsRedeclare: boolean;
+    changeCount: number;
+    changedBy: string;
+    changedAtLabel: string;
+  }>>([]);
+  const [declaredForDateLoading, setDeclaredForDateLoading] = useState(false);
+  const fetchDeclaredForDate = async (date: string) => {
+    if (!date) { setDeclaredForDate([]); return; }
+    setDeclaredForDateLoading(true);
+    try {
+      const res = await apiRequest<typeof declaredForDate>(`/declarations/declared-by-date?date=${encodeURIComponent(date)}`);
+      setDeclaredForDate(res.data || []);
+    } catch (err) {
+      console.warn('Failed to load declared shifts for the date:', err);
+      setDeclaredForDate([]);
+    } finally {
+      setDeclaredForDateLoading(false);
+    }
+  };
+  useEffect(() => {
+    fetchDeclaredForDate(declareFilterDate);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [declareFilterDate]);
+
   // Fetch fully dynamic metrics from backend API
   const fetchMetrics = async () => {
     try {
@@ -233,10 +276,67 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 Declare Needed
               </h2>
 
+              {/* Date filter: blank = the usual ReDeclare list; a day = every shift declared then */}
+              <div className="flex items-center gap-1 mr-4">
+                <input
+                  type="date"
+                  value={declareFilterDate}
+                  onChange={(e) => setDeclareFilterDate(e.target.value)}
+                  title="Show every shift declared on this date"
+                  className="px-2 py-0.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-700 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300"
+                />
+                {declareFilterDate && (
+                  <button
+                    type="button"
+                    // Clear = back to today's date (not blank)
+                    onClick={() => setDeclareFilterDate(todayStr())}
+                    title="Back to today"
+                    className="px-1.5 text-slate-400 hover:text-slate-700 text-sm font-bold cursor-pointer"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto custom-scrollbar space-y-1 pr-4">
-              {redeclareRows.length === 0 ? (
+              {declareFilterDate ? (
+                declaredForDateLoading ? (
+                  <div className="h-full flex items-center justify-center text-xs text-slate-400">
+                    Loading...
+                  </div>
+                ) : declaredForDate.length === 0 ? (
+                  <div className="h-full flex items-center justify-center text-xs text-slate-400">
+                    No shift declared on this date
+                  </div>
+                ) : (
+                  declaredForDate.map((d) => (
+                    <div
+                      key={`dt-${d.declarationId}`}
+                      onClick={() => setRedeclareTarget({ declarationId: d.declarationId, changeCount: d.changeCount })}
+                      className="flex items-end justify-between py-2 hover:bg-rose-50/60 transition-colors cursor-pointer"
+                    >
+                      <div>
+                        <div className="text-[13px] font-bold text-slate-900 uppercase">
+                          {d.shiftName} | {d.displayDate}
+                          <span className="ml-2 text-[#e3124d]">[{d.winningNumber}]</span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 font-sans mt-1">
+                          {d.changedBy} | {d.changedAtLabel}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className={`px-3 py-0.5 text-white rounded-full text-[10px] font-semibold cursor-pointer transition-colors ${
+                          d.needsRedeclare ? 'bg-[#dc2626] hover:bg-[#b91c1c]' : 'bg-[#16a34a] hover:bg-[#15803d]'
+                        }`}
+                      >
+                        {d.needsRedeclare ? 'ReDeclare' : 'Declared'}
+                      </button>
+                    </div>
+                  ))
+                )
+              ) : redeclareRows.length === 0 ? (
                 <div className="h-full flex items-center justify-center text-xs text-slate-400">
                   No shifts pending declaration
                 </div>
@@ -408,7 +508,9 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         declarationId={redeclareTarget?.declarationId ?? null}
         changeCount={redeclareTarget?.changeCount}
         onClose={() => setRedeclareTarget(null)}
-        onRedeclared={fetchMetrics}
+        onRedeclared={() => { fetchMetrics(); fetchDeclaredForDate(declareFilterDate); }}
+        // Declare Needed → ReDeclare popup: comparison only, the RE-DECLARE (n) button hidden
+        hideRedeclareButton
       />
 
       {/* Bottom Footer Credit */}

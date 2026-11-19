@@ -36,6 +36,9 @@ interface RedeclareModalProps {
   changeCount?: number;
   onClose: () => void;
   onRedeclared: () => void;
+  // Hides the "RE-DECLARE (n)" button (the popup then only shows the comparison). The
+  // re-declare action itself (handleRedeclare / POST /declarations/redeclare/:id) is kept.
+  hideRedeclareButton?: boolean;
 }
 
 const num = (v: number) => Math.round(v).toString();
@@ -44,7 +47,7 @@ const num = (v: number) => Math.round(v).toString();
 // Left: SUMMARY of Sale / P&L as declared vs. as it stands now, and the difference.
 // Right: party-wise SALE / Re-SALE / DIFF-SALE / P&L / Re-P&L / DIFF-P&L.
 // RE-DECLARE re-settles the same winning number on the current data.
-export const RedeclareModal: React.FC<RedeclareModalProps> = ({ declarationId, changeCount, onClose, onRedeclared }) => {
+export const RedeclareModal: React.FC<RedeclareModalProps> = ({ declarationId, changeCount, onClose, onRedeclared, hideRedeclareButton = false }) => {
   const [info, setInfo] = useState<RedeclareInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -130,14 +133,16 @@ export const RedeclareModal: React.FC<RedeclareModalProps> = ({ declarationId, c
               {summaryBlock('Declare', info.summary.declare.sale, info.summary.declare.pl)}
               {summaryBlock('Re-Declare', info.summary.reDeclare.sale, info.summary.reDeclare.pl)}
               {summaryBlock('Diffrance', info.summary.difference.sale, info.summary.difference.pl)}
-              <button
-                type="button"
-                onClick={handleRedeclare}
-                disabled={saving}
-                className="mt-3 w-full py-2 bg-[#1f3a6e] hover:bg-[#162b52] disabled:opacity-60 text-white text-xs font-bold uppercase rounded cursor-pointer transition-colors"
-              >
-                {saving ? 'Re-Declaring...' : `Re-Declare (${changeCount ?? 0})`}
-              </button>
+              {!hideRedeclareButton && (
+                <button
+                  type="button"
+                  onClick={handleRedeclare}
+                  disabled={saving}
+                  className="mt-3 w-full py-2 bg-[#1f3a6e] hover:bg-[#162b52] disabled:opacity-60 text-white text-xs font-bold uppercase rounded cursor-pointer transition-colors"
+                >
+                  {saving ? 'Re-Declaring...' : `Re-Declare (${changeCount ?? 0})`}
+                </button>
+              )}
             </div>
 
             {/* Party-wise table */}

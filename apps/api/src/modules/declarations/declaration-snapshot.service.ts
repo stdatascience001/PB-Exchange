@@ -418,12 +418,148 @@ export class DeclarationSnapshotService {
     }));
   }
 
+  // Dashboard Declare Needed → Date filter: every declared shift of that cycle day (not only the
+  // ones needing a ReDeclare), each with its declare time and whether it needs a ReDeclare now
+  // (some party's Sale / P&L differs from the declare) — a row opens the same DECLARE INFO popup.
+  static async listDeclaredForDate(date: string) {
+    await ensureTables();
+    await this.backfillMissingSnapshots(date);
+
+    const rows = await pgSql<Array<{
+      snapshot_id: number;
+      declaration_id: number;
+      shift_id: number;
+      shift_name: string;
+      cycle_date: string;
+      winning_number: string;
+      declared_at: Date;
+      declared_by: string | null;
+      snapshot_at: Date;
+      redeclare_count: number;
+      tx_changes: number;
+      tx_last_at: Date | null;
+      tx_last_by: string | null;
+      ledger_changes: number;
+      ledger_last_at: Date | null;
+      ledger_last_by: string | null;
+      link_changes: number;
+    }>>`
+      SELECT
+        ds.id AS snapshot_id,
+        ds.declaration_id,
+        ds.shift_id,
+        s.name AS shift_name,
+        ds.cycle_date,
+        d.winning_number,
+        d.declared_at,
+        u.username AS declared_by,
+        ds.snapshot_at,
+        ds.redeclare_count,
+        tx.cnt AS tx_changes,
+        tx.last_at AS tx_last_at,
+        tx.last_by AS tx_last_by,
+        lg.cnt AS ledger_changes,
+        lg.last_at AS ledger_last_at,
+        lg.last_by AS ledger_last_by,
+        lk.cnt AS link_changes
+      FROM declaration_snapshots ds
+      JOIN declarations d ON d.id = ds.declaration_id AND d.is_reversed = FALSE
+      JOIN shifts s ON s.id = ds.shift_id AND s.is_active = TRUE
+      LEFT JOIN users u ON u.id = d.declared_by
+      CROSS JOIN LATERAL (
+        SELECT
+          COUNT(*)::int AS cnt,
+          MAX(GREATEST(t.created_at, t.updated_at)) AS last_at,
+          (ARRAY_AGG(COALESCE(t.updated_by, t.added_by) ORDER BY GREATEST(t.created_at, t.updated_at) DESC))[1] AS last_by
+        FROM transactions t
+        WHERE t.shift_id = ds.shift_id
+          AND t.created_at::date = ds.cycle_date::date
+          AND GREATEST(t.created_at, t.updated_at) > ds.snapshot_at
+      ) tx
+      CROSS JOIN LATERAL (
+        SELECT
+          COUNT(*)::int AS cnt,
+          MAX(l.updated_at) AS last_at,
+          (ARRAY_AGG(l.updated_by ORDER BY l.updated_at DESC))[1] AS last_by
+        FROM declaration_party_snapshots ps
+        JOIN ledgers l ON l.id = ps.party_id
+        WHERE ps.snapshot_id = ds.id AND l.updated_at > ds.snapshot_at
+      ) lg
+      CROSS JOIN LATERAL (
+        SELECT COUNT(*)::int AS cnt
+        FROM declaration_party_snapshots ps
+        JOIN ledger_third_party_links k ON k.ledger_id = ps.party_id AND k.link_type = 'TPC'
+        WHERE ps.snapshot_id = ds.id AND k.created_at > ds.snapshot_at
+      ) lk
+      WHERE ds.cycle_date = ${date}
+      ORDER BY s.name ASC
+    `;
+
+    const out = [];
+    for (const c of rows) {
+      const changeCount = (c.tx_changes || 0) + (c.ledger_changes || 0) + (c.link_changes || 0);
+      // only a changed cycle is recomputed (the same cheap check as listPendingRedeclares)
+      const needsRedeclare = changeCount > 0
+        ? (await this.buildComparison(c.snapshot_id, c.shift_id, c.cycle_date, c.winning_number)).hasDifference
+        : false;
+      const txAt = c.tx_last_at ? new Date(c.tx_last_at) : null;
+      const lgAt = c.ledger_last_at ? new Date(c.ledger_last_at) : null;
+      const useLedger = lgAt && (!txAt || lgAt > txAt);
+      // A ReDeclare row reads who changed it last and when (as Declare Needed); an unchanged
+      // one reads who declared it and when.
+      const by = needsRedeclare ? ((useLedger ? c.ledger_last_by : c.tx_last_by) || 'SYSTEM') : (c.declared_by || 'SYSTEM');
+      const at = needsRedeclare ? ((useLedger ? lgAt : txAt) || new Date(c.snapshot_at)) : new Date(c.declared_at);
+      out.push({
+        declarationId: c.declaration_id,
+        shiftId: c.shift_id,
+        shiftName: c.shift_name,
+        cycleDate: c.cycle_date,
+        displayDate: toDisplayDate(c.cycle_date),
+        winningNumber: c.winning_number,
+        needsRedeclare,
+        changeCount: needsRedeclare ? changeCount : 0,
+        redeclareCount: c.redeclare_count,
+        changedBy: by,
+        changedAtLabel: formatChangeTime(at),
+      });
+    }
+    return out;
+  }
+
   // Declarations made before snapshots existed (or whose capture failed) get one rebuilt as
   // of their declare time, so a change made after the declare still surfaces as ReDeclare.
   // Cycle = the declared shift_cycles row for that number on/before the declare day, else
   // the declare day itself (the Shift P&L report's convention).
-  private static async backfillMissingSnapshots() {
-    const missing = await pgSql<Array<{ id: number; shift_id: number; winning_number: string; declared_at_text: string; cycle_date: string }>>`
+  // forDate (optional, YYYY-MM-DD): only the declarations of that cycle day, whatever its age
+  // (Dashboard Declare Needed's Date filter); without it the last PENDING_LOOKBACK_DAYS, as before.
+  private static async backfillMissingSnapshots(forDate?: string) {
+    const missing = forDate
+      ? await pgSql<Array<{ id: number; shift_id: number; winning_number: string; declared_at_text: string; cycle_date: string }>>`
+          SELECT * FROM (
+            SELECT
+              d.id, d.shift_id, d.winning_number, d.declared_at::text AS declared_at_text,
+              COALESCE((
+                SELECT c.cycle_date FROM shift_cycles c
+                WHERE c.shift_id = d.shift_id
+                  AND c.declared_number = d.winning_number
+                  AND c.status IN ('DECLARED', 'AUDITED')
+                  AND c.cycle_date::date <= d.declared_at::date
+                ORDER BY c.cycle_date DESC LIMIT 1
+              ), d.declared_at::date::text) AS cycle_date
+            FROM declarations d
+            LEFT JOIN declaration_snapshots ds ON ds.declaration_id = d.id
+            WHERE d.is_reversed = FALSE
+              AND ds.id IS NULL
+              AND d.declared_at::date >= ${forDate}::date
+              AND d.declared_at::date <= (${forDate}::date + 7)
+          ) x WHERE x.cycle_date = ${forDate}
+        `
+      : await this.missingSnapshotsInLookback();
+    await this.writeBackfill(missing);
+  }
+
+  private static async missingSnapshotsInLookback() {
+    return pgSql<Array<{ id: number; shift_id: number; winning_number: string; declared_at_text: string; cycle_date: string }>>`
       SELECT
         d.id, d.shift_id, d.winning_number, d.declared_at::text AS declared_at_text,
         COALESCE((
@@ -440,7 +576,9 @@ export class DeclarationSnapshotService {
         AND ds.id IS NULL
         AND d.declared_at::date >= (CURRENT_DATE - ${PENDING_LOOKBACK_DAYS}::int)
     `;
+  }
 
+  private static async writeBackfill(missing: Array<{ id: number; shift_id: number; winning_number: string; declared_at_text: string; cycle_date: string }>) {
     for (const d of missing) {
       try {
         const figures = await this.computePartyFigures(d.shift_id, d.cycle_date, d.winning_number, d.declared_at_text);

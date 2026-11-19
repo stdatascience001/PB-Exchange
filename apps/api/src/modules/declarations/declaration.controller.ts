@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { DeclarationService } from './declaration.service.js';
 import { DeclarationSnapshotService } from './declaration-snapshot.service.js';
 import { sendSuccess } from '../../common/response.js';
+import { AppError } from '../../common/errors.js';
 
 export class DeclarationController {
   static async declare(req: Request, res: Response, next: NextFunction) {
@@ -54,6 +55,18 @@ export class DeclarationController {
       const declarationId = parseInt(req.params.declarationId as string, 10);
       const result = await DeclarationSnapshotService.getRedeclareInfo(declarationId);
       return sendSuccess(res, result, 'Declare info retrieved');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  // Dashboard Declare Needed → Date filter: every declared shift of ?date=YYYY-MM-DD
+  static async declaredByDate(req: Request, res: Response, next: NextFunction) {
+    try {
+      const date = String(req.query.date || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new AppError('A valid date (YYYY-MM-DD) is required', 400);
+      const result = await DeclarationSnapshotService.listDeclaredForDate(date);
+      return sendSuccess(res, result, 'Declared shifts retrieved');
     } catch (err) {
       next(err);
     }

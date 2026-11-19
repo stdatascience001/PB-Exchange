@@ -17,6 +17,12 @@ router.get(
   requireRoles('DEVELOPER', 'SUPER ADMIN', 'ADMIN'),
   DeclarationController.redeclareInfo
 );
+// Dashboard Declare Needed → Date filter: every declared shift of that day
+router.get(
+  '/declared-by-date',
+  requireRoles('DEVELOPER', 'SUPER ADMIN', 'ADMIN'),
+  DeclarationController.declaredByDate
+);
 router.post(
   '/redeclare/:declarationId',
   requireRoles('DEVELOPER', 'SUPER ADMIN', 'ADMIN'),
