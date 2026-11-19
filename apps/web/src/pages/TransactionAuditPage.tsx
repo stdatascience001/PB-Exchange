@@ -338,26 +338,64 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
     }
   };
 
-  const totalSum = list.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0);
-
   // Declare Trans-Audit: each slip's O-Dara / O-Akhar — the amount it played on the shift's
   // declared result for the picked day, by the Daily Report's rule (Dara on the number, Andar
   // on its tens digit, Bahar on its units digit), so a party's slips add up to its O-Dara /
   // O-Akhar on the Daily Report for that shift and date. Blank while the day is undeclared.
   const declaredNum = useDeclaredNumber(isDeclareMode ? selectedShiftId : null, isDeclareMode ? declareDate : null);
+  // Each listed shift's own declared number for the Date, so "-- ALL SHIFT --" works out O-Dara /
+  // O-Akhar per slip too (one shift's number can't be used for another's slips).
+  const [declaredByShift, setDeclaredByShift] = useState<Record<number, string | null>>({});
+  useEffect(() => {
+    if (!isDeclareMode || !declareDate) { setDeclaredByShift({}); return; }
+    const ids = Array.from(new Set(list.map(t => t.shiftId))).filter(id => id && !(id in declaredByShift));
+    if (ids.length === 0) return;
+    let alive = true;
+    Promise.all(ids.map(id =>
+      apiRequest<{ declaredNumber: string | null }>(`/transactions/collection?${new URLSearchParams({ shiftId: String(id), date: declareDate, declaredOnly: 'true' }).toString()}`)
+        .then(res => [id, res.data?.declaredNumber ?? null] as const)
+        .catch(() => [id, null] as const)
+    )).then(pairs => {
+      if (!alive) return;
+      setDeclaredByShift(prev => { const next = { ...prev }; for (const [id, n] of pairs) next[id] = n; return next; });
+    });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [list, isDeclareMode, declareDate]);
+  // a new Date starts the per-shift numbers afresh
+  useEffect(() => { setDeclaredByShift({}); }, [declareDate]);
+
   const openOf = (tx: TransactionItem) => {
     let oDara = 0, oAkhar = 0;
-    if (!declaredNum) return { oDara, oAkhar };
+    const num = declaredByShift[tx.shiftId] ?? (String(tx.shiftId) === String(selectedShiftId) ? declaredNum : null);
+    if (!num) return { oDara, oAkhar };
     for (const e of tx.entries || []) {
       const amt = Number(e.amount) || 0;
-      if (e.entryType === 'DARA') { if (e.numberValue === declaredNum) oDara += amt; }
-      else if (e.entryType === 'HARUF_ANDAR') { if (e.numberValue === declaredNum[0]) oAkhar += amt; }
-      else if (e.entryType === 'HARUF_BAHAR') { if (e.numberValue === declaredNum[1]) oAkhar += amt; }
+      if (e.entryType === 'DARA') { if (e.numberValue === num) oDara += amt; }
+      else if (e.entryType === 'HARUF_ANDAR') { if (e.numberValue === num[0]) oAkhar += amt; }
+      else if (e.entryType === 'HARUF_BAHAR') { if (e.numberValue === num[1]) oAkhar += amt; }
     }
     return { oDara, oAkhar };
   };
+
+  // Declare Trans-Audit's O-Dara / O-Akhar filter: "O-DARA - O-AKHAR" (default) lists only the
+  // slips that played the declared result (O-Dara or O-Akhar not 0); "ALL" lists every slip as
+  // before. Live Trans-Audit is never filtered.
+  const [openFilter, setOpenFilter] = useState<'OPEN' | 'ALL'>('OPEN');
+  const rows = isDeclareMode && openFilter === 'OPEN'
+    ? list.filter(tx => { const o = openOf(tx); return o.oDara !== 0 || o.oAkhar !== 0; })
+    : list;
+  // the right-hand panel follows the filter: a slip filtered out hands over to the first shown
+  useEffect(() => {
+    if (!isDeclareMode) return;
+    if (rows.length === 0) { if (selectedTx) setSelectedTx(null); return; }
+    if (!selectedTx || !rows.some(t => t.id === selectedTx.id)) setSelectedTx(rows[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows.map(t => t.id).join(','), isDeclareMode]);
+
+  const totalSum = rows.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0);
   const openTotals = isDeclareMode
-    ? list.reduce((t, tx) => { const o = openOf(tx); return { oDara: t.oDara + o.oDara, oAkhar: t.oAkhar + o.oAkhar }; }, { oDara: 0, oAkhar: 0 })
+    ? rows.reduce((t, tx) => { const o = openOf(tx); return { oDara: t.oDara + o.oDara, oAkhar: t.oAkhar + o.oAkhar }; }, { oDara: 0, oAkhar: 0 })
     : { oDara: 0, oAkhar: 0 };
   const tableCols = isDeclareMode ? 11 : 9;
 
@@ -433,7 +471,7 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
   // Party Wise summary aggregation
   const partyWiseSummary = useMemo(() => {
     const map = new Map<string, { partyName: string; count: number; totalAmount: number }>();
-    for (const tx of list) {
+    for (const tx of rows) {
       const name = tx.partyName || 'UNKNOWN';
       if (!map.has(name)) {
         map.set(name, { partyName: name, count: 0, totalAmount: 0 });
@@ -443,7 +481,8 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
       item.totalAmount += (tx.totalAmount || 0);
     }
     return Array.from(map.values()).sort((a, b) => b.totalAmount - a.totalAmount);
-  }, [list]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows.map(t => t.id).join(','), list]);
 
   // Full-screen list: the page is exactly as tall as the room left under the header (measured, so
   // a taller / shorter header never pushes it past the screen) — the list then fills it all
@@ -581,6 +620,28 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
             </select>
           </div>
 
+          {/* Declare Trans-Audit only: O-Dara / O-Akhar filter (default O-DARA - O-AKHAR) */}
+          {isDeclareMode && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-600 font-medium text-xs">Open</span>
+              <select
+                id="audit-open-filter"
+                value={openFilter}
+                onChange={(e) => setOpenFilter(e.target.value as 'OPEN' | 'ALL')}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    focusAuditField('audit-search-btn');
+                  }
+                }}
+                className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 cursor-pointer"
+              >
+                <option value="OPEN">O-DARA - O-AKHAR</option>
+                <option value="ALL">ALL</option>
+              </select>
+            </div>
+          )}
+
           {/* Search (F5) Teal Button */}
           <button
             id="audit-search-btn"
@@ -627,14 +688,14 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
                       Loading audit transactions...
                     </td>
                   </tr>
-                ) : list.length === 0 ? (
+                ) : rows.length === 0 ? (
                   <tr>
                     <td colSpan={tableCols} className="py-12 text-center text-slate-400 font-medium">
                       No transactions pending audit for this filter.
                     </td>
                   </tr>
                 ) : (
-                  list.map((tx, idx) => {
+                  rows.map((tx, idx) => {
                     const isSelected = selectedTx?.id === tx.id;
                     const open = isDeclareMode ? openOf(tx) : null;
                     return (
@@ -759,7 +820,7 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
               <tfoot className="sticky bottom-0 z-20 bg-[#152847]">
                 <tr className="bg-[#152847] text-white font-bold text-[11px] whitespace-nowrap">
                   <td className="py-2 px-2.5 text-center border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">
-                    {list.length}
+                    {rows.length}
                   </td>
                   <td className="py-2 px-2 text-center border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">D</td>
                   <td className="py-2 px-3 border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Shift</td>
@@ -936,7 +997,7 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
         open={showJantriModal}
         onClose={() => setShowJantriModal(false)}
         selectedTx={selectedTx}
-        list={list}
+        list={rows}
         // Declare Trans-Audit: the declared result highlighted in its Jantri View (per the Super
         // Admin's switch); Live Trans-Audit is undeclared, so it passes nothing as before
         shiftId={isDeclareMode ? selectedShiftId : undefined}
