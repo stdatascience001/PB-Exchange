@@ -141,9 +141,12 @@ interface LedgerRowProps {
   onToggleLimit: (l: LedgerItem) => void;
   onToggleLock: (l: LedgerItem) => void;
   onOpenUpdate: (l: LedgerItem) => void;
+  // Super Admin / Developer only: the row's Delete button (not on an already deleted party)
+  canDelete?: boolean;
+  onDelete?: (l: LedgerItem) => void;
 }
 
-const LedgerRow = React.memo(function LedgerRow({ l, idx, isSelected, onSelect, onToggleLimit, onToggleLock, onOpenUpdate }: LedgerRowProps) {
+const LedgerRow = React.memo(function LedgerRow({ l, idx, isSelected, onSelect, onToggleLimit, onToggleLock, onOpenUpdate, canDelete, onDelete }: LedgerRowProps) {
   return (
     <tr
       key={l.id}
@@ -295,6 +298,18 @@ const LedgerRow = React.memo(function LedgerRow({ l, idx, isSelected, onSelect, 
         >
           Action
         </button>
+        {canDelete && !l.deletedAt && onDelete && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(l);
+            }}
+            title="Delete party"
+            className="ml-1 px-2.5 py-1 bg-[#dc2626] hover:bg-[#b91c1c] text-white rounded text-[10px] font-bold shadow-xs transition-colors"
+          >
+            Delete
+          </button>
+        )}
       </td>
     </tr>
   );
@@ -1437,6 +1452,42 @@ export const LedgersPage: React.FC = () => {
   const onRowToggleLock = useCallback((l: LedgerItem) => rowHandlersRef.current.handleToggleLock(l), []);
   const onRowOpenUpdate = useCallback((l: LedgerItem) => rowHandlersRef.current.handleOpenUpdateModal(l), []);
 
+  // Party Delete (Super Admin / Developer only — the API's DELETE /ledgers/:id refuses every
+  // other role too). The row's Delete opens a Yes / No popup; Yes deletes the party (the same
+  // delete as Ledger Update → Account → "Delete Now!"), No just closes it.
+  const canDeleteParty = (() => {
+    try {
+      const u = JSON.parse(sessionStorage.getItem('pb_user') || 'null');
+      const r = String(u?.roleName || '').toUpperCase().replace(/_/g, ' ');
+      return r === 'SUPER ADMIN' || r === 'DEVELOPER';
+    } catch {
+      return false;
+    }
+  })();
+  const [deleteTarget, setDeleteTarget] = useState<LedgerItem | null>(null);
+  const [deletingParty, setDeletingParty] = useState(false);
+  const onRowDelete = useCallback((l: LedgerItem) => setDeleteTarget(l), []);
+  const confirmDeleteParty = async () => {
+    if (!deleteTarget || deletingParty) return;
+    setDeletingParty(true);
+    try {
+      await apiRequest(`/ledgers/${deleteTarget.id}`, { method: 'DELETE' });
+      toast.success(`${deleteTarget.partyName} deleted`);
+      setDeleteTarget(null);
+      fetchLedgers();
+    } catch (err: any) {
+      toast.error(err?.message || 'Delete failed', { toastId: 'ledger-delete' });
+    } finally {
+      setDeletingParty(false);
+    }
+  };
+  useEffect(() => {
+    if (!deleteTarget) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDeleteTarget(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [deleteTarget]);
+
   // How many rows are on the page so far (see FIRST_ROW_BATCH). Only ever grows, so a list
   // reload after a save never makes rows below the fold vanish and the page jump.
   const [renderedRowCount, setRenderedRowCount] = useState(FIRST_ROW_BATCH);
@@ -1586,6 +1637,8 @@ export const LedgersPage: React.FC = () => {
                     onToggleLimit={onRowToggleLimit}
                     onToggleLock={onRowToggleLock}
                     onOpenUpdate={onRowOpenUpdate}
+                    canDelete={canDeleteParty}
+                    onDelete={onRowDelete}
                   />
                 ))
               )}
@@ -1643,6 +1696,46 @@ export const LedgersPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Party Delete confirmation (Yes / No) */}
+      {deleteTarget && (
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setDeleteTarget(null); }}
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 z-50"
+        >
+          <div className="bg-white rounded shadow-2xl max-w-sm w-full overflow-hidden border border-slate-300 animate-in fade-in zoom-in-95 duration-150">
+            <div className="bg-[#152847] text-white px-4 py-2.5 flex items-center justify-between">
+              <h2 className="text-sm font-bold tracking-wide">Delete Party</h2>
+              <button type="button" onClick={() => setDeleteTarget(null)} className="text-white hover:text-slate-300 p-0.5">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="px-4 py-5 text-sm text-slate-700">
+              Are you sure you want to delete party{' '}
+              <span className="font-bold text-slate-900 uppercase">{deleteTarget.partyName}</span>?
+            </div>
+            <div className="px-4 pb-4 flex justify-end gap-2">
+              <button
+                type="button"
+                autoFocus
+                onClick={confirmDeleteParty}
+                disabled={deletingParty}
+                className="px-5 py-1.5 bg-[#dc2626] hover:bg-[#b91c1c] disabled:opacity-60 text-white font-bold text-xs rounded"
+              >
+                {deletingParty ? 'Deleting...' : 'Yes'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                disabled={deletingParty}
+                className="px-5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold text-xs rounded"
+              >
+                No
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Add "New User Ledger" Modal matching Screenshots 3, 4, 5 */}
       {showModal && (

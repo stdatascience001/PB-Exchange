@@ -16,6 +16,8 @@ interface TransactionAuditPageProps {
   user?: UserSession | null;
   onNavigate?: (page: string) => void;
   isDeclareMode?: boolean;
+  // Declare Dara Audit page: Declare Trans-Audit plus the Open (O-Dara / O-Akhar) + Entry filters
+  isDaraAudit?: boolean;
 }
 
 function formatAuditDateTime(dateVal: any): string {
@@ -36,6 +38,7 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
   user,
   onNavigate,
   isDeclareMode = false,
+  isDaraAudit = false,
 }) => {
   const [list, setList] = useState<TransactionItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -121,6 +124,8 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
   // Mistake button opens MistakeActionModal (confirm → mistake text); OK on the text step
   // saves.
   const [mistakeTxId, setMistakeTxId] = useState<number | null>(null);
+  // Declare Trans-Audit "Party Wise" rows: merged row id (its first slip's id) -> every slip id
+  const groupIdsRef = useRef<Record<number, number[]>>({});
 
   // Live Trans-Audit reports on TODAY only. The live page carries no date control, yet its
   // request still pins the day — its form data reads ShiftId 84 / ShiftDate 2026-09-23, the
@@ -319,10 +324,14 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
 
   const handleAuditAction = async (txId: number, status: 'VALID' | 'MISTAKE', mistakeRemark?: string) => {
     try {
-      await apiRequest(`/transactions/${txId}/audit`, {
-        method: 'PATCH',
-        body: JSON.stringify({ auditStatus: status, mistakeRemark }),
-      });
+      // A Party Wise row (Declare Trans-Audit) stands for all of that party's slips: audit each
+      const ids = groupIdsRef.current[txId] || [txId];
+      for (const id of ids) {
+        await apiRequest(`/transactions/${id}/audit`, {
+          method: 'PATCH',
+          body: JSON.stringify({ auditStatus: status, mistakeRemark }),
+        });
+      }
       if (status === 'MISTAKE') {
         toast.success(
           <div>
@@ -365,7 +374,21 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
   // a new Date starts the per-shift numbers afresh
   useEffect(() => { setDeclaredByShift({}); }, [declareDate]);
 
-  const openOf = (tx: TransactionItem) => {
+  const openOf = (tx: TransactionItem): { oDara: number; oAkhar: number } => {
+    // A Party Wise row can span shifts (each with its own result): sum its slips' own figures
+    const memberIds = groupIdsRef.current[tx.id];
+    if (memberIds && memberIds.length > 1) {
+      return memberIds.reduce((t, id) => {
+        const s = list.find(x => x.id === id);
+        if (!s) return t;
+        const o = slipOpenOf(s);
+        return { oDara: t.oDara + o.oDara, oAkhar: t.oAkhar + o.oAkhar };
+      }, { oDara: 0, oAkhar: 0 });
+    }
+    return slipOpenOf(tx);
+  };
+  // one slip's O-Dara / O-Akhar on its own shift's declared number
+  const slipOpenOf = (tx: TransactionItem) => {
     let oDara = 0, oAkhar = 0;
     const num = declaredByShift[tx.shiftId] ?? (String(tx.shiftId) === String(selectedShiftId) ? declaredNum : null);
     if (!num) return { oDara, oAkhar };
@@ -381,23 +404,76 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
   // Declare Trans-Audit's O-Dara / O-Akhar filter: "O-DARA - O-AKHAR" (default) lists only the
   // slips that played the declared result (O-Dara or O-Akhar not 0); "ALL" lists every slip as
   // before. Live Trans-Audit is never filtered.
-  const [openFilter, setOpenFilter] = useState<'OPEN' | 'ALL'>('OPEN');
-  const rows = isDeclareMode && openFilter === 'OPEN'
-    ? list.filter(tx => { const o = openOf(tx); return o.oDara !== 0 || o.oAkhar !== 0; })
+  // Only Declare Dara Audit has these filters; Declare Trans-Audit always lists every slip
+  const [openFilter, setOpenFilter] = useState<'OPEN' | 'ALL'>(isDaraAudit ? 'OPEN' : 'ALL');
+  const slipRows = isDeclareMode && openFilter === 'OPEN'
+    ? list.filter(tx => { const o = slipOpenOf(tx); return o.oDara !== 0 || o.oAkhar !== 0; })
     : list;
+  // Declare Trans-Audit "Entry" filter: PARTY WISE (default) shows a party's several slips of a
+  // shift as ONE row — O-Dara, O-Akhar, Amount and the numbers added up (as the Daily Report's
+  // party line); Valid / Mistake on it audit every slip of the row. SLIP WISE lists each slip as
+  // before. Live Trans-Audit is never merged.
+  const [entryView, setEntryView] = useState<'PARTY' | 'SLIP'>(isDaraAudit ? 'PARTY' : 'SLIP');
+  const rows = useMemo(() => {
+    const ids: Record<number, number[]> = {};
+    if (!isDeclareMode || entryView === 'SLIP') { groupIdsRef.current = ids; return slipRows; }
+    const groups = new Map<string, TransactionItem>();
+    const order: TransactionItem[] = [];
+    // every slip of the party adds in (not only the ones that played the result); the O-Dara /
+    // O-Akhar filter then keeps the parties whose merged row played it
+    for (const tx of list) {
+      // one row per party — across shifts too ("-- ALL SHIFT --")
+      const key = String(tx.partyId || tx.partyName);
+      const g = groups.get(key);
+      if (!g) {
+        const first: TransactionItem = { ...tx, entries: (tx.entries || []).map(e => ({ ...e })) };
+        groups.set(key, first);
+        order.push(first);
+        ids[first.id] = [tx.id];
+        continue;
+      }
+      ids[g.id].push(tx.id);
+      // Shift column names every shift the party played
+      if (!g.shiftName.split(', ').includes(tx.shiftName)) g.shiftName = `${g.shiftName}, ${tx.shiftName}`;
+      g.totalAmount = (g.totalAmount || 0) + (tx.totalAmount || 0);
+      g.isD = !!g.isD && !!tx.isD;
+      g.reAudit = !!g.reAudit || !!tx.reAudit;
+      g.isEdited = !!g.isEdited || !!tx.isEdited;
+      g.mistakeEdited = !!g.mistakeEdited || !!tx.mistakeEdited;
+      // Updated column: the latest change among the party's slips
+      if (new Date(tx.updatedAt || tx.createdAt).getTime() > new Date(g.updatedAt || g.createdAt).getTime()) {
+        g.updatedAt = tx.updatedAt || tx.createdAt;
+        g.updatedBy = tx.updatedBy || tx.addedBy;
+      }
+      // same number (and type / rate) adds up into one line
+      const merged = g.entries || [];
+      for (const e of tx.entries || []) {
+        const m = merged.find(x => x.numberValue === e.numberValue && x.entryType === e.entryType && x.rate === e.rate);
+        if (m) m.amount = (Number(m.amount) || 0) + (Number(e.amount) || 0);
+        else merged.push({ ...e });
+      }
+      g.entries = merged;
+    }
+    groupIdsRef.current = ids;
+    return openFilter === 'OPEN'
+      ? order.filter(tx => { const o = openOf(tx); return o.oDara !== 0 || o.oAkhar !== 0; })
+      : order;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slipRows, list, isDeclareMode, entryView, openFilter]);
   // the right-hand panel follows the filter: a slip filtered out hands over to the first shown
   useEffect(() => {
     if (!isDeclareMode) return;
     if (rows.length === 0) { if (selectedTx) setSelectedTx(null); return; }
-    if (!selectedTx || !rows.some(t => t.id === selectedTx.id)) setSelectedTx(rows[0]);
+    // (re-picked from the fresh rows, so a Party Wise row's panel shows its merged numbers)
+    setSelectedTx(rows.find(t => t.id === selectedTx?.id) || rows[0]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows.map(t => t.id).join(','), isDeclareMode]);
+  }, [rows.map(t => `${t.id}:${t.totalAmount}:${(t.entries || []).length}`).join(','), isDeclareMode]);
 
   const totalSum = rows.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0);
   const openTotals = isDeclareMode
     ? rows.reduce((t, tx) => { const o = openOf(tx); return { oDara: t.oDara + o.oDara, oAkhar: t.oAkhar + o.oAkhar }; }, { oDara: 0, oAkhar: 0 })
     : { oDara: 0, oAkhar: 0 };
-  const tableCols = isDeclareMode ? 11 : 9;
+  const tableCols = isDaraAudit ? 11 : 9;
 
   // Party Wise -> "Party Trans Count" popup (live): opens empty; its own Search loads every
   // slip of the chosen shift (all shifts on "-- ALL SHIFT --") for the day — whatever the
@@ -513,7 +589,7 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
         {/* Subheader Filter Bar matching Screenshot 1 (Live Trans-Audit) & Screenshot 2 (Declare Trans-Audit) */}
         <form onSubmit={handleSearchSubmit} className="p-2 sm:p-2.5 flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white flex-shrink-0">
           <span className="font-bold text-sm text-slate-900 tracking-tight mr-1">
-            {isDeclareMode ? 'Declare Trans-Audit' : 'Live Trans-Audit'}
+            {isDaraAudit ? 'Declare Dara Audit' : isDeclareMode ? 'Declare Trans-Audit' : 'Live Trans-Audit'}
           </span>
 
           {/* Shift selector with soft yellow background */}
@@ -620,14 +696,41 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
             </select>
           </div>
 
-          {/* Declare Trans-Audit only: O-Dara / O-Akhar filter (default O-DARA - O-AKHAR) */}
-          {isDeclareMode && (
+          {/* Declare Dara Audit only: O-Dara / O-Akhar filter (default O-DARA - O-AKHAR) */}
+          {isDeclareMode && isDaraAudit && (
             <div className="flex items-center gap-1.5">
               <span className="text-slate-600 font-medium text-xs">Open</span>
               <select
                 id="audit-open-filter"
                 value={openFilter}
-                onChange={(e) => setOpenFilter(e.target.value as 'OPEN' | 'ALL')}
+                onChange={(e) => {
+                  const v = e.target.value as 'OPEN' | 'ALL';
+                  setOpenFilter(v);
+                  // Entry follows Open: ALL lists every slip apart, O-DARA - O-AKHAR one row per party
+                  setEntryView(v === 'ALL' ? 'SLIP' : 'PARTY');
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    focusAuditField('audit-entry-view');
+                  }
+                }}
+                className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 cursor-pointer"
+              >
+                <option value="OPEN">O-DARA - O-AKHAR</option>
+                <option value="ALL">ALL</option>
+              </select>
+            </div>
+          )}
+
+          {/* Declare Dara Audit only: one row per party (default) or every slip */}
+          {isDeclareMode && isDaraAudit && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-600 font-medium text-xs">Entry</span>
+              <select
+                id="audit-entry-view"
+                value={entryView}
+                onChange={(e) => setEntryView(e.target.value as 'PARTY' | 'SLIP')}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault();
@@ -636,8 +739,8 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
                 }}
                 className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:bg-[#fef08a] focus:border-amber-300 cursor-pointer"
               >
-                <option value="OPEN">O-DARA - O-AKHAR</option>
-                <option value="ALL">ALL</option>
+                <option value="PARTY">PARTY WISE</option>
+                <option value="SLIP">SLIP WISE</option>
               </select>
             </div>
           )}
@@ -669,7 +772,7 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
                   <th className="py-2 px-3 border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Shift</th>
                   <th className="py-2 px-3 border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Party</th>
                   <th className="py-2 px-3 border-r border-b border-[#223b63] sticky top-0 bg-[#152847] z-20">Rate</th>
-                  {isDeclareMode && (
+                  {isDaraAudit && (
                     <>
                       <th className="py-2 px-3 border-r border-b border-[#223b63] text-right sticky top-0 bg-[#152847] z-20">O-Dara</th>
                       <th className="py-2 px-3 border-r border-b border-[#223b63] text-right sticky top-0 bg-[#152847] z-20">O-Akhar</th>
@@ -697,7 +800,7 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
                 ) : (
                   rows.map((tx, idx) => {
                     const isSelected = selectedTx?.id === tx.id;
-                    const open = isDeclareMode ? openOf(tx) : null;
+                    const open = isDaraAudit ? openOf(tx) : null;
                     return (
                       <tr
                         key={tx.id}
@@ -826,7 +929,7 @@ export const TransactionAuditPage: React.FC<TransactionAuditPageProps> = ({
                   <td className="py-2 px-3 border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Shift</td>
                   <td className="py-2 px-3 border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Party</td>
                   <td className="py-2 px-3 border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">Rate</td>
-                  {isDeclareMode && (
+                  {isDaraAudit && (
                     <>
                       <td className="py-2 px-3 text-right font-mono border-r border-t border-[#223b63] sticky bottom-0 bg-[#152847] z-20">
                         {openTotals.oDara.toLocaleString('en-IN')}

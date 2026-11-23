@@ -201,7 +201,9 @@ export const Navbar: React.FC<NavbarProps> = ({
         { label: 'Duplicate Trans', page: 'duplicate-trans' },
         { label: 'Trans-Audit', page: 'trans-audit' },
         { label: 'Declare Trans-Audit', page: 'declare-trans-audit' },
-        { label: 'Declare Trans Permission', page: 'trans-permission' },
+        { label: 'Declare Dara Audit', page: 'declare-dara-audit' },
+        // Declare Trans Permission hidden from the menu (its /trans_permission address still opens it)
+        // { label: 'Declare Trans Permission', page: 'trans-permission' },
       ],
     },
     {

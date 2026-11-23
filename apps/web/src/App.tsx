@@ -114,6 +114,8 @@ const PATH_TO_PAGE: Record<string, string> = {
   '/declare-transaction-audit': 'declare-trans-audit',
   '/declare_trans_audit': 'declare-trans-audit',
   '/declare-trans-audit': 'declare-trans-audit',
+  '/declare_dara_audit': 'declare-dara-audit',
+  '/declare-dara-audit': 'declare-dara-audit',
   '/trans_permission': 'trans-permission',
   '/trans-permission': 'trans-permission',
   '/declare_trans_permission': 'trans-permission',
@@ -195,6 +197,7 @@ const PAGE_TO_PATH: Record<string, string> = {
   'duplicate-trans': '/rpt_trans_duplicate',
   'trans-audit': '/transaction_audit',
   'declare-trans-audit': '/declare_transaction_audit',
+  'declare-dara-audit': '/declare_dara_audit',
   'jantri': '/jantri',
   'declare': '/declare',
   'duplicates': '/duplicates',
@@ -548,6 +551,7 @@ export const App: React.FC = () => {
     'duplicate-trans',
     'trans-audit',
     'declare-trans-audit',
+    'declare-dara-audit',
     'vouchers',
     'journal-voucher',
     'limit-voucher',
@@ -741,6 +745,18 @@ export const App: React.FC = () => {
               user={user}
               onNavigate={navigateTo}
               isDeclareMode={true}
+            />
+          )}
+
+          {/* Declare Dara Audit: Declare Trans-Audit's twin with the O-Dara / O-Akhar filters */}
+          {currentPage === 'declare-dara-audit' && (
+            <TransactionAuditPage
+              key="declare-dara-audit"
+              shifts={shifts}
+              user={user}
+              onNavigate={navigateTo}
+              isDeclareMode={true}
+              isDaraAudit={true}
             />
           )}
 
