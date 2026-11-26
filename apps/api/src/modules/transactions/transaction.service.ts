@@ -89,6 +89,10 @@ export class TransactionService {
     if (entryType === 'DARA' && /^\d{1}$/.test(trimmed)) {
       return trimmed.padStart(2, '0');
     }
+    // Number 100 is Jantri number 00 (the grid's last cell): stored as "00" like every other
+    // client sends it — a "100" slipped through otherwise and every Jantri / payout (which match
+    // on "00") left it out (local HYDRABAD 23-11: cell 100 HPL 34 vs live 392).
+    if (entryType === 'DARA' && trimmed === '100') return '00';
     // Haruf is stored as its single digit — the Add page sends it as "A5" / "B1" or the live
     // display form "5555" (Andar) / "111" (Bahar), and every payout, Jantri and report check
     // compares it with one digit of the declared number.
@@ -1198,6 +1202,23 @@ export class TransactionService {
       const txIds = txRows.map(t => t.id);
       const entries = await db.select().from(transactionEntries).where(inArray(transactionEntries.transactionId, txIds));
 
+      // Main Jantri (live) rounds each SLIP's cell to whole rupees (an exact .5 to the even
+      // rupee, as the Declare Jantri) before the slips are added up and the cell goes up to 50.
+      // Live HYDRABAD 23-11 (all 100 cells, book 26,950): cell 5 slips 7.2, 34, 31, 11.5, 6.075,
+      // 2.025, 69.4, 4.5, 50, 30, 5.04 -> 250 (summed first: 250.74 -> 251 -> 300); cell 23
+      // 300.2 -> 300 (rounded per party instead: 301 -> 350).
+      const perSlipCells = filters.mainJantri && (filters.commission || filters.hissa)
+        ? new Map<string, number>()
+        : null;
+      const addCell = (key: string, amt: number, slipId: number) => {
+        if (perSlipCells) {
+          const k = `${slipId}|${key}`;
+          perSlipCells.set(k, (perSlipCells.get(k) || 0) + amt);
+        } else {
+          hash[key] = (hash[key] || 0) + amt;
+        }
+      };
+
       for (const e of entries) {
         const partyId = partyByTx.get(e.transactionId);
         const party = partyId !== undefined ? partyById.get(partyId) : undefined;
@@ -1241,7 +1262,7 @@ export class TransactionService {
           const digit = String(e.numberValue).trim().slice(-1);
           for (let o = 0; o < 10; o++) {
             const numKey = e.entryType === 'HARUF_ANDAR' ? `${digit}${o}` : `${o}${digit}`;
-            hash[numKey] = (hash[numKey] || 0) + amt / 10;
+            addCell(numKey, amt / 10, e.transactionId);
           }
           continue;
         }
@@ -1251,7 +1272,21 @@ export class TransactionService {
           : e.entryType === 'HARUF_BAHAR'
           ? `B_${e.numberValue}`
           : e.numberValue;
-        hash[key] = (hash[key] || 0) + amt;
+        addCell(key, amt, e.transactionId);
+      }
+
+      if (perSlipCells) {
+        const roundHalfEven = (x: number) => {
+          const f = Math.floor(x);
+          const diff = x - f;
+          if (diff > 0.5) return f + 1;
+          if (diff < 0.5) return f;
+          return f % 2 === 0 ? f : f + 1;
+        };
+        for (const [k, v] of perSlipCells) {
+          const key = k.slice(k.indexOf('|') + 1);
+          hash[key] = (hash[key] || 0) + roundHalfEven(v);
+        }
       }
     }
 
